@@ -20,12 +20,14 @@ import { AnalyticProvider } from '@/providers/AnalyticProvider'
 import { useLeftPanel } from '@/hooks/useLeftPanel'
 import ToolApproval from '@/containers/dialogs/ToolApproval'
 import RuntimePermissionDialog from '@/containers/dialogs/RuntimePermissionDialog'
+import CodexUserInputDialog from '@/containers/dialogs/CodexUserInputDialog'
 import { TranslationProvider } from '@/i18n/TranslationContext'
 import OutOfContextPromiseModal from '@/containers/dialogs/OutOfContextDialog'
 import AttachmentIngestionDialog from '@/containers/dialogs/AttachmentIngestionDialog'
 import GlobalError from '@/containers/GlobalError'
 import { GlobalEventHandler } from '@/providers/GlobalEventHandler'
 import { ServiceHubProvider } from '@/providers/ServiceHubProvider'
+import { CodexAppServerBootstrap } from '@/providers/CodexAppServerBootstrap'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { LeftSidebar } from '@/components/left-sidebar'
 import { WindowControls } from '@/components/WindowControls'
@@ -132,6 +134,7 @@ function RootLayout() {
   return (
     <Fragment>
       <ServiceHubProvider>
+        <CodexAppServerBootstrap />
         <ThemeProvider />
         <InterfaceProvider />
         <ToasterProvider />
@@ -144,6 +147,7 @@ function RootLayout() {
           {/* <TanStackRouterDevtools position="bottom-right" /> */}
           <ToolApproval />
           <RuntimePermissionDialog />
+          <CodexUserInputDialog />
           <AttachmentIngestionDialog />
           <ErrorDialog />
           <LlamacppBusyOnExitDialog />

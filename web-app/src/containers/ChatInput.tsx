@@ -106,7 +106,7 @@ import {
   filterSlashCommands,
   getSlashCommandContext,
 } from '@/lib/chat-slash-commands'
-import { isCodexAppServerProvider } from '@/lib/codex-app-server'
+
 
 type ChatInputProps = {
   className?: string
@@ -1633,7 +1633,6 @@ const ChatInput = memo(function ChatInput({
     setCursorPosition(element.selectionStart ?? prompt.length)
   }, [prompt.length])
 
-  const codexCommandsEnabled = isCodexAppServerProvider(selectedProvider)
   const hasChatThread = Boolean(
     currentThreadId && currentThreadId !== TEMPORARY_CHAT_ID
   )
@@ -1648,12 +1647,12 @@ const ChatInput = memo(function ChatInput({
       slashContext
         ? filterSlashCommands({
             query: slashContext.query,
-            codexEnabled: codexCommandsEnabled,
+            codexEnabled: true,
             hasThread: hasChatThread,
             isStreaming,
           })
         : [],
-    [slashContext, codexCommandsEnabled, hasChatThread, isStreaming]
+    [slashContext, hasChatThread, isStreaming]
   )
 
   const slashMenuOpen = Boolean(

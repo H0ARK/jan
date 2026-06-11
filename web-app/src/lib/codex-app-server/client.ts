@@ -64,12 +64,52 @@ export class CodexAppServerSession {
   private readonly manager: CodexAppServerProcessManager
   private readonly mappings = new Map<string, CodexThreadMapping>()
   private readonly threadPayloads = new Map<string, unknown>()
+  private readonly threadOptions = new Map<string, CodexSessionOptions>()
+  private latestRuntimeOptions: CodexSessionOptions | null = null
 
   constructor(private readonly params: CodexAppServerSessionParams) {
     this.manager = new CodexAppServerProcessManager(
       params.spawner,
       params.options
     )
+  }
+
+  setThreadOptions(appThreadId: string, options: CodexSessionOptions) {
+    this.threadOptions.set(appThreadId, options)
+    this.latestRuntimeOptions = options
+  }
+
+  seedCodexThreadBinding(appThreadId: string, codexThreadId: string) {
+    const trimmed = codexThreadId.trim()
+    if (!trimmed) return
+
+    const existing = this.mappings.get(appThreadId)
+    if (existing?.codexThreadId === trimmed) return
+
+    this.mappings.set(appThreadId, {
+      appThreadId,
+      codexThreadId: trimmed,
+    })
+  }
+
+  clearThreadBinding(appThreadId: string) {
+    this.mappings.delete(appThreadId)
+    this.threadPayloads.delete(appThreadId)
+    this.threadOptions.delete(appThreadId)
+  }
+
+  clearAllThreadBindings() {
+    this.mappings.clear()
+    this.threadPayloads.clear()
+    this.threadOptions.clear()
+    this.latestRuntimeOptions = null
+  }
+
+  private resolveOptions(appThreadId: string): CodexSessionOptions {
+    const threadOptions = this.threadOptions.get(appThreadId)
+    return threadOptions
+      ? { ...this.params.options, ...threadOptions }
+      : this.params.options
   }
 
   initialize(): Promise<CodexInitializeResult> {
@@ -136,9 +176,10 @@ export class CodexAppServerSession {
             input.length > 0
               ? input
               : [{ type: 'text', text: '', text_elements: [] }],
-          cwd: params.cwd ?? this.params.options.cwd ?? null,
-          approvalPolicy: this.params.options.approvalPolicy ?? null,
-          model: this.params.options.model ?? null,
+          cwd: params.cwd ?? this.resolveOptions(params.appThreadId).cwd ?? null,
+          approvalPolicy:
+            this.resolveOptions(params.appThreadId).approvalPolicy ?? null,
+          model: this.resolveOptions(params.appThreadId).model ?? null,
         }
       )
 
@@ -191,7 +232,8 @@ export class CodexAppServerSession {
 
   async refreshMcpServers() {
     await this.initialize()
-    const mcpServers = this.params.options.mcpRefreshConfig?.mcp_servers
+    const runtimeOptions = this.latestRuntimeOptions ?? this.params.options
+    const mcpServers = runtimeOptions.mcpRefreshConfig?.mcp_servers
     if (mcpServers) {
       await this.manager.rpc.request('config/value/write', {
         keyPath: 'mcp_servers',
@@ -816,7 +858,7 @@ export class CodexAppServerSession {
         'thread/resume',
         {
           threadId: existing.codexThreadId,
-          ...buildThreadStartParams(this.params.options),
+          ...buildThreadStartParams(this.resolveOptions(appThreadId)),
         }
       )
       existing.loadedGeneration = this.manager.generation
@@ -827,7 +869,7 @@ export class CodexAppServerSession {
     const response = await this.manager.rpc.request<ThreadStartResponse>(
       'thread/start',
       {
-        ...buildThreadStartParams(this.params.options),
+        ...buildThreadStartParams(this.resolveOptions(appThreadId)),
         ephemeral: false,
       }
     )

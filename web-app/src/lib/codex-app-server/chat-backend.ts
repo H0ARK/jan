@@ -13,10 +13,29 @@ import { useLocalApiServer } from '@/hooks/useLocalApiServer'
 import { getServiceHub } from '@/hooks/useServiceHub'
 import { buildCodexConfigToml } from './config'
 import { buildCodexMcpServersConfig } from './mcp-config-bridge'
-import { CodexAppServerClient } from './api'
-import { TauriCodexProcessSpawner } from './tauri-process'
+import type { CodexAppServerClient } from './api'
+import {
+  GLOBAL_CODEX_APP_SERVER_SESSION_ID,
+  applyCodexRuntimeOptions,
+  clearGlobalCodexThreadBinding,
+  ensureGlobalCodexAppServer,
+  getGlobalCodexClientOrNull,
+  resetGlobalCodexRuntimeForTests,
+} from './global-codex-runtime'
+import {
+  persistCodexThreadId,
+  readPersistedCodexThreadId,
+} from './codex-thread-persistence'
 import { codexEventsToUIMessageStream } from './ui-stream'
-import type { CodexAppServerEvent, CodexWireServerRequest } from './types'
+import {
+  type CodexUserInputQuestion,
+  useCodexUserInput,
+} from '@/stores/codex-user-input-store'
+import type {
+  CodexAppServerEvent,
+  CodexSessionOptions,
+  CodexWireServerRequest,
+} from './types'
 
 export const CODEX_APP_SERVER_PROVIDER_ID = 'codex'
 
@@ -29,13 +48,11 @@ type CodexChatBackendRequest = {
   abortSignal?: AbortSignal
 }
 
-type CodexSessionEntry = {
-  signature: string
-  client: CodexAppServerClient
-}
-
-const sessions = new Map<string, CodexSessionEntry>()
 const JAN_HOSTED_LOCAL_PROVIDERS = new Set(['llamacpp', 'mlx'])
+const GLOBAL_CODEX_THREAD_PLACEHOLDER = '__global__'
+
+const CODEX_NOT_RUNNING_ERROR =
+  'Codex app-server is not running yet. Wait for app startup to finish.'
 
 export const isCodexAppServerProvider = (providerId: string | undefined) =>
   providerId === CODEX_APP_SERVER_PROVIDER_ID
@@ -69,7 +86,7 @@ export async function sendCodexAppServerChatMessage({
 
   await ensureCodexTargetProviderReady(threadId, provider, model)
 
-  const client = getOrCreateSession(threadId, provider, model)
+  const client = await prepareThreadCodexRuntime(threadId, provider, model)
   const events = bridgeCodexApprovalRequests(
     client.sendToCodex(threadId, messageText, {
       clientUserMessageId: messageId,
@@ -109,11 +126,8 @@ export function approveCodexAppServerAction(
   requestId: string | number,
   decision: { approved: boolean; rememberForSession?: boolean }
 ) {
-  const entry = sessions.get(threadId)
-  if (!entry) {
-    throw new Error(`No Codex app-server session for thread: ${threadId}`)
-  }
-  entry.client.approveAction(
+  const client = requireCodexSession(threadId)
+  client.approveAction(
     requestId,
     codexApprovalResponse(
       { id: requestId, method: 'item/commandExecution/requestApproval' },
@@ -124,10 +138,7 @@ export function approveCodexAppServerAction(
 }
 
 export async function shutdownCodexAppServerChatSession(threadId: string) {
-  const entry = sessions.get(threadId)
-  if (!entry) return
-  sessions.delete(threadId)
-  await entry.client.shutdownCodex()
+  clearGlobalCodexThreadBinding(threadId)
 }
 
 async function ensureCodexTargetProviderReady(
@@ -180,14 +191,80 @@ async function ensureCodexTargetProviderReady(
   }
 }
 
+function requireCodexClient(): CodexAppServerClient {
+  const client = getGlobalCodexClientOrNull()
+  if (!client) {
+    throw new Error(CODEX_NOT_RUNNING_ERROR)
+  }
+  return client
+}
+
 function requireCodexSession(janThreadId: string) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) {
-    throw new Error(
-      `No Codex app-server session for thread: ${janThreadId}. Send a message first to start the session.`
+  void janThreadId
+  return requireCodexClient()
+}
+
+async function prepareThreadCodexRuntime(
+  threadId: string,
+  provider: ModelProvider,
+  model: Model
+): Promise<CodexAppServerClient> {
+  const options = buildCodexSessionOptions(threadId, provider, model)
+  const spawnOptions = toGlobalSpawnOptions(options)
+  const client = await ensureGlobalCodexAppServer(spawnOptions)
+  client.setThreadOptions(threadId, options)
+
+  const persistedCodexThreadId = readPersistedCodexThreadId(threadId)
+  if (persistedCodexThreadId) {
+    client.seedCodexThreadBinding(threadId, persistedCodexThreadId)
+  }
+
+  await applyCodexRuntimeOptions(client, threadId, spawnOptions)
+  return client
+}
+
+function toGlobalSpawnOptions(options: CodexSessionOptions): CodexSessionOptions {
+  return {
+    ...options,
+    codexHome: resolveAppCodexHome(),
+    cwd: './',
+  }
+}
+
+export function buildGlobalCodexSpawnOptions(): CodexSessionOptions {
+  const modelProviderState = useModelProvider.getState()
+  const provider =
+    modelProviderState.getProviderByName(CODEX_APP_SERVER_PROVIDER_ID) ??
+    modelProviderState.providers.find((candidate) => candidate.active) ??
+    modelProviderState.providers[0]
+  const model =
+    modelProviderState.selectedModel ??
+    provider?.models.find((candidate) => candidate.active) ??
+    provider?.models[0]
+
+  if (provider && model) {
+    return toGlobalSpawnOptions(
+      buildCodexSessionOptions(GLOBAL_CODEX_THREAD_PLACEHOLDER, provider, model)
     )
   }
-  return entry.client
+
+  return toGlobalSpawnOptions({
+    codexBinaryPath: defaultCodexBinaryPath(),
+    codexHome: resolveAppCodexHome(),
+    transport: 'app-server',
+    cwd: './',
+    approvalPolicy: 'on-request',
+    sandbox: 'workspace-write',
+    configToml: buildCodexConfigToml({
+      model: 'gpt-5.1-codex-max',
+      modelProvider: 'openai',
+    }),
+    mcpRefreshConfig: {
+      mcp_servers: {},
+      mcp_oauth_credentials_store_mode: 'auto',
+    },
+    env: {},
+  })
 }
 
 export async function compactCodexThread(janThreadId: string) {
@@ -216,6 +293,10 @@ async function* bridgeCodexApprovalRequests(
   threadId: string
 ): AsyncGenerator<CodexAppServerEvent> {
   for await (const event of events) {
+    if (event.type === 'thread_started' && event.threadId) {
+      persistCodexThreadId(threadId, event.threadId)
+    }
+
     yield event
 
     if (event.type === 'approval_request') {
@@ -336,7 +417,7 @@ async function resolveServerRequest(request: CodexWireServerRequest) {
   }
 
   if (request.method === 'item/tool/requestUserInput') {
-    return resolveToolUserInputRequest(request)
+    return await resolveToolUserInputRequest(request)
   }
 
   if (request.method === 'item/tool/call') {
@@ -361,37 +442,61 @@ async function resolveServerRequest(request: CodexWireServerRequest) {
   return {}
 }
 
-function resolveToolUserInputRequest(request: CodexWireServerRequest) {
+async function resolveToolUserInputRequest(request: CodexWireServerRequest) {
   const params = isRecord(request.params) ? request.params : {}
-  const questions = Array.isArray(params.questions) ? params.questions : []
-  const answers: Record<string, string> = {}
+  const questions = parseCodexUserInputQuestions(params.questions)
+  const answers = await useCodexUserInput.getState().requestUserInput(questions)
+  return { answers }
+}
 
-  for (const question of questions) {
-    if (!isRecord(question)) continue
+function parseCodexUserInputQuestions(
+  value: unknown
+): CodexUserInputQuestion[] {
+  if (!Array.isArray(value)) return []
+
+  return value.flatMap((question) => {
+    if (!isRecord(question)) return []
     const id = stringValue(question.id)
-    if (!id) continue
+    if (!id) return []
 
-    const promptText =
+    const label =
       stringValue(question.question) ??
       stringValue(question.prompt) ??
       stringValue(question.header) ??
       id
-    answers[id] = promptForCodexUserInput(promptText) ?? ''
-  }
+    const description =
+      stringValue(question.description) ?? stringValue(question.subtitle)
 
-  return { answers }
-}
+    const rawOptions = question.options
+    const options = Array.isArray(rawOptions)
+      ? rawOptions.flatMap((option) => {
+          if (typeof option === 'string') {
+            return [{ label: option, value: option }]
+          }
+          if (!isRecord(option)) return []
+          const optionValue =
+            stringValue(option.value) ??
+            stringValue(option.id) ??
+            stringValue(option.label)
+          if (!optionValue) return []
+          return [
+            {
+              label: stringValue(option.label) ?? optionValue,
+              value: optionValue,
+            },
+          ]
+        })
+      : undefined
 
-function promptForCodexUserInput(message: string) {
-  if (
-    typeof globalThis === 'undefined' ||
-    !('prompt' in globalThis) ||
-    typeof globalThis.prompt !== 'function'
-  ) {
-    return undefined
-  }
-
-  return globalThis.prompt(message) ?? undefined
+    return [
+      {
+        id,
+        label,
+        ...(description ? { description } : {}),
+        ...(options && options.length > 0 ? { options } : {}),
+      },
+    ]
+  })
 }
 
 function codexApprovalDetails(request: CodexWireServerRequest) {
@@ -478,7 +583,7 @@ function codexApprovalDetails(request: CodexWireServerRequest) {
 }
 
 export function clearCodexAppServerChatSessionsForTests() {
-  sessions.clear()
+  resetGlobalCodexRuntimeForTests()
 }
 
 /**
@@ -495,11 +600,7 @@ export async function steerCodexSubThread(
     images?: Array<{ data: string; mediaType: string }>
   }
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) {
-    throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  }
-  return entry.client.steerThread(
+  return requireCodexSession(janThreadId).steerThread(
     targetCodexThreadId,
     text,
     options?.clientUserMessageId,
@@ -520,18 +621,15 @@ export async function* steerCodexSubThreadEvents(
     images?: Array<{ data: string; mediaType: string }>
   }
 ): AsyncGenerator<CodexAppServerEvent> {
-  const entry = sessions.get(janThreadId)
-  if (!entry) {
-    throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  }
+  const client = requireCodexClient()
   const events = bridgeCodexApprovalRequests(
-    entry.client.steerThreadWithEvents(
+    client.steerThreadWithEvents(
       targetCodexThreadId,
       text,
       options?.clientUserMessageId,
       options?.images
     ),
-    entry.client,
+    client,
     janThreadId
   )
   yield* events
@@ -550,13 +648,7 @@ export async function startCodexReview(
     | { type: 'custom'; instructions: string } = { type: 'uncommittedChanges' },
   options?: { userFacingHint?: string }
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) {
-    throw new Error(
-      `No Codex app-server session for thread: ${janThreadId}. Send a message first to start the session.`
-    )
-  }
-  return entry.client.startReview(janThreadId, target, {
+  return requireCodexSession(janThreadId).startReview(janThreadId, target, {
     delivery: 'detached',
     userFacingHint:
       options?.userFacingHint ??
@@ -573,150 +665,320 @@ export async function startCodexReview(
  * all available via the app-server when the profile/chat is codex-backed.
  */
 export async function listCodexSkills(janThreadId: string, params: Record<string, unknown> = {}) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.listSkills(params)
+  return requireCodexSession(janThreadId).listSkills(params)
 }
 
 export async function setCodexSkillExtraRoots(janThreadId: string, roots: string[]) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.setSkillExtraRoots(roots)
+  return requireCodexSession(janThreadId).setSkillExtraRoots(roots)
 }
 
 export async function listCodexHooks(janThreadId: string, params: Record<string, unknown> = {}) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.listHooks(params)
+  return requireCodexSession(janThreadId).listHooks(params)
 }
 
 export async function listCodexPlugins(janThreadId: string, params: Record<string, unknown> = {}) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.listPlugins(params)
+  return requireCodexSession(janThreadId).listPlugins(params)
 }
 
 export async function listInstalledCodexPlugins(janThreadId: string, params: Record<string, unknown> = {}) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.listInstalledPlugins(params)
+  return requireCodexSession(janThreadId).listInstalledPlugins(params)
+}
+
+export async function listCodexApps(janThreadId: string, params: Record<string, unknown> = {}) {
+  return requireCodexSession(janThreadId).listApps(params)
 }
 
 export async function installCodexPlugin(janThreadId: string, params: Record<string, unknown>) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.installPlugin(params)
+  return requireCodexSession(janThreadId).installPlugin(params)
 }
 
 export async function uninstallCodexPlugin(janThreadId: string, params: Record<string, unknown>) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.uninstallPlugin(params)
+  return requireCodexSession(janThreadId).uninstallPlugin(params)
+}
+
+export async function readCodexPlugin(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).readPlugin(params)
+}
+
+export async function readCodexPluginSkill(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).readPluginSkill(params)
+}
+
+export async function addCodexMarketplace(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).addMarketplace(params)
+}
+
+export async function removeCodexMarketplace(
+  janThreadId: string,
+  marketplaceName: string
+) {
+  return requireCodexSession(janThreadId).removeMarketplace(marketplaceName)
+}
+
+export async function upgradeCodexMarketplace(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).upgradeMarketplace(params)
 }
 
 export async function writeCodexSkillConfig(janThreadId: string, params: Record<string, unknown>) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.writeSkillConfig(params)
+  return requireCodexSession(janThreadId).writeSkillConfig(params)
+}
+
+export async function setCodexExperimentalFeatureEnablement(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).setExperimentalFeatureEnablement(params)
+}
+
+export async function addCodexEnvironment(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).addEnvironment(params)
+}
+
+export async function requestCodexToolUserInput(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).requestUserInput(params)
+}
+
+export async function execCodexCommand(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).execCommand(params)
+}
+
+export async function writeCodexCommandInput(
+  janThreadId: string,
+  processId: string,
+  params: { deltaBase64?: string; closeStdin?: boolean }
+) {
+  return requireCodexSession(janThreadId).writeCommandStdin(processId, params)
+}
+
+export async function resizeCodexCommandTerminal(
+  janThreadId: string,
+  processId: string,
+  size: { rows: number; cols: number }
+) {
+  return requireCodexSession(janThreadId).resizeCommandPty(processId, size)
+}
+
+export async function terminateCodexCommand(
+  janThreadId: string,
+  processId: string
+) {
+  return requireCodexSession(janThreadId).terminateCommand(processId)
+}
+
+export async function spawnCodexProcess(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).spawnProcess(params as any)
+}
+
+export async function writeCodexProcessInput(
+  janThreadId: string,
+  processHandle: string,
+  params: { deltaBase64?: string; closeStdin?: boolean }
+) {
+  return requireCodexSession(janThreadId).writeProcessStdin(processHandle, params)
+}
+
+export async function resizeCodexProcessTerminal(
+  janThreadId: string,
+  processHandle: string,
+  size: { rows: number; cols: number }
+) {
+  return requireCodexSession(janThreadId).resizeProcessPty(processHandle, size)
+}
+
+export async function killCodexProcess(
+  janThreadId: string,
+  processHandle: string
+) {
+  return requireCodexSession(janThreadId).killProcess(processHandle)
+}
+
+export async function readCodexDirectory(
+  janThreadId: string,
+  path: string
+) {
+  return requireCodexSession(janThreadId).readDirectory(path)
+}
+
+export async function readCodexFile(
+  janThreadId: string,
+  path: string
+) {
+  return requireCodexSession(janThreadId).readFile(path)
+}
+
+export async function getCodexMetadata(
+  janThreadId: string,
+  path: string
+) {
+  return requireCodexSession(janThreadId).getMetadata(path)
+}
+
+export async function writeCodexFile(
+  janThreadId: string,
+  path: string,
+  dataBase64: string
+) {
+  return requireCodexSession(janThreadId).writeFile(path, dataBase64)
+}
+
+export async function createCodexDirectory(
+  janThreadId: string,
+  path: string,
+  recursive?: boolean
+) {
+  return requireCodexSession(janThreadId).createDirectory(path, recursive)
+}
+
+export async function removeCodexFileSystemPath(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).removeFileSystemPath(params)
+}
+
+export async function copyCodexFileSystemPath(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).copyFileSystemPath(params)
+}
+
+export async function watchCodexFileSystem(
+  janThreadId: string,
+  watchId: string,
+  path: string
+) {
+  return requireCodexSession(janThreadId).watchFileSystem(watchId, path)
+}
+
+export async function unwatchCodexFileSystem(
+  janThreadId: string,
+  watchId: string
+) {
+  return requireCodexSession(janThreadId).unwatchFileSystem(watchId)
+}
+
+export async function listCodexModels(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).listModels(params)
+}
+
+export async function readCodexModelProviderCapabilities(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).readModelProviderCapabilities(params)
+}
+
+export async function listCodexExperimentalFeatures(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).listExperimentalFeatures(params)
 }
 
 export async function startCodexMcpOauthLogin(janThreadId: string, server: string) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.startMcpOauthLogin(server)
+  return requireCodexSession(janThreadId).startMcpOauthLogin(server)
 }
 
 export async function listCodexMcpServerStatus(janThreadId: string, params: Record<string, unknown> = {}) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.listMcpServerStatus(params)
+  return requestAppServerMethodWithFallback(
+    janThreadId,
+    'mcpServer/status/list',
+    'mcpServerStatus/list',
+    params
+  )
 }
 
 export async function readCodexAccount(
   janThreadId: string,
   refreshToken = false
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.readAccount(refreshToken)
+  return requireCodexSession(janThreadId).readAccount(refreshToken)
 }
 
 export async function startCodexAccountLogin(
   janThreadId: string,
   params: Record<string, unknown>
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.startAccountLogin(params)
+  return requireCodexSession(janThreadId).startAccountLogin(params)
 }
 
 export async function cancelCodexAccountLogin(
   janThreadId: string,
   loginId: string
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.cancelAccountLogin(loginId)
+  return requireCodexSession(janThreadId).cancelAccountLogin(loginId)
 }
 
 export async function logoutCodexAccount(janThreadId: string) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.logoutAccount()
+  return requireCodexSession(janThreadId).logoutAccount()
 }
 
 export async function readCodexAccountRateLimits(janThreadId: string) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.readAccountRateLimits()
+  return requireCodexSession(janThreadId).readAccountRateLimits()
 }
 
 export async function readCodexAccountUsage(
   janThreadId: string,
   params: Record<string, unknown> = {}
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.readAccountUsage(params)
+  return requireCodexSession(janThreadId).readAccountUsage(params)
 }
 
 export async function sendCodexAddCreditsNudgeEmail(
   janThreadId: string,
   creditType: 'credits' | 'usage_limit'
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.sendAddCreditsNudgeEmail(creditType)
+  return requireCodexSession(janThreadId).sendAddCreditsNudgeEmail(creditType)
 }
 
 export async function listCodexPermissionProfiles(
   janThreadId: string,
   params: Record<string, unknown> = {}
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.listPermissionProfiles(params)
+  return requireCodexSession(janThreadId).listPermissionProfiles(params)
 }
 
 export async function listCodexCollaborationModes(janThreadId: string) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.listCollaborationModes()
+  return requireCodexSession(janThreadId).listCollaborationModes()
 }
 
 export async function listCodexThreads(
   janThreadId: string,
   params: Record<string, unknown> = {}
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.listThreads(params)
+  return requireCodexSession(janThreadId).listThreads(params)
 }
 
 export async function listLoadedCodexThreads(janThreadId: string) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.listLoadedThreads()
+  return requireCodexSession(janThreadId).listLoadedThreads()
 }
 
 export async function readCodexThread(
@@ -724,9 +986,7 @@ export async function readCodexThread(
   codexThreadId: string,
   params: Record<string, unknown> = {}
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.readThread(codexThreadId, params)
+  return requireCodexSession(janThreadId).readThread(codexThreadId, params)
 }
 
 export async function listCodexThreadTurns(
@@ -734,9 +994,18 @@ export async function listCodexThreadTurns(
   codexThreadId: string,
   params: Record<string, unknown> = {}
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.listThreadTurns(codexThreadId, params)
+  return requireCodexSession(janThreadId).listThreadTurns(codexThreadId, params)
+}
+
+export async function listCodexThreadTurnItems(
+  janThreadId: string,
+  codexThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).listThreadTurnItems({
+    threadId: codexThreadId,
+    ...params,
+  })
 }
 
 export async function forkCodexThread(
@@ -744,27 +1013,21 @@ export async function forkCodexThread(
   codexThreadId: string,
   params: Record<string, unknown> = {}
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.forkThread(codexThreadId, params)
+  return requireCodexSession(janThreadId).forkThread(codexThreadId, params)
 }
 
 export async function archiveCodexThread(
   janThreadId: string,
   codexThreadId: string
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.archiveThread(codexThreadId)
+  return requireCodexSession(janThreadId).archiveThread(codexThreadId)
 }
 
 export async function unarchiveCodexThread(
   janThreadId: string,
   codexThreadId: string
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.unarchiveThread(codexThreadId)
+  return requireCodexSession(janThreadId).unarchiveThread(codexThreadId)
 }
 
 export async function setCodexThreadName(
@@ -772,9 +1035,7 @@ export async function setCodexThreadName(
   codexThreadId: string,
   name: string
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.setThreadName(codexThreadId, name)
+  return requireCodexSession(janThreadId).setThreadName(codexThreadId, name)
 }
 
 export async function setCodexThreadGoal(
@@ -782,27 +1043,21 @@ export async function setCodexThreadGoal(
   codexThreadId: string,
   goal: Record<string, unknown>
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.setThreadGoal(codexThreadId, goal)
+  return requireCodexSession(janThreadId).setThreadGoal(codexThreadId, goal)
 }
 
 export async function getCodexThreadGoal(
   janThreadId: string,
   codexThreadId: string
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.getThreadGoal(codexThreadId)
+  return requireCodexSession(janThreadId).getThreadGoal(codexThreadId)
 }
 
 export async function clearCodexThreadGoal(
   janThreadId: string,
   codexThreadId: string
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.clearThreadGoal(codexThreadId)
+  return requireCodexSession(janThreadId).clearThreadGoal(codexThreadId)
 }
 
 export async function setCodexThreadMemoryMode(
@@ -810,45 +1065,282 @@ export async function setCodexThreadMemoryMode(
   codexThreadId: string,
   memoryMode: 'enabled' | 'disabled'
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.setThreadMemoryMode(codexThreadId, memoryMode)
+  return requireCodexSession(janThreadId).setThreadMemoryMode(codexThreadId, memoryMode)
+}
+
+export async function updateCodexThreadMetadata(
+  janThreadId: string,
+  codexThreadId: string,
+  metadata: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).updateThreadMetadata(codexThreadId, {
+    metadata,
+  })
+}
+
+export async function updateCodexThreadSettings(
+  janThreadId: string,
+  codexThreadId: string,
+  settings: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).updateThreadSettings(codexThreadId, {
+    settings,
+  })
+}
+
+export async function unsubscribeCodexThread(
+  janThreadId: string,
+  codexThreadId: string
+) {
+  return requireCodexSession(janThreadId).unsubscribeThread(codexThreadId)
+}
+
+export async function interruptCodexThreadTurn(
+  janThreadId: string,
+  codexThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer('turn/interrupt', {
+    threadId: codexThreadId,
+    ...params,
+  })
+}
+
+export async function compactCodexThreadById(
+  janThreadId: string,
+  codexThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requestAppServerMethodWithFallback(
+    janThreadId,
+    'thread/compact/start',
+    'thread/compact',
+    {
+      threadId: codexThreadId,
+      ...params,
+    }
+  )
+}
+
+export async function reloadCodexThread(
+  janThreadId: string,
+  codexThreadId: string
+) {
+  return requireCodexSession(janThreadId).requestAppServer('thread/reload', {
+    threadId: codexThreadId,
+  })
+}
+
+export async function rollbackCodexThreadById(
+  janThreadId: string,
+  codexThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer('thread/rollback', {
+    threadId: codexThreadId,
+    ...params,
+  })
+}
+
+export async function startCodexThreadReview(
+  janThreadId: string,
+  codexThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requestAppServerMethodWithFallback(
+    janThreadId,
+    'review/start',
+    'thread/review',
+    {
+      threadId: codexThreadId,
+      ...params,
+    }
+  )
+}
+
+export async function injectCodexThreadItems(
+  janThreadId: string,
+  codexThreadId: string,
+  items: unknown[]
+) {
+  return requireCodexSession(janThreadId).injectThreadItems(
+    codexThreadId,
+    items
+  )
+}
+
+export async function cleanCodexBackgroundTerminals(
+  janThreadId: string,
+  codexThreadId: string
+) {
+  return requireCodexSession(janThreadId).cleanBackgroundTerminals(
+    codexThreadId
+  )
+}
+
+export async function startCodexThreadRealtime(
+  janThreadId: string,
+  codexThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).startThreadRealtime(
+    codexThreadId,
+    params
+  )
+}
+
+export async function appendCodexThreadRealtimeAudio(
+  janThreadId: string,
+  codexThreadId: string,
+  audioBase64: string
+) {
+  return requireCodexSession(janThreadId).appendThreadRealtimeAudio(
+    codexThreadId,
+    audioBase64
+  )
+}
+
+export async function appendCodexThreadRealtimeText(
+  janThreadId: string,
+  codexThreadId: string,
+  text: string
+) {
+  return requireCodexSession(janThreadId).appendThreadRealtimeText(
+    codexThreadId,
+    text
+  )
+}
+
+export async function stopCodexThreadRealtime(
+  janThreadId: string,
+  codexThreadId: string
+) {
+  return requireCodexSession(janThreadId).stopThreadRealtime(codexThreadId)
+}
+
+export async function resetCodexMemory(
+  janThreadId: string
+) {
+  return requireCodexSession(janThreadId).resetMemory()
 }
 
 export async function enableCodexRemoteControl(janThreadId: string) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.enableRemoteControl()
+  return requireCodexSession(janThreadId).enableRemoteControl()
 }
 
 export async function disableCodexRemoteControl(janThreadId: string) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.disableRemoteControl()
+  return requireCodexSession(janThreadId).disableRemoteControl()
 }
 
 export async function readCodexRemoteControlStatus(janThreadId: string) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.readRemoteControlStatus()
+  return requireCodexSession(janThreadId).readRemoteControlStatus()
 }
 
 export async function startCodexRemoteControlPairing(
   janThreadId: string,
   params: Record<string, unknown> = {}
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.startRemoteControlPairing(params)
+  return requireCodexSession(janThreadId).startRemoteControlPairing(params)
 }
 
 export async function readCodexRemoteControlPairingStatus(
   janThreadId: string,
   params: { pairingCode?: string; manualPairingCode?: string }
 ) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.readRemoteControlPairingStatus(params)
+  return requireCodexSession(janThreadId).readRemoteControlPairingStatus(params)
+}
+
+export async function listCodexRemoteControlClients(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).listRemoteControlClients(params)
+}
+
+export async function revokeCodexRemoteControlClient(
+  janThreadId: string,
+  clientId: string
+) {
+  return requireCodexSession(janThreadId).revokeRemoteControlClient({
+    clientId,
+  })
+}
+
+export async function readCodexConfig(janThreadId: string) {
+  return requireCodexSession(janThreadId).readConfig()
+}
+
+export async function readCodexConfigRequirements(janThreadId: string) {
+  return requireCodexSession(janThreadId).readConfigRequirements()
+}
+
+export async function detectCodexExternalAgentConfig(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).detectExternalAgentConfig(params)
+}
+
+export async function importCodexExternalAgentConfig(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).importExternalAgentConfig(params)
+}
+
+export async function writeCodexConfigValue(
+  janThreadId: string,
+  keyPath: string | string[],
+  value: unknown
+) {
+  return callCodexAppServer(janThreadId, 'config/value/write', {
+    keyPath,
+    value,
+  })
+}
+
+export async function writeCodexConfigBatch(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).batchWriteConfig(params)
+}
+
+export async function startCodexWindowsSandbox(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).startWindowsSandboxSetup(params)
+}
+
+export async function uploadCodexFeedback(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).uploadFeedback(params)
+}
+
+export async function readCodexMcpResource(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).readMcpResource(params)
+}
+
+export async function callCodexMcpTool(
+  janThreadId: string,
+  params: Record<string, unknown>
+) {
+  return requireCodexSession(janThreadId).callMcpTool(
+    params as { [key: string]: unknown }
+  )
+}
+
+export async function reloadCodexMcpConfig(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return callCodexAppServer(janThreadId, 'config/mcpServer/reload', params)
 }
 
 export type CodexCliRunResult = {
@@ -857,8 +1349,15 @@ export type CodexCliRunResult = {
   exitCode: number | null
 }
 
+type CodexCliSubcommandInput = {
+  command?: string
+  cwd?: string
+  codexHome?: string
+  env?: Record<string, string>
+}
+
 /**
- * Run a Codex CLI subcommand (doctor, exec, resume, etc.) against a profile's CODEX_HOME.
+ * Run a Codex CLI subcommand against a profile's CODEX_HOME.
  * Bridges non-interactive / diagnostic CLI features into Jan Studio.
  */
 export async function runCodexCliSubcommand(input: {
@@ -877,16 +1376,154 @@ export async function runCodexCliSubcommand(input: {
   })
 }
 
-export async function runCodexDoctor(input?: {
+export async function runCodexCliNamedCommand(input: {
   command?: string
   codexHome?: string
   cwd?: string
+  env?: Record<string, string>
+  subcommand: string
+  args?: string[]
+}) {
+  return runCodexCliSubcommand({
+    command: input.command ?? 'codex',
+    args: [input.subcommand, ...(input.args ?? [])],
+    cwd: input.cwd,
+    codexHome: input.codexHome,
+    env: input.env,
+  })
+}
+
+export async function runCodexCliProto(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'proto',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliMcp(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'mcp',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliDebug(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'debug',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexLogin(input?: {
+  status?: boolean
+  apiKey?: string
+  command?: string
+  codexHome?: string
+  cwd?: string
+  env?: Record<string, string>
+}) {
+  const args = ['login']
+  if (input?.status) {
+    args.push('status')
+  }
+  if (input?.apiKey?.trim()) {
+    args.push('--api-key', input.apiKey.trim())
+  }
+  return runCodexCliSubcommand({
+    command: input?.command ?? 'codex',
+    args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexLogout(input?: {
+  command?: string
+  codexHome?: string
+  cwd?: string
+  env?: Record<string, string>
 }) {
   return runCodexCliSubcommand({
     command: input?.command ?? 'codex',
-    args: ['doctor'],
+    args: ['logout'],
     codexHome: input?.codexHome,
     cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexVersion(input?: {
+  command?: string
+  codexHome?: string
+  cwd?: string
+  env?: Record<string, string>
+}) {
+  return runCodexCliSubcommand({
+    command: input?.command ?? 'codex',
+    args: ['-V'],
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexApply(input: {
+  taskId: string
+  command?: string
+  codexHome?: string
+  cwd?: string
+  env?: Record<string, string>
+}) {
+  const taskId = input.taskId.trim()
+  if (!taskId) {
+    throw new Error('apply task id is required.')
+  }
+  return runCodexCliSubcommand({
+    command: input.command ?? 'codex',
+    args: ['apply', taskId],
+    codexHome: input.codexHome,
+    cwd: input.cwd,
+    env: input.env,
+  })
+}
+
+export async function runCodexCompletion(input?: {
+  shell?: string
+  command?: string
+  codexHome?: string
+  cwd?: string
+  env?: Record<string, string>
+}) {
+  const args = ['completion']
+  const shell = input?.shell?.trim()
+  if (shell) {
+    args.push(shell)
+  }
+  return runCodexCliSubcommand({
+    command: input?.command ?? 'codex',
+    args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
   })
 }
 
@@ -927,84 +1564,74 @@ export async function runCodexExec(input: {
   })
 }
 
-/**
- * Resume a prior Codex CLI session (`codex resume`). Use sessionId or --last.
- */
-export async function runCodexResume(input: {
-  sessionId?: string
-  prompt?: string
-  last?: boolean
-  command?: string
-  codexHome?: string
-  cwd?: string
-  env?: Record<string, string>
-}) {
-  const args = ['resume']
-  if (input.last) args.push('--last')
-  if (input.sessionId?.trim()) args.push(input.sessionId.trim())
-  if (input.prompt?.trim()) args.push(input.prompt.trim())
-  return runCodexCliSubcommand({
-    command: input.command ?? 'codex',
-    args,
-    codexHome: input.codexHome,
-    cwd: input.cwd,
-    env: input.env,
-  })
+export function getCodexAppServerRuntimeLogs(
+  sessionId: string = GLOBAL_CODEX_APP_SERVER_SESSION_ID,
+  maxChars = 16000
+) {
+  return useCodexAppServerRuntime.getState().getLogText(sessionId, maxChars)
 }
 
-export function getCodexAppServerRuntimeLogs(sessionId?: string, maxChars = 16000) {
-  return useCodexAppServerRuntime.getState().getLogText(sessionId, maxChars)
+function looksLikeMissingMethodError(error: unknown) {
+  const message =
+    typeof error === 'string'
+      ? error
+      : typeof error === 'object' && error !== null
+        ? JSON.stringify(error)
+        : String(error ?? '')
+  return (
+    /method.*not found/i.test(message) ||
+    /unknown method/i.test(message) ||
+    /MethodNotFound/i.test(message) ||
+    /Method was not found/i.test(message) ||
+    /"code":-?32601/.test(message)
+  )
+}
+
+async function requestAppServerMethodWithFallback<T>(
+  janThreadId: string,
+  primaryMethod: string,
+  fallbackMethod: string,
+  params: Record<string, unknown> = {}
+) {
+  try {
+    return (await requireCodexSession(janThreadId).requestAppServer(
+      primaryMethod,
+      params
+    )) as T
+  } catch (error) {
+    if (looksLikeMissingMethodError(error)) {
+      return (await requireCodexSession(janThreadId).requestAppServer(
+        fallbackMethod,
+        params
+      )) as T
+    }
+    throw error
+  }
 }
 
 // Generic escape hatch for other advanced app-server calls surfaced in the client
 // (remoteControl/*, marketplace/*, collaborationMode, environment, apps, config read/write, etc.)
 export async function callCodexAppServer(janThreadId: string, method: string, params?: Record<string, unknown>) {
-  const entry = sessions.get(janThreadId)
-  if (!entry) throw new Error(`No Codex app-server session for thread: ${janThreadId}`)
-  return entry.client.requestAppServer(method, params)
+  return requireCodexSession(janThreadId).requestAppServer(method, params)
 }
 
-function getOrCreateSession(
+/**
+ * Eagerly start the Codex app-server process for a thread so it is ready
+ * when the user sends their first message. Call this when a Codex thread is
+ * opened (e.g. on thread switch) rather than waiting for sendCodexAppServerChatMessage.
+ * Safe to call multiple times — if the session is already running it is a no-op.
+ */
+export async function warmupCodexSession(
   threadId: string,
   provider: ModelProvider,
   model: Model
-) {
-  const options = buildCodexSessionOptions(threadId, provider, model)
-  const signature = JSON.stringify({
-    codexBinaryPath: options.codexBinaryPath,
-    codexHome: options.codexHome,
-    transport: options.transport,
-    cwd: options.cwd,
-    env: options.env,
-    model: options.model,
-    modelProvider: options.modelProvider,
-    approvalPolicy: options.approvalPolicy,
-    sandbox: options.sandbox,
-    configToml: options.configToml,
-    mcpRefreshConfig: options.mcpRefreshConfig,
-    agentsMd: options.agentsMd,
-    subagentMaxThreads: options.subagentMaxThreads,
-    subagentMaxDepth: options.subagentMaxDepth,
-    permissionProfile: options.permissionProfile,
-    addDirs: options.addDirs,
-    customAgents: options.customAgents,
-    advancedConfigSnippet: options.advancedConfigSnippet,
-    // images not in signature as per-turn
+): Promise<void> {
+  const client = await prepareThreadCodexRuntime(threadId, provider, model)
+  await client.startCodexSession().catch(() => {
+    // Warmup failures are non-fatal; the real send will surface the error
   })
-  const existing = sessions.get(threadId)
-  if (existing?.signature === signature) return existing.client
-
-  void existing?.client.shutdownCodex()
-  const client = new CodexAppServerClient({
-    spawner: new TauriCodexProcessSpawner(),
-    options,
-  })
-  sessions.set(threadId, { signature, client })
-  // Sync runtime MCP config after spawn (config.toml is written at process start;
-  // this ensures live Jan MCP curation changes are reflected in the running engine).
-  void client.refreshMcpServers().catch(() => {})
-  return client
 }
+
 
 export function buildCodexSessionOptions(
   threadId: string,
@@ -1062,10 +1689,10 @@ export function buildCodexSessionOptions(
       settingValue(codexSettingsProvider, 'codex-transport')
   )
   const cwd = resolveCodexWorkspaceDir(threadId)
-  const codexHome = activeProfile
-    ? activeProfile.codexHome
-    : codexHomeForWorkspace(cwd)
-  const envKey = activeProfile?.apiKeyEnv || 'JAN_CODEX_PROVIDER_API_KEY'
+  const codexHome = resolveAppCodexHome(activeProfile?.codexHome)
+  const configuredApiKeyEnv = activeProfile?.apiKeyEnv?.trim() || undefined
+  const envKey =
+    configuredApiKeyEnv || (apiKey ? 'JAN_CODEX_PROVIDER_API_KEY' : undefined)
   const { mcpServers, settings: mcpSettings } = useMCPServers.getState()
   const targetModel = (activeProfile && activeProfile.model.trim()) || model.id
   const approvalPolicy = activeProfile?.approvalPolicy || 'on-request'
@@ -1121,7 +1748,7 @@ export function buildCodexSessionOptions(
       }),
       mcp_oauth_credentials_store_mode: 'auto',
     },
-    env: apiKey ? { [envKey]: apiKey } : {},
+    env: apiKey && envKey ? { [envKey]: apiKey } : {},
   }
 }
 
@@ -1171,11 +1798,9 @@ function resolveCodexWorkspaceDir(threadId: string) {
   )
 }
 
-function codexHomeForWorkspace(cwd: string) {
-  const trimmed = cwd.trim().replace(/\/+$/, '')
-  if (!trimmed || trimmed === '.') return './.jan/codex-home'
-  if (trimmed === './') return './.jan/codex-home'
-  return `${trimmed}/.jan/codex-home`
+function resolveAppCodexHome(profileCodexHome?: string) {
+  const trimmed = profileCodexHome?.trim()
+  return trimmed || './.jan/codex-home'
 }
 
 function settingValue(provider: ModelProvider, key: string) {

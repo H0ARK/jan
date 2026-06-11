@@ -130,6 +130,7 @@
     "@vitejs/plugin-react": "4.4.1",
     "@vitest/coverage-v8": "3.2.4",
     "clsx": "2.1.1",
+    "cross-env": "^7.0.3",
     "eslint": "9.25.1",
     "eslint-plugin-react-hooks": "5.2.0",
     "eslint-plugin-react-refresh": "0.4.20",

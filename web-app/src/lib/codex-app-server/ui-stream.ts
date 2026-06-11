@@ -1,4 +1,5 @@
 import type { UIMessageChunk } from 'ai'
+import { useCodexAppServerRuntime } from '@/stores/codex-app-server-runtime-store'
 import type { CodexAppServerEvent } from './types'
 
 export type CodexUIStreamOptions = {
@@ -155,6 +156,14 @@ export function codexEventsToUIMessageStream(
             const decoded = decodeBase64Utf8(value.deltaBase64)
             const accumulated = (processOutputs.get(value.processHandle) ?? '') + decoded
             processOutputs.set(value.processHandle, accumulated)
+            if (decoded) {
+              useCodexAppServerRuntime.getState().appendProcessEvent({
+                processHandle: value.processHandle,
+                stream: value.stream,
+                text: decoded,
+                timestamp: Date.now(),
+              })
+            }
             
             controller.enqueue({
               type: 'data-codex-event',
@@ -168,6 +177,18 @@ export function codexEventsToUIMessageStream(
               },
             } as UIMessageChunk)
             continue
+          }
+
+          if (value.type === 'process_exited') {
+            useCodexAppServerRuntime.getState().appendProcessEvent({
+              processHandle: value.processHandle,
+              stream: 'system',
+              text: `exit ${value.exitCode}`,
+              exitCode: value.exitCode,
+              stdout: value.stdout,
+              stderr: value.stderr,
+              timestamp: Date.now(),
+            })
           }
 
           if (value.type === 'plan_delta') {

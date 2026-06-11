@@ -61,8 +61,8 @@ import { useAutoScroll } from '@/hooks/useAutoScroll'
 import { WorkspacePanelsLayout } from '@/containers/ModelToolsPanel'
 
 import {
-  isCodexAppServerProvider,
   steerCodexSubThreadEvents,
+  warmupCodexSession,
 } from '@/lib/codex-app-server'
 import { CodexActivityPart } from '@/components/ai-elements/codex-activity'
 import { toast } from 'sonner'
@@ -560,6 +560,16 @@ function ThreadDetail() {
     titleAbortRef.current = null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId])
+
+  // Eagerly prepare the global Codex runtime when a thread is opened so MCP
+  // servers and persisted Codex thread bindings are ready before first send.
+  useEffect(() => {
+    const provider = useModelProvider.getState().getProviderByName(selectedProvider ?? '')
+    const model = useModelProvider.getState().selectedModel
+    if (!provider || !model) return
+    void warmupCodexSession(threadId, provider, model)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId, selectedProvider])
 
   // Load messages on first mount
   useEffect(() => {
@@ -1324,9 +1334,6 @@ function ThreadDetail() {
       threadId,
     }
   }, [thread?.title, threadId])
-  const selectedProviderForCodex = useModelProvider((s) => s.selectedProvider)
-  const isCodex = isCodexAppServerProvider(selectedProviderForCodex)
-
   const [inspectSubThreadId, setInspectSubThreadId] = useState<string | null>(
     null
   )
@@ -1439,7 +1446,7 @@ function ThreadDetail() {
                    - Steering form: send follow-up instructions directly to a chosen subagent (turn/steer on its threadId).
                    - Like the Codex TUI /agent switcher + direct interaction with children.
                 */}
-                {isCodex && subagents.length > 0 && (
+                {subagents.length > 0 && (
                   <div className="mb-3 p-2 border rounded-md bg-muted/10 text-sm">
                     <div className="font-medium mb-1 flex items-center gap-2">
                       Subagents ({subagents.length})

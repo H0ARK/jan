@@ -36,6 +36,8 @@
     "download:bin": "node ./scripts/download-bin.mjs",
     "build:mlx-server": "make build-mlx-server",
     "build:cli": "make build-cli",
+    "codex:parity:cli": "node ./scripts/codex/cli/parity-check.mjs",
+    "codex:parity:cli:commands": "node ./scripts/codex/cli/commands-check.mjs",
     "build:tauri:win32": "yarn download:bin && yarn build:cli && yarn tauri build",
     "build:tauri:linux": "yarn download:bin && yarn build:cli && NO_STRIP=1 ./src-tauri/build-utils/shim-linuxdeploy.sh yarn tauri build && ./src-tauri/build-utils/buildAppImage.sh",
     "build:tauri:darwin": "yarn download:bin && yarn build:mlx-server && yarn build:cli && yarn tauri build --target universal-apple-darwin",

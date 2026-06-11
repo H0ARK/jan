@@ -494,6 +494,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
 
   constructor(systemMessage?: string, threadId?: string) {
     this.systemMessage = systemMessage
+    void this.systemMessage
     this.threadId = threadId
     this.serviceHub = useServiceStore.getState().serviceHub
     // Tools will be loaded when updateRagToolsAvailability is called with model capabilities
@@ -511,6 +512,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
 
   updateSystemMessage(systemMessage: string | undefined) {
     this.systemMessage = systemMessage
+    void this.systemMessage
   }
 
   // Inference params follow the thread's assigned assistant so in-chat agent
@@ -518,7 +520,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
   // (model-only / "None") uses no assistant params — matching the switcher.
   // Only off-thread (no threadId / thread not yet in store) do we fall back to
   // the global current assistant.
-  private getActiveInferenceParams(): Record<string, unknown> {
+  getActiveInferenceParams(): Record<string, unknown> {
     const thread = this.threadId
       ? useThreads.getState().threads[this.threadId]
       : undefined
@@ -533,6 +535,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
 
   setOnTokenUsage(callback: TokenUsageCallback | undefined) {
     this.onTokenUsage = callback
+    void this.onTokenUsage
   }
 
   /**
@@ -771,6 +774,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
    */
   setContinueFromContent(content: string) {
     this.continueFromContent = content
+    void this.continueFromContent
   }
 
   async sendMessages(

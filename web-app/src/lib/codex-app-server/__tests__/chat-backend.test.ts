@@ -1,15 +1,18 @@
 import type { UIMessage } from '@ai-sdk/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CodexAppServerEvent } from '../types'
+import type { CodexAppServerEvent, CodexSessionOptions } from '../types'
 import { invoke } from '@tauri-apps/api/core'
 import {
   approveCodexAppServerAction,
   buildCodexSessionOptions,
   clearCodexAppServerChatSessionsForTests,
   getCodexAppServerRuntimeLogs,
-  runCodexDoctor,
   runCodexExec,
-  runCodexResume,
+  runCodexCliDebug,
+  runCodexCliMcp,
+  runCodexCliProto,
+  runCodexLogout,
+  runCodexVersion,
   sendCodexAppServerChatMessage,
   startCodexReview,
   steerCodexSubThread,
@@ -18,6 +21,10 @@ import {
 
 const mockRuntimePermission = vi.hoisted(() => ({
   requestPermission: vi.fn(),
+}))
+
+const mockCodexUserInput = vi.hoisted(() => ({
+  requestUserInput: vi.fn(async () => ({})),
 }))
 
 const mockAppState = vi.hoisted(() => ({
@@ -29,12 +36,23 @@ const mockAppState = vi.hoisted(() => ({
   setServerStatus: vi.fn(),
 }))
 
+const mockGlobalRuntime = vi.hoisted(() => ({
+  client: null as {
+    shutdownCodex: ReturnType<typeof vi.fn>
+  } | null,
+  processSignature: '',
+  applyCodexRuntimeOptions: vi.fn(async () => {}),
+}))
+
 const mockSessionState = vi.hoisted(() => ({
   instances: [] as Array<{
     sendToCodex: ReturnType<typeof vi.fn>
     approveAction: ReturnType<typeof vi.fn>
     interruptTurn: ReturnType<typeof vi.fn>
     shutdownCodex: ReturnType<typeof vi.fn>
+    setThreadOptions: ReturnType<typeof vi.fn>
+    startCodexSession: ReturnType<typeof vi.fn>
+    reloadUserConfig: ReturnType<typeof vi.fn>
   }>,
   constructorParams: [] as unknown[],
   serverEvents: [] as CodexAppServerEvent[],
@@ -58,8 +76,14 @@ const mockThreadsState = vi.hoisted(() => ({
     'thread-1': { id: 'thread-1', title: 'Thread 1', metadata: {} },
   } as Record<
     string,
-    { id: string; title?: string; metadata?: Record<string, unknown> }
+    {
+      id: string
+      title?: string
+      metadata?: Record<string, unknown>
+      updated?: number
+    }
   >,
+  updateThread: vi.fn(),
 }))
 
 const mockWorkspaceState = vi.hoisted(() => ({
@@ -162,6 +186,12 @@ vi.mock('@/stores/runtime-permission-store', () => ({
   },
 }))
 
+vi.mock('@/stores/codex-user-input-store', () => ({
+  useCodexUserInput: {
+    getState: () => mockCodexUserInput,
+  },
+}))
+
 vi.mock('@/hooks/useAppState', () => ({
   useAppState: {
     getState: () => ({
@@ -175,6 +205,7 @@ vi.mock('@/hooks/useThreads', () => ({
   useThreads: {
     getState: () => ({
       threads: mockThreadsState.threads,
+      updateThread: mockThreadsState.updateThread,
     }),
   },
 }))
@@ -200,6 +231,52 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('../tauri-process', () => ({
   TauriCodexProcessSpawner: class {},
 }))
+
+vi.mock('../global-codex-runtime', async () => {
+  const { buildCodexProcessSignature, buildCodexRuntimeSignature } =
+    await vi.importActual<typeof import('../global-codex-runtime')>(
+      '../global-codex-runtime'
+    )
+
+  return {
+    GLOBAL_CODEX_APP_SERVER_SESSION_ID: 'jan-global-codex-app-server',
+    buildCodexProcessSignature,
+    buildCodexRuntimeSignature,
+    getGlobalCodexClientOrNull: () => mockGlobalRuntime.client,
+    ensureGlobalCodexAppServer: vi.fn(async (spawnOptions: CodexSessionOptions) => {
+      const processSignature = buildCodexProcessSignature(spawnOptions)
+      if (
+        mockGlobalRuntime.client &&
+        mockGlobalRuntime.processSignature === processSignature
+      ) {
+        return mockGlobalRuntime.client
+      }
+
+      if (mockGlobalRuntime.client) {
+        await mockGlobalRuntime.client.shutdownCodex()
+      }
+
+      const { CodexAppServerClient } = await import('../api')
+      mockGlobalRuntime.client = new CodexAppServerClient({
+        spawner: {},
+        options: spawnOptions,
+      })
+      mockGlobalRuntime.processSignature = processSignature
+      return mockGlobalRuntime.client
+    }),
+    applyCodexRuntimeOptions: mockGlobalRuntime.applyCodexRuntimeOptions,
+    shutdownGlobalCodexAppServer: vi.fn(async () => {
+      mockGlobalRuntime.client = null
+      mockGlobalRuntime.processSignature = ''
+    }),
+    clearGlobalCodexThreadBinding: vi.fn(),
+    resetGlobalCodexRuntimeForTests: vi.fn(() => {
+      mockGlobalRuntime.client = null
+      mockGlobalRuntime.processSignature = ''
+      mockGlobalRuntime.applyCodexRuntimeOptions.mockClear()
+    }),
+  }
+})
 
 vi.mock('../api', () => ({
   CodexAppServerClient: class {
@@ -227,6 +304,10 @@ vi.mock('../api', () => ({
     approveAction = vi.fn()
     interruptTurn = vi.fn()
     shutdownCodex = vi.fn()
+    setThreadOptions = vi.fn()
+    seedCodexThreadBinding = vi.fn()
+    startCodexSession = vi.fn().mockResolvedValue({ userAgent: 'jan-test' })
+    reloadUserConfig = vi.fn().mockResolvedValue({})
     startReview = vi.fn().mockResolvedValue({ reviewId: 'review-1' })
     refreshMcpServers = vi.fn().mockResolvedValue({})
     steerThread = vi.fn().mockResolvedValue({ turnId: 'steer-turn-1' })
@@ -279,6 +360,9 @@ const collect = async (stream: ReadableStream) => {
 describe('Codex chat backend approval bridge', () => {
   beforeEach(() => {
     clearCodexAppServerChatSessionsForTests()
+    mockGlobalRuntime.client = null
+    mockGlobalRuntime.processSignature = ''
+    mockGlobalRuntime.applyCodexRuntimeOptions.mockClear()
     mockSessionState.instances.length = 0
     mockSessionState.constructorParams.length = 0
     mockSessionState.approvalRequest = {
@@ -299,6 +383,9 @@ describe('Codex chat backend approval bridge', () => {
     mockSessionState.serverEvents = []
     mockRuntimePermission.requestPermission.mockReset()
     mockRuntimePermission.requestPermission.mockResolvedValue(true)
+    mockCodexUserInput.requestUserInput.mockReset()
+    mockCodexUserInput.requestUserInput.mockResolvedValue({})
+    mockThreadsState.updateThread.mockReset()
     Object.values(mockAppState).forEach((fn) => fn.mockReset())
     mockProfilesState.profiles = {}
     mockProfilesState.activeProfileId = null
@@ -513,11 +600,8 @@ describe('Codex chat backend approval bridge', () => {
   })
 
   it('collects Codex tool user input answers when questions are provided', async () => {
-    const originalPrompt = globalThis.prompt
-    const prompt = vi.fn().mockReturnValue('selected value')
-    Object.defineProperty(globalThis, 'prompt', {
-      value: prompt,
-      configurable: true,
+    mockCodexUserInput.requestUserInput.mockResolvedValue({
+      target_file: 'selected value',
     })
     mockSessionState.serverEvents = [
       {
@@ -543,26 +627,81 @@ describe('Codex chat backend approval bridge', () => {
       },
     ]
 
-    try {
-      const stream = await sendCodexAppServerChatMessage({
-        threadId: 'thread-1',
-        messages,
-        provider,
-        model,
-      })
+    const stream = await sendCodexAppServerChatMessage({
+      threadId: 'thread-1',
+      messages,
+      provider,
+      model,
+    })
 
-      await collect(stream)
-    } finally {
-      Object.defineProperty(globalThis, 'prompt', {
-        value: originalPrompt,
-        configurable: true,
-      })
-    }
+    await collect(stream)
 
-    expect(prompt).toHaveBeenCalledWith('Which file should Codex inspect?')
+    expect(mockCodexUserInput.requestUserInput).toHaveBeenCalledWith([
+      {
+        id: 'target_file',
+        label: 'Which file should Codex inspect?',
+      },
+    ])
     expect(mockSessionState.instances[0].approveAction).toHaveBeenCalledWith(
       'server-request-3b',
       { answers: { target_file: 'selected value' } }
+    )
+  })
+
+  it('seeds persisted Codex thread bindings before chat turns', async () => {
+    mockThreadsState.threads = {
+      'thread-1': {
+        id: 'thread-1',
+        title: 'Thread 1',
+        metadata: { codex: { threadId: 'codex-thread-persisted' } },
+      },
+    }
+
+    await sendCodexAppServerChatMessage({
+      threadId: 'thread-1',
+      messages,
+      provider,
+      model,
+    })
+
+    expect(mockSessionState.instances[0].seedCodexThreadBinding).toHaveBeenCalledWith(
+      'thread-1',
+      'codex-thread-persisted'
+    )
+  })
+
+  it('persists Codex thread ids when thread_started events stream', async () => {
+    mockSessionState.serverEvents = [
+      {
+        type: 'thread_started',
+        appThreadId: 'thread-1',
+        threadId: 'codex-thread-live',
+        thread: { id: 'codex-thread-live' },
+      },
+      {
+        type: 'turn_completed',
+        threadId: 'codex-thread-live',
+        turnId: 'turn-1',
+        turn: { id: 'turn-1', status: 'completed' },
+      },
+    ]
+
+    const stream = await sendCodexAppServerChatMessage({
+      threadId: 'thread-1',
+      messages,
+      provider,
+      model,
+    })
+
+    await collect(stream)
+
+    expect(mockThreadsState.updateThread).toHaveBeenCalledWith(
+      'thread-1',
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          codex: { threadId: 'codex-thread-live' },
+        }),
+      })
     )
   })
 
@@ -705,7 +844,7 @@ describe('Codex chat backend approval bridge', () => {
     expect(options).toEqual(
       expect.objectContaining({
         codexBinaryPath: '/usr/local/bin/codex',
-        codexHome: '/Users/conrad/project-one/.jan/codex-home',
+        codexHome: './.jan/codex-home',
         cwd: '/Users/conrad/project-one',
         model: 'gpt-oss:20b',
         modelProvider: 'jan-openrouter',
@@ -840,7 +979,7 @@ describe('Codex chat backend approval bridge', () => {
     expect(buildCodexSessionOptions('thread-1', provider, model)).toEqual(
       expect.objectContaining({
         cwd: '/Users/conrad/chat-space/',
-        codexHome: '/Users/conrad/chat-space/.jan/codex-home',
+        codexHome: './.jan/codex-home',
       })
     )
 
@@ -945,7 +1084,7 @@ describe('Codex chat backend approval bridge', () => {
     )
   })
 
-  it('reuses sessions for stable runtime signatures and replaces them when config changes', async () => {
+  it('reuses the global Codex process and syncs runtime config when provider settings change', async () => {
     await sendCodexAppServerChatMessage({
       threadId: 'thread-1',
       messages,
@@ -964,24 +1103,20 @@ describe('Codex chat backend approval bridge', () => {
     await sendCodexAppServerChatMessage({
       threadId: 'thread-1',
       messages,
-      provider: providerWithSettings({ baseUrl: 'http://127.0.0.1:11434/v1' }),
+      provider: providerWithSettings({
+        apiKey: 'test-key',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+      }),
       model,
     })
 
-    expect(mockSessionState.instances).toHaveLength(2)
-    expect(mockSessionState.instances[0].shutdownCodex).toHaveBeenCalled()
-    expect(mockSessionState.constructorParams[1]).toEqual(
-      expect.objectContaining({
-        options: expect.objectContaining({
-          configToml: expect.stringContaining(
-            'base_url = "http://127.0.0.1:11434/v1"'
-          ),
-        }),
-      })
-    )
+    expect(mockSessionState.instances).toHaveLength(1)
+    expect(mockSessionState.instances[0].shutdownCodex).not.toHaveBeenCalled()
+    expect(mockGlobalRuntime.applyCodexRuntimeOptions).toHaveBeenCalled()
+    expect(mockSessionState.instances[0].setThreadOptions).toHaveBeenCalled()
   })
 
-  it('replaces sessions when active MCP servers change', async () => {
+  it('syncs runtime config when active MCP servers change without restarting Codex', async () => {
     await sendCodexAppServerChatMessage({
       threadId: 'thread-1',
       messages,
@@ -1007,18 +1142,12 @@ describe('Codex chat backend approval bridge', () => {
       model,
     })
 
-    expect(mockSessionState.instances).toHaveLength(2)
-    expect(mockSessionState.instances[0].shutdownCodex).toHaveBeenCalled()
-    expect(mockSessionState.constructorParams[1]).toEqual(
-      expect.objectContaining({
-        options: expect.objectContaining({
-          configToml: expect.stringContaining('[mcp_servers.exa]'),
-        }),
-      })
-    )
+    expect(mockSessionState.instances).toHaveLength(1)
+    expect(mockSessionState.instances[0].shutdownCodex).not.toHaveBeenCalled()
+    expect(mockGlobalRuntime.applyCodexRuntimeOptions).toHaveBeenCalledTimes(2)
   })
 
-  it('replaces sessions when provider env changes', async () => {
+  it('restarts the global Codex process when provider env changes', async () => {
     await sendCodexAppServerChatMessage({
       threadId: 'thread-1',
       messages,
@@ -1254,19 +1383,85 @@ describe('Codex chat backend approval bridge', () => {
     )
   })
 
-  it('runs codex doctor via Tauri CLI bridge', async () => {
+  it('runs codex logout via Tauri CLI bridge', async () => {
     vi.mocked(invoke).mockResolvedValueOnce({
-      stdout: 'All checks passed',
+      stdout: 'Credentials removed',
       stderr: '',
       exitCode: 0,
     })
 
-    const result = await runCodexDoctor({ codexHome: '/tmp/codex-home' })
+    const result = await runCodexLogout({ codexHome: '/tmp/codex-home' })
 
     expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
       command: 'codex',
-      args: ['doctor'],
+      args: ['logout'],
       cwd: null,
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex mcp via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliMcp({
+      codexHome: '/tmp/codex-home',
+      args: ['-c', 'foo=bar'],
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['mcp', '-c', 'foo=bar'],
+      cwd: null,
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex proto via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliProto({
+      args: ['--help'],
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['proto', '--help'],
+      cwd: null,
+      codexHome: null,
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex debug via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliDebug({
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+      args: ['help'],
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['debug', 'help'],
+      cwd: '/repo',
       codexHome: '/tmp/codex-home',
       extraEnv: null,
     })
@@ -1308,26 +1503,25 @@ describe('Codex chat backend approval bridge', () => {
     })
   })
 
-  it('runs codex resume with --last and optional prompt', async () => {
+  it('reads codex version via Tauri CLI bridge', async () => {
     vi.mocked(invoke).mockResolvedValueOnce({
-      stdout: 'resumed',
+      stdout: 'codex 0.1.0',
       stderr: '',
       exitCode: 0,
     })
 
-    await runCodexResume({
-      last: true,
-      prompt: 'continue where we left off',
+    const result = await runCodexVersion({
       codexHome: '/tmp/codex-home',
     })
 
     expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
       command: 'codex',
-      args: ['resume', '--last', 'continue where we left off'],
+      args: ['-V'],
       cwd: null,
       codexHome: '/tmp/codex-home',
       extraEnv: null,
     })
+    expect(result.stdout).toBe('codex 0.1.0')
   })
 
   it('emits profile agentsMd, customAgents, addDirs, and advanced config to session options', () => {

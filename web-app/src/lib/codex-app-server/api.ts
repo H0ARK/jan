@@ -134,6 +134,30 @@ export class CodexAppServerClient {
     return this.session.initialize()
   }
 
+  setThreadOptions(threadId: string, options: CodexSessionOptions) {
+    if ('setThreadOptions' in this.session) {
+      this.session.setThreadOptions(threadId, options)
+    }
+  }
+
+  seedCodexThreadBinding(threadId: string, codexThreadId: string) {
+    if ('seedCodexThreadBinding' in this.session) {
+      this.session.seedCodexThreadBinding(threadId, codexThreadId)
+    }
+  }
+
+  clearThreadBinding(threadId: string) {
+    if ('clearThreadBinding' in this.session) {
+      this.session.clearThreadBinding(threadId)
+    }
+  }
+
+  clearAllThreadBindings() {
+    if ('clearAllThreadBindings' in this.session) {
+      this.session.clearAllThreadBindings()
+    }
+  }
+
   sendToCodex(
     threadId: string,
     message: string,

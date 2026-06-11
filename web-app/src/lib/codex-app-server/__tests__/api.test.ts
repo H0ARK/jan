@@ -108,7 +108,7 @@ class ScriptedCodexProcess implements CodexProcess {
       this.emit({ id: message.id, result: { interrupted: true } })
     }
 
-    if (message.method === 'thread/compact/start') {
+    if (message.method === 'thread/compact/start' || message.method === 'thread/compact') {
       this.emit({ id: message.id, result: {} })
     }
 
@@ -135,7 +135,7 @@ class ScriptedCodexProcess implements CodexProcess {
       })
     }
 
-    if (message.method === 'review/start') {
+    if (message.method === 'review/start' || message.method === 'thread/review') {
       this.emit({
         id: message.id,
         result: {
@@ -289,6 +289,7 @@ class ScriptedCodexProcess implements CodexProcess {
       },
       'tool/requestUserInput': { answers: { confirm: 'yes' } },
       'mcpServerStatus/list': { servers: [] },
+      'mcpServer/status/list': { servers: [] },
       'mcpServer/resource/read': { contents: [] },
       'mcpServer/tool/call': { content: [] },
       'windowsSandbox/setupStart': { started: true },
@@ -299,6 +300,8 @@ class ScriptedCodexProcess implements CodexProcess {
       'configRequirements/read': { requirements: null },
       'thread/list': { threads: [{ id: 'codex-thread-1' }] },
       'thread/loaded/list': { threadIds: ['codex-thread-1'] },
+      'thread/compact': {},
+      'thread/compact/start': {},
       'thread/read': { thread: { id: 'codex-thread-1' } },
       'thread/turns/list': { turns: [], nextCursor: null },
       'thread/turns/items/list': { items: [] },
@@ -314,6 +317,14 @@ class ScriptedCodexProcess implements CodexProcess {
       'thread/unsubscribe': {},
       'thread/name/set': {},
       'thread/unarchive': { thread: { id: 'codex-thread-1' } },
+      'review/start': {
+        turn: { id: 'review-turn-1', status: 'running' },
+        reviewThreadId: 'codex-thread-1',
+      },
+      'thread/review': {
+        turn: { id: 'review-turn-1', status: 'running' },
+        reviewThreadId: 'codex-thread-1',
+      },
       'thread/inject_items': {},
       'thread/backgroundTerminals/clean': {},
       'thread/realtime/start': {},

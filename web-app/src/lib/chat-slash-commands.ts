@@ -9,7 +9,6 @@ import {
   reloadCodexUserConfig,
   refreshCodexMcpServers,
   rollbackCodexThread,
-  runCodexDoctor,
   startCodexReview,
 } from '@/lib/codex-app-server'
 
@@ -104,10 +103,6 @@ export async function executeChatSlashCommand(
     case 'reload': {
       if (!threadId) throw new Error('Start a chat before running /reload')
       await reloadCodexUserConfig(threadId)
-      return
-    }
-    case 'doctor': {
-      await runCodexDoctor()
       return
     }
     case 'mcp': {

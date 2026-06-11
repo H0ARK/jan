@@ -13,9 +13,12 @@ import { useCodexProviderProfiles } from '@/stores/codex-provider-profile-store'
 import { useRuntimePermission } from '@/stores/runtime-permission-store'
 import { useThreads } from '@/hooks/useThreads'
 import {
-  runCodexDoctor,
+  runCodexApply,
+  runCodexCompletion,
+  runCodexLogout,
+  runCodexLogin,
+  runCodexVersion,
   runCodexExec,
-  runCodexResume,
   readCodexRemoteControlStatus,
   enableCodexRemoteControl,
   disableCodexRemoteControl,
@@ -128,15 +131,14 @@ function ModelSettingsSection({
     manifestPath: string
     envPath: string
   } | null>(null)
-  const [doctorLoading, setDoctorLoading] = useState(false)
-  const [doctorResult, setDoctorResult] = useState<string | null>(null)
   const [execPrompt, setExecPrompt] = useState('Summarize uncommitted changes')
   const [execLoading, setExecLoading] = useState(false)
   const [execResult, setExecResult] = useState<string | null>(null)
-  const [resumeSessionId, setResumeSessionId] = useState('')
-  const [resumePrompt, setResumePrompt] = useState('')
-  const [resumeLoading, setResumeLoading] = useState(false)
-  const [resumeResult, setResumeResult] = useState<string | null>(null)
+  const [cliCliLoading, setCliCliLoading] = useState(false)
+  const [applyTaskId, setApplyTaskId] = useState('')
+  const [completionShell, setCompletionShell] = useState('bash')
+  const [loginApiKey, setLoginApiKey] = useState('')
+  const [cliCliResult, setCliCliResult] = useState<string | null>(null)
   const [remoteStatus, setRemoteStatus] = useState<unknown>(null)
   const [remoteLoading, setRemoteLoading] = useState(false)
   const [permissionProfiles, setPermissionProfiles] = useState<unknown>(null)
@@ -722,132 +724,324 @@ function ModelSettingsSection({
             </div>
           </label>
 
-          {/* Codex CLI doctor + remote app-server management */}
+          {/* Codex CLI + remote app-server management */}
           <div className="rounded-md border border-border/60 bg-muted/5 p-2 text-xs col-span-2 space-y-2">
             <div className="font-medium">Codex CLI & Remote App-Server</div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                size="xs"
-                disabled={doctorLoading || !activeProfile}
-                onClick={async () => {
-                  if (!activeProfile) return
-                  setDoctorLoading(true)
-                  setDoctorResult(null)
-                  try {
-                    const result = await runCodexDoctor({
-                      codexHome: activeProfile.codexHome,
-                    })
-                    const text = [result.stdout, result.stderr]
-                      .filter(Boolean)
-                      .join('\n')
-                      .trim()
-                    setDoctorResult(
-                      text ||
-                        `Exit code: ${result.exitCode ?? 'unknown'}`
-                    )
-                    if (result.exitCode === 0) {
-                      toast.success('Codex doctor completed')
-                    } else {
-                      toast.error('Codex doctor reported issues')
+            <div className="grid gap-2">
+              <div className="flex flex-wrap gap-2">
+                <Input
+                  className="h-7 text-[10px] font-mono max-w-[220px]"
+                  placeholder="Completion shell (bash/zsh/fish)"
+                  value={completionShell}
+                  onChange={(e) => setCompletionShell(e.target.value)}
+                />
+                <Input
+                  className="h-7 text-[10px] font-mono max-w-[210px]"
+                  placeholder="Login API key (optional)"
+                  value={loginApiKey}
+                  onChange={(e) => setLoginApiKey(e.target.value)}
+                />
+                <Input
+                  className="h-7 text-[10px] font-mono max-w-[260px]"
+                  placeholder="Task id for codex apply"
+                  value={applyTaskId}
+                  onChange={(e) => setApplyTaskId(e.target.value)}
+                />
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={cliCliLoading || !activeProfile || !applyTaskId.trim()}
+                  onClick={async () => {
+                    if (!activeProfile) return
+                    const taskId = applyTaskId.trim()
+                    if (!taskId) return
+                    setCliCliLoading(true)
+                    setCliCliResult(null)
+                    try {
+                      const result = await runCodexApply({
+                        taskId,
+                        codexHome: activeProfile.codexHome,
+                      })
+                      const text = [result.stdout, result.stderr]
+                        .filter(Boolean)
+                        .join('\n')
+                        .trim()
+                      setCliCliResult(
+                        text || `Exit code: ${result.exitCode ?? 'unknown'}`
+                      )
+                      if (result.exitCode === 0) {
+                        toast.success('Codex apply completed')
+                      } else {
+                        toast.error('Codex apply reported issues')
+                      }
+                    } catch (e) {
+                      setCliCliResult(String(e))
+                      toast.error('Codex apply failed')
+                    } finally {
+                      setCliCliLoading(false)
                     }
-                  } catch (e) {
-                    setDoctorResult(String(e))
-                    toast.error('Codex doctor failed')
-                  } finally {
-                    setDoctorLoading(false)
-                  }
-                }}
-              >
-                {doctorLoading ? 'Running doctor…' : 'Run codex doctor'}
-              </Button>
-              <Button
-                variant="outline"
-                size="xs"
-                disabled={remoteLoading || !currentThreadId}
-                onClick={async () => {
-                  if (!currentThreadId) return
-                  setRemoteLoading(true)
-                  try {
-                    const status = await readCodexRemoteControlStatus(
-                      currentThreadId
-                    )
-                    setRemoteStatus(status)
-                  } catch (e) {
-                    setRemoteStatus({ error: String(e) })
-                  } finally {
-                    setRemoteLoading(false)
-                  }
-                }}
-              >
-                Remote status
-              </Button>
-              <Button
-                variant="outline"
-                size="xs"
-                disabled={!currentThreadId}
-                onClick={async () => {
-                  if (!currentThreadId) return
-                  try {
-                    await enableCodexRemoteControl(currentThreadId)
-                    toast.success('Remote control enabled')
-                    setRemoteStatus(
-                      await readCodexRemoteControlStatus(currentThreadId)
-                    )
-                  } catch (e) {
-                    toast.error(String(e))
-                  }
-                }}
-              >
-                Enable remote
-              </Button>
-              <Button
-                variant="outline"
-                size="xs"
-                disabled={!currentThreadId}
-                onClick={async () => {
-                  if (!currentThreadId) return
-                  try {
-                    await disableCodexRemoteControl(currentThreadId)
-                    toast.success('Remote control disabled')
-                    setRemoteStatus(
-                      await readCodexRemoteControlStatus(currentThreadId)
-                    )
-                  } catch (e) {
-                    toast.error(String(e))
-                  }
-                }}
-              >
-                Disable remote
-              </Button>
-              <Button
-                variant="outline"
-                size="xs"
-                disabled={!currentThreadId}
-                onClick={async () => {
-                  if (!currentThreadId) return
-                  try {
-                    const pairing = await startCodexRemoteControlPairing(
-                      currentThreadId,
-                      { manualCode: true }
-                    )
-                    setRemoteStatus(pairing)
-                    toast.success('Remote pairing started')
-                  } catch (e) {
-                    toast.error(String(e))
-                  }
-                }}
-              >
-                Start pairing
-              </Button>
+                  }}
+                >
+                  {cliCliLoading ? 'Running apply…' : 'Run codex apply'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={cliCliLoading}
+                  onClick={async () => {
+                    setCliCliLoading(true)
+                    setCliCliResult(null)
+                    try {
+                      const result = await runCodexCompletion({
+                        shell: completionShell.trim() || 'bash',
+                        codexHome: activeProfile?.codexHome,
+                      })
+                      const text = [result.stdout, result.stderr]
+                        .filter(Boolean)
+                        .join('\n')
+                        .trim()
+                      setCliCliResult(
+                        text || `Exit code: ${result.exitCode ?? 'unknown'}`
+                      )
+                      if (result.exitCode === 0) {
+                        toast.success('Codex completion generated')
+                      } else {
+                        toast.error('Codex completion reported issues')
+                      }
+                    } catch (e) {
+                      setCliCliResult(String(e))
+                      toast.error('Codex completion failed')
+                    } finally {
+                      setCliCliLoading(false)
+                    }
+                  }}
+                >
+                  {cliCliLoading ? 'Generating…' : 'Run codex completion'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={cliCliLoading}
+                  onClick={async () => {
+                    setCliCliLoading(true)
+                    setCliCliResult(null)
+                    try {
+                      const result = await runCodexLogin({
+                        apiKey: loginApiKey.trim() || undefined,
+                        codexHome: activeProfile?.codexHome,
+                      })
+                      const text = [result.stdout, result.stderr]
+                        .filter(Boolean)
+                        .join('\n')
+                        .trim()
+                      setCliCliResult(
+                        text || `Exit code: ${result.exitCode ?? 'unknown'}`
+                      )
+                      if (result.exitCode === 0) {
+                        toast.success('Codex login executed')
+                      } else {
+                        toast.error('Codex login reported issues')
+                      }
+                    } catch (e) {
+                      setCliCliResult(String(e))
+                      toast.error('Codex login failed')
+                    } finally {
+                      setCliCliLoading(false)
+                    }
+                  }}
+                >
+                  {cliCliLoading ? 'Running login…' : 'Run codex login'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={cliCliLoading}
+                  onClick={async () => {
+                    setCliCliLoading(true)
+                    setCliCliResult(null)
+                    try {
+                      const result = await runCodexLogin({
+                        status: true,
+                        codexHome: activeProfile?.codexHome,
+                      })
+                      const text = [result.stdout, result.stderr]
+                        .filter(Boolean)
+                        .join('\n')
+                        .trim()
+                      setCliCliResult(
+                        text || `Exit code: ${result.exitCode ?? 'unknown'}`
+                      )
+                      if (result.exitCode === 0) {
+                        toast.success('Codex login status retrieved')
+                      } else {
+                        toast.error('Codex login status reported issues')
+                      }
+                    } catch (e) {
+                      setCliCliResult(String(e))
+                      toast.error('Codex login status failed')
+                    } finally {
+                      setCliCliLoading(false)
+                    }
+                  }}
+                >
+                  {cliCliLoading ? 'Checking…' : 'Run codex login status'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={cliCliLoading}
+                  onClick={async () => {
+                    setCliCliLoading(true)
+                    setCliCliResult(null)
+                    try {
+                      const result = await runCodexLogout({
+                        codexHome: activeProfile?.codexHome,
+                      })
+                      const text = [result.stdout, result.stderr]
+                        .filter(Boolean)
+                        .join('\n')
+                        .trim()
+                      setCliCliResult(
+                        text || `Exit code: ${result.exitCode ?? 'unknown'}`
+                      )
+                      if (result.exitCode === 0) {
+                        toast.success('Codex logout completed')
+                      } else {
+                        toast.error('Codex logout reported issues')
+                      }
+                    } catch (e) {
+                      setCliCliResult(String(e))
+                      toast.error('Codex logout failed')
+                    } finally {
+                      setCliCliLoading(false)
+                    }
+                  }}
+                >
+                  {cliCliLoading ? 'Running logout…' : 'Run codex logout'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={cliCliLoading}
+                  onClick={async () => {
+                    setCliCliLoading(true)
+                    setCliCliResult(null)
+                    try {
+                      const result = await runCodexVersion({
+                        codexHome: activeProfile?.codexHome,
+                      })
+                      const text = [result.stdout, result.stderr]
+                        .filter(Boolean)
+                        .join('\n')
+                        .trim()
+                      setCliCliResult(
+                        text || `Exit code: ${result.exitCode ?? 'unknown'}`
+                      )
+                      if (result.exitCode === 0) {
+                        toast.success('Codex version retrieved')
+                      } else {
+                        toast.error('Codex version reported issues')
+                      }
+                    } catch (e) {
+                      setCliCliResult(String(e))
+                      toast.error('Codex version failed')
+                    } finally {
+                      setCliCliLoading(false)
+                    }
+                  }}
+                >
+                  {cliCliLoading ? 'Checking…' : 'Run codex version'}
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={remoteLoading || !currentThreadId}
+                  onClick={async () => {
+                    if (!currentThreadId) return
+                    setRemoteLoading(true)
+                    try {
+                      const status = await readCodexRemoteControlStatus(
+                        currentThreadId
+                      )
+                      setRemoteStatus(status)
+                    } catch (e) {
+                      setRemoteStatus({ error: String(e) })
+                    } finally {
+                      setRemoteLoading(false)
+                    }
+                  }}
+                >
+                  Remote status
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={!currentThreadId}
+                  onClick={async () => {
+                    if (!currentThreadId) return
+                    try {
+                      await enableCodexRemoteControl(currentThreadId)
+                      toast.success('Remote control enabled')
+                      setRemoteStatus(
+                        await readCodexRemoteControlStatus(currentThreadId)
+                      )
+                    } catch (e) {
+                      toast.error(String(e))
+                    }
+                  }}
+                >
+                  Enable remote
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={!currentThreadId}
+                  onClick={async () => {
+                    if (!currentThreadId) return
+                    try {
+                      await disableCodexRemoteControl(currentThreadId)
+                      toast.success('Remote control disabled')
+                      setRemoteStatus(
+                        await readCodexRemoteControlStatus(currentThreadId)
+                      )
+                    } catch (e) {
+                      toast.error(String(e))
+                    }
+                  }}
+                >
+                  Disable remote
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={!currentThreadId}
+                  onClick={async () => {
+                    if (!currentThreadId) return
+                    try {
+                      const pairing = await startCodexRemoteControlPairing(
+                        currentThreadId,
+                        { manualCode: true }
+                      )
+                      setRemoteStatus(pairing)
+                      toast.success('Remote pairing started')
+                    } catch (e) {
+                      toast.error(String(e))
+                    }
+                  }}
+                >
+                  Start pairing
+                </Button>
+              </div>
             </div>
-            {doctorResult ? (
+            {cliCliResult ? (
               <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto rounded border bg-background/50 p-2 font-mono text-[10px]">
-                {doctorResult}
+                {cliCliResult}
               </pre>
             ) : null}
             <div className="space-y-1 border-t border-border/40 pt-2">
-              <div className="font-medium text-[11px]">Non-interactive exec / resume</div>
+              <div className="font-medium text-[11px]">Non-interactive exec</div>
               <textarea
                 className="flex min-h-[48px] w-full rounded-md border border-input bg-transparent px-2 py-1 font-mono text-[10px]"
                 placeholder="Prompt for codex exec (non-interactive automation)"
@@ -903,62 +1097,6 @@ function ModelSettingsSection({
                   {execResult}
                 </pre>
               ) : null}
-              <div className="flex flex-wrap gap-2 items-center">
-                <Input
-                  className="h-7 text-[10px] font-mono max-w-[200px]"
-                  placeholder="Session id (optional)"
-                  value={resumeSessionId}
-                  onChange={(e) => setResumeSessionId(e.target.value)}
-                />
-                <Input
-                  className="h-7 text-[10px] font-mono flex-1 min-w-[120px]"
-                  placeholder="Optional follow-up prompt"
-                  value={resumePrompt}
-                  onChange={(e) => setResumePrompt(e.target.value)}
-                />
-                <Button
-                  variant="outline"
-                  size="xs"
-                  disabled={resumeLoading || !activeProfile}
-                  onClick={async () => {
-                    if (!activeProfile) return
-                    setResumeLoading(true)
-                    setResumeResult(null)
-                    try {
-                      const result = await runCodexResume({
-                        sessionId: resumeSessionId.trim() || undefined,
-                        prompt: resumePrompt.trim() || undefined,
-                        last: !resumeSessionId.trim(),
-                        codexHome: activeProfile.codexHome,
-                      })
-                      const text = [result.stdout, result.stderr]
-                        .filter(Boolean)
-                        .join('\n')
-                        .trim()
-                      setResumeResult(
-                        text || `Exit code: ${result.exitCode ?? 'unknown'}`
-                      )
-                      if (result.exitCode === 0) {
-                        toast.success('Codex resume completed')
-                      } else {
-                        toast.error('Codex resume reported issues')
-                      }
-                    } catch (e) {
-                      setResumeResult(String(e))
-                      toast.error('Codex resume failed')
-                    } finally {
-                      setResumeLoading(false)
-                    }
-                  }}
-                >
-                  {resumeLoading ? 'Resuming…' : 'Run codex resume'}
-                </Button>
-              </div>
-              {resumeResult ? (
-                <pre className="whitespace-pre-wrap break-words max-h-24 overflow-auto rounded border bg-background/50 p-2 font-mono text-[10px]">
-                  {resumeResult}
-                </pre>
-              ) : null}
             </div>
             {remoteStatus ? (
               <pre className="whitespace-pre-wrap break-words max-h-24 overflow-auto rounded border bg-background/50 p-2 font-mono text-[10px]">
@@ -966,7 +1104,7 @@ function ModelSettingsSection({
               </pre>
             ) : null}
             <div className="text-[10px] text-muted-foreground">
-              Doctor uses the active profile CODEX_HOME. Remote control requires an open Codex-backed chat (app-server session).
+              CLI actions use the active profile CODEX_HOME. Remote control requires an open Codex-backed chat (app-server session).
             </div>
           </div>
 

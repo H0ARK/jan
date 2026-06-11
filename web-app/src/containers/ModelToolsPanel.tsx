@@ -87,6 +87,7 @@ import {
   type TerminalSessionInfo,
 } from '@/stores/terminal-runtime-store'
 import { useCodexAppServerRuntime } from '@/stores/codex-app-server-runtime-store'
+import { useCodexProviderProfiles } from '@/stores/codex-provider-profile-store'
 import { ChatSessionContext } from '@/hooks/useChatSessionScope'
 import {
   useChatSessionUi,
@@ -95,15 +96,29 @@ import {
   resolveOpenTabs,
 } from '@/hooks/useChatSessionUi'
 import {
-  isCodexAppServerProvider,
   listCodexSkills,
   listCodexPlugins,
   listCodexHooks,
   listInstalledCodexPlugins,
+  listCodexApps,
+  installCodexPlugin,
+  uninstallCodexPlugin,
+  readCodexPlugin,
+  readCodexPluginSkill,
+  writeCodexSkillConfig,
+  addCodexMarketplace,
+  removeCodexMarketplace,
+  upgradeCodexMarketplace,
+  listCodexModels,
+  readCodexModelProviderCapabilities,
+  listCodexExperimentalFeatures,
   setCodexSkillExtraRoots,
   startCodexReview,
   listCodexMcpServerStatus,
   startCodexMcpOauthLogin,
+  readCodexMcpResource,
+  callCodexMcpTool,
+  reloadCodexMcpConfig,
   readCodexAccount,
   startCodexAccountLogin,
   cancelCodexAccountLogin,
@@ -116,10 +131,56 @@ import {
   readCodexRemoteControlStatus,
   startCodexRemoteControlPairing,
   readCodexRemoteControlPairingStatus,
+  listCodexRemoteControlClients,
+  revokeCodexRemoteControlClient,
   listCodexThreads,
   listLoadedCodexThreads,
   readCodexThread,
   listCodexThreadTurns,
+  listCodexThreadTurnItems,
+  updateCodexThreadMetadata,
+  updateCodexThreadSettings,
+  unsubscribeCodexThread,
+  interruptCodexThreadTurn,
+  compactCodexThreadById,
+  reloadCodexThread,
+  rollbackCodexThreadById,
+  startCodexThreadReview,
+  injectCodexThreadItems,
+  cleanCodexBackgroundTerminals,
+  startCodexThreadRealtime,
+  appendCodexThreadRealtimeAudio,
+  appendCodexThreadRealtimeText,
+  stopCodexThreadRealtime,
+  resetCodexMemory,
+  readCodexConfig,
+  readCodexConfigRequirements,
+  detectCodexExternalAgentConfig,
+  importCodexExternalAgentConfig,
+  writeCodexConfigValue,
+  writeCodexConfigBatch,
+  startCodexWindowsSandbox,
+  uploadCodexFeedback,
+  setCodexExperimentalFeatureEnablement,
+  addCodexEnvironment,
+  requestCodexToolUserInput,
+  execCodexCommand,
+  writeCodexCommandInput,
+  resizeCodexCommandTerminal,
+  terminateCodexCommand,
+  spawnCodexProcess,
+  writeCodexProcessInput,
+  resizeCodexProcessTerminal,
+  killCodexProcess,
+  readCodexDirectory,
+  readCodexFile,
+  getCodexMetadata,
+  createCodexDirectory,
+  writeCodexFile,
+  removeCodexFileSystemPath,
+  copyCodexFileSystemPath,
+  watchCodexFileSystem,
+  unwatchCodexFileSystem,
   forkCodexThread,
   archiveCodexThread,
   unarchiveCodexThread,
@@ -131,13 +192,8 @@ import {
   listCodexPermissionProfiles,
   listCodexCollaborationModes,
   callCodexAppServer,
-  runCodexDoctor,
-  runCodexExec,
-  runCodexResume,
-  runCodexCliSubcommand,
   getCodexAppServerRuntimeLogs,
 } from '@/lib/codex-app-server'
-import { useModelProvider } from '@/hooks/useModelProvider'
 
 import { useChatSessionId } from '@/hooks/useChatSessionScope'
 import {
@@ -147,253 +203,44 @@ import {
 import { useRuntimePermission } from '@/stores/runtime-permission-store'
 import { toast } from 'sonner'
 
+import {
+  buildJsonTemplateFromSchema,
+  collectCodexItemIds,
+  collectCodexMarketplaceDescriptors,
+  collectCodexMcpResourceDescriptors,
+  collectCodexMcpResourceUris,
+  collectCodexMcpServerNames,
+  collectCodexMcpToolDescriptors,
+  collectCodexMcpToolNames,
+  collectCodexPluginDescriptors,
+  collectCodexPluginIds,
+  collectCodexProcessHandles,
+  collectCodexSkillDescriptors,
+  collectCodexSkillIds,
+  collectCodexThreadDescriptors,
+  collectCodexThreadIds,
+  collectCodexTurnIds,
+  countCodexCollectionItems,
+  decodeUtf8Base64,
+  encodeUtf8Base64,
+  summarizeCodexValue,
+  validateJsonAgainstSchema,
+  type CodexMarketplaceDescriptor,
+  type CodexMcpResourceDescriptor,
+  type CodexMcpToolDescriptor,
+  type CodexPluginDescriptor,
+  type CodexSkillDescriptor,
+  type CodexThreadDescriptor,
+} from './model-tools-panel/shared/codex-helpers'
+import { CodexCliPanel } from './model-tools-panel/tools/CodexCliPanel'
+import { ProtoFallbackNotice } from './model-tools-panel/tools/ProtoFallbackNotice'
+import { MarketplaceSelectionDetails } from './model-tools-panel/tools/MarketplaceSelectionDetails'
+import { RawRpcTool } from './model-tools-panel/tools/RawRpcTool'
+
 const ANSI_ESCAPE_PATTERN = new RegExp(
   `${String.fromCharCode(27)}(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])`,
   'g'
 )
-
-function encodeUtf8Base64(value: string) {
-  const bytes = new TextEncoder().encode(value)
-  let binary = ''
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte)
-  })
-  return btoa(binary)
-}
-
-function decodeUtf8Base64(value: string) {
-  try {
-    const binary = atob(value)
-    const bytes = new Uint8Array(binary.length)
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index)
-    }
-    return new TextDecoder().decode(bytes)
-  } catch {
-    return ''
-  }
-}
-
-function collectCodexThreadIds(value: unknown): string[] {
-  const ids = new Set<string>()
-  const visit = (item: unknown) => {
-    if (!item) return
-    if (typeof item === 'string') {
-      ids.add(item)
-      return
-    }
-    if (Array.isArray(item)) {
-      item.forEach(visit)
-      return
-    }
-    if (typeof item === 'object') {
-      const record = item as Record<string, unknown>
-      if (typeof record.id === 'string') ids.add(record.id)
-      if (typeof record.threadId === 'string') ids.add(record.threadId)
-      if (Array.isArray(record.data)) visit(record.data)
-      if (Array.isArray(record.threads)) visit(record.threads)
-      if (Array.isArray(record.threadIds)) visit(record.threadIds)
-      if (Array.isArray(record.items)) visit(record.items)
-    }
-  }
-  visit(value)
-  return [...ids]
-}
-
-function collectCodexTurnIds(value: unknown): string[] {
-  const ids = new Set<string>()
-  const visit = (item: unknown) => {
-    if (!item) return
-    if (typeof item === 'string') {
-      ids.add(item)
-      return
-    }
-    if (Array.isArray(item)) {
-      item.forEach(visit)
-      return
-    }
-    if (typeof item === 'object') {
-      const record = item as Record<string, unknown>
-      if (typeof record.turnId === 'string') ids.add(record.turnId)
-      if (typeof record.id === 'string') {
-        const type = typeof record.type === 'string' ? record.type : ''
-        const status = typeof record.status === 'string' ? record.status : ''
-        if (type.includes('turn') || status || Array.isArray(record.items)) {
-          ids.add(record.id)
-        }
-      }
-      for (const key of ['data', 'items', 'turns']) {
-        if (Array.isArray(record[key])) visit(record[key])
-      }
-    }
-  }
-  visit(value)
-  return [...ids]
-}
-
-function collectCodexItemIds(value: unknown): string[] {
-  const ids = new Set<string>()
-  const visit = (item: unknown) => {
-    if (!item) return
-    if (typeof item === 'string') {
-      ids.add(item)
-      return
-    }
-    if (Array.isArray(item)) {
-      item.forEach(visit)
-      return
-    }
-    if (typeof item === 'object') {
-      const record = item as Record<string, unknown>
-      if (typeof record.itemId === 'string') ids.add(record.itemId)
-      if (typeof record.id === 'string') {
-        const type = typeof record.type === 'string' ? record.type : ''
-        if (
-          type ||
-          'command' in record ||
-          'status' in record ||
-          'content' in record
-        ) {
-          ids.add(record.id)
-        }
-      }
-      for (const key of ['data', 'items']) {
-        if (Array.isArray(record[key])) visit(record[key])
-      }
-    }
-  }
-  visit(value)
-  return [...ids]
-}
-
-function collectCodexProcessHandles(value: unknown): string[] {
-  const handles = new Set<string>()
-  const visit = (item: unknown) => {
-    if (!item) return
-    if (typeof item === 'string') {
-      if (/^(proc|process|cmd|command)[-_:/]/i.test(item)) handles.add(item)
-      return
-    }
-    if (Array.isArray(item)) {
-      item.forEach(visit)
-      return
-    }
-    if (typeof item === 'object') {
-      const record = item as Record<string, unknown>
-      for (const key of [
-        'handle',
-        'processHandle',
-        'processId',
-        'terminalId',
-      ]) {
-        if (typeof record[key] === 'string') handles.add(record[key])
-      }
-      for (const key of ['data', 'items', 'lastAction', 'processes', 'result']) {
-        if (record[key]) visit(record[key])
-      }
-    }
-  }
-  visit(value)
-  return [...handles]
-}
-
-function collectCodexMcpServerNames(value: unknown): string[] {
-  const names = new Set<string>()
-  const visit = (item: unknown) => {
-    if (!item) return
-    if (Array.isArray(item)) {
-      item.forEach(visit)
-      return
-    }
-    if (typeof item === 'object') {
-      const record = item as Record<string, unknown>
-      for (const key of ['name', 'server', 'serverName']) {
-        if (typeof record[key] === 'string') names.add(record[key])
-      }
-      for (const key of ['data', 'servers', 'items', 'mcpServers']) {
-        if (Array.isArray(record[key])) visit(record[key])
-      }
-      for (const [key, nested] of Object.entries(record)) {
-        if (
-          nested &&
-          typeof nested === 'object' &&
-          !Array.isArray(nested) &&
-          ['status', 'state', 'tools', 'resources'].some((field) => field in nested)
-        ) {
-          names.add(key)
-        }
-      }
-    }
-  }
-  visit(value)
-  return [...names]
-}
-
-function collectCodexPluginIds(value: unknown): string[] {
-  const ids = new Set<string>()
-  const visit = (item: unknown) => {
-    if (!item) return
-    if (typeof item === 'string') {
-      ids.add(item)
-      return
-    }
-    if (Array.isArray(item)) {
-      item.forEach(visit)
-      return
-    }
-    if (typeof item === 'object') {
-      const record = item as Record<string, unknown>
-      for (const key of ['id', 'name', 'plugin', 'pluginId']) {
-        if (typeof record[key] === 'string') ids.add(record[key])
-      }
-      for (const key of [
-        'all',
-        'available',
-        'data',
-        'installed',
-        'items',
-        'pluginList',
-        'plugins',
-      ]) {
-        if (Array.isArray(record[key])) visit(record[key])
-      }
-    }
-  }
-  visit(value)
-  return [...ids]
-}
-
-function collectCodexSkillIds(value: unknown): string[] {
-  const ids = new Set<string>()
-  const visit = (item: unknown) => {
-    if (!item) return
-    if (typeof item === 'string') {
-      ids.add(item)
-      return
-    }
-    if (Array.isArray(item)) {
-      item.forEach(visit)
-      return
-    }
-    if (typeof item === 'object') {
-      const record = item as Record<string, unknown>
-      for (const key of ['id', 'name', 'skill', 'skillId']) {
-        if (typeof record[key] === 'string') ids.add(record[key])
-      }
-      for (const key of [
-        'available',
-        'data',
-        'enabled',
-        'items',
-        'skills',
-      ]) {
-        if (Array.isArray(record[key])) visit(record[key])
-      }
-    }
-  }
-  visit(value)
-  return [...ids]
-}
 
 type DirectoryTreeEntry = {
   path: string
@@ -963,6 +810,15 @@ type GitReviewStatus = {
   files: GitReviewFile[]
 }
 
+type CodexProcessTerminalSession = {
+  handle: string
+  label: string
+  kind: 'process' | 'command'
+  status: 'running' | 'exited' | 'unknown'
+  createdAt: number
+  lines: string[]
+}
+
 function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const serviceHub = useServiceHub()
   // Use the provided scope (e.g. the current agent/chat workspace) for the git review in this panel slot.
@@ -1020,14 +876,14 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const [codexRawRpcSnapshot, setCodexRawRpcSnapshot] = useState<any>(null)
   const [codexRawRpcMethod, setCodexRawRpcMethod] = useState('')
   const [codexRawRpcParams, setCodexRawRpcParams] = useState('{}')
-  const [codexCliSnapshot, setCodexCliSnapshot] = useState<any>(null)
-  const [codexCliExecPrompt, setCodexCliExecPrompt] = useState('')
-  const [codexCliResumePrompt, setCodexCliResumePrompt] = useState('')
-  const [codexCliRawArgs, setCodexCliRawArgs] = useState('["--version"]')
+  const [codexRawRpcCatalogFilter, setCodexRawRpcCatalogFilter] = useState('')
   const [codexPluginId, setCodexPluginId] = useState('')
   const [codexPluginSkillId, setCodexPluginSkillId] = useState('')
   const [codexMarketplaceName, setCodexMarketplaceName] = useState('')
   const [codexMarketplaceSource, setCodexMarketplaceSource] = useState('')
+  const [codexMarketplaceFilter, setCodexMarketplaceFilter] = useState('')
+  const [codexMarketplaceInstalledOnly, setCodexMarketplaceInstalledOnly] =
+    useState(false)
   const [codexSkillConfigJson, setCodexSkillConfigJson] =
     useState('{"enabled":true}')
   const [codexConfigKeyPath, setCodexConfigKeyPath] = useState('model')
@@ -1064,6 +920,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const [codexMcpResourceUri, setCodexMcpResourceUri] = useState('')
   const [codexMcpToolName, setCodexMcpToolName] = useState('')
   const [codexMcpToolArguments, setCodexMcpToolArguments] = useState('{}')
+  const [codexMcpDescriptorFilter, setCodexMcpDescriptorFilter] = useState('')
   const [codexRuntimePath, setCodexRuntimePath] = useState('')
   const [codexRuntimeCopyDestination, setCodexRuntimeCopyDestination] =
     useState('')
@@ -1079,7 +936,25 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     '{"rows":24,"cols":80}'
   )
   const [codexProcessHandle, setCodexProcessHandle] = useState('')
+  const [codexProcessTerminals, setCodexProcessTerminals] = useState<
+    CodexProcessTerminalSession[]
+  >([])
+  const [codexProcessTerminalFilter, setCodexProcessTerminalFilter] =
+    useState('')
+  const [codexProcessTerminalExpanded, setCodexProcessTerminalExpanded] =
+    useState(false)
+  const [codexProcessTerminalRows, setCodexProcessTerminalRows] =
+    useState('24')
+  const [codexProcessTerminalCols, setCodexProcessTerminalCols] =
+    useState('80')
   const [codexThreadId, setCodexThreadId] = useState('')
+  const [codexThreadFilter, setCodexThreadFilter] = useState('')
+  const [codexThreadSourceFilter, setCodexThreadSourceFilter] = useState<
+    'all' | 'loaded' | 'stored'
+  >('all')
+  const [codexThreadSort, setCodexThreadSort] = useState<
+    'updated' | 'name' | 'source'
+  >('updated')
   const [codexLoadedThreads, setCodexLoadedThreads] = useState<any>(null)
   const [codexStoredThreads, setCodexStoredThreads] = useState<any>(null)
   const [codexThreadSnapshot, setCodexThreadSnapshot] = useState<any>(null)
@@ -1096,10 +971,14 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const [mcpBusy, setMcpBusy] = useState(false)
   const [modelAdminBusy, setModelAdminBusy] = useState(false)
   const [rawRpcBusy, setRawRpcBusy] = useState(false)
-  const [cliBusy, setCliBusy] = useState(false)
   const [threadBusy, setThreadBusy] = useState(false)
   const codexRuntimeLogs = useCodexAppServerRuntime((s) => s.logs)
+  const codexProcessEvents = useCodexAppServerRuntime((s) => s.processEvents)
   const clearCodexRuntimeLogs = useCodexAppServerRuntime((s) => s.clearLogs)
+  const clearCodexProcessEvents = useCodexAppServerRuntime(
+    (s) => s.clearProcessEvents
+  )
+  const lastCodexProcessEventTimestampRef = useRef(0)
 
   const cwd = workspacePath || '.'
 
@@ -1121,6 +1000,71 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       ].filter((id, index, values) => values.indexOf(id) === index),
     [codexLoadedThreads, codexStoredThreads]
   )
+  const codexThreadDescriptors = useMemo(
+    () =>
+      [
+        ...collectCodexThreadDescriptors(codexLoadedThreads, 'loaded'),
+        ...collectCodexThreadDescriptors(codexStoredThreads, 'stored'),
+      ].filter(
+        (descriptor, index, values) =>
+          values.findIndex((item) => item.id === descriptor.id) === index
+      ),
+    [codexLoadedThreads, codexStoredThreads]
+  )
+  const filteredCodexThreadDescriptors = useMemo(() => {
+    const filter = codexThreadFilter.trim().toLowerCase()
+    return [...codexThreadDescriptors]
+      .filter((thread) => {
+        if (
+          codexThreadSourceFilter !== 'all' &&
+          thread.source !== codexThreadSourceFilter
+        ) {
+          return false
+        }
+        if (!filter) return true
+        return [thread.id, thread.name, thread.status, thread.updatedAt]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(filter))
+      })
+      .sort((a, b) => {
+        if (codexThreadSort === 'name') {
+          return (a.name ?? a.id).localeCompare(b.name ?? b.id)
+        }
+        if (codexThreadSort === 'source') {
+          return a.source.localeCompare(b.source) || a.id.localeCompare(b.id)
+        }
+        return (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')
+      })
+  }, [
+    codexThreadDescriptors,
+    codexThreadFilter,
+    codexThreadSort,
+    codexThreadSourceFilter,
+  ])
+  const selectedCodexThreadSummary = useMemo(() => {
+    if (!targetCodexThreadId) return null
+    const descriptor = codexThreadDescriptors.find(
+      (thread) => thread.id === targetCodexThreadId
+    )
+    return {
+      id: targetCodexThreadId,
+      name: descriptor?.name,
+      source: descriptor?.source,
+      status: descriptor?.status,
+      updatedAt: descriptor?.updatedAt,
+      turns: countCodexCollectionItems(codexThreadTurns),
+      turnItems: countCodexCollectionItems(codexThreadTurnItems),
+      goal: summarizeCodexValue(codexThreadGoal),
+      snapshot: summarizeCodexValue(codexThreadSnapshot),
+    }
+  }, [
+    codexThreadDescriptors,
+    codexThreadGoal,
+    codexThreadSnapshot,
+    codexThreadTurnItems,
+    codexThreadTurns,
+    targetCodexThreadId,
+  ])
   const selectableCodexTurnIds = useMemo(
     () =>
       [
@@ -1154,10 +1098,103 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       codexThreadTurns,
     ]
   )
+  const selectedCodexProcessTerminal = useMemo(
+    () =>
+      codexProcessTerminals.find(
+        (session) => session.handle === codexProcessHandle.trim()
+      ) ?? codexProcessTerminals[0],
+    [codexProcessHandle, codexProcessTerminals]
+  )
+  const filteredCodexProcessTerminalLines = useMemo(() => {
+    const lines = selectedCodexProcessTerminal?.lines ?? []
+    const filter = codexProcessTerminalFilter.trim().toLowerCase()
+    if (!filter) return lines
+    return lines.filter((line) => line.toLowerCase().includes(filter))
+  }, [codexProcessTerminalFilter, selectedCodexProcessTerminal])
   const selectableCodexMcpServerNames = useMemo(
     () => collectCodexMcpServerNames(mcpStatus),
     [mcpStatus]
   )
+  const selectableCodexMcpResourceUris = useMemo(
+    () =>
+      [
+        ...collectCodexMcpResourceUris(mcpStatus),
+        ...collectCodexMcpResourceUris(codexMcpSnapshot),
+      ].filter((uri, index, values) => values.indexOf(uri) === index),
+    [codexMcpSnapshot, mcpStatus]
+  )
+  const selectableCodexMcpToolNames = useMemo(
+    () =>
+      [
+        ...collectCodexMcpToolNames(mcpStatus),
+        ...collectCodexMcpToolNames(codexMcpSnapshot),
+      ].filter((toolName, index, values) => values.indexOf(toolName) === index),
+    [codexMcpSnapshot, mcpStatus]
+  )
+  const codexMcpResourceDescriptors = useMemo(
+    () =>
+      [
+        ...collectCodexMcpResourceDescriptors(mcpStatus),
+        ...collectCodexMcpResourceDescriptors(codexMcpSnapshot),
+      ].filter(
+        (descriptor, index, values) =>
+          values.findIndex((item) => item.uri === descriptor.uri) === index
+      ),
+    [codexMcpSnapshot, mcpStatus]
+  )
+  const codexMcpToolDescriptors = useMemo(
+    () =>
+      [
+        ...collectCodexMcpToolDescriptors(mcpStatus),
+        ...collectCodexMcpToolDescriptors(codexMcpSnapshot),
+      ].filter(
+        (descriptor, index, values) =>
+          values.findIndex((item) => item.name === descriptor.name) === index
+      ),
+    [codexMcpSnapshot, mcpStatus]
+  )
+  const filteredCodexMcpResourceDescriptors = useMemo(() => {
+    const filter = codexMcpDescriptorFilter.trim().toLowerCase()
+    if (!filter) return codexMcpResourceDescriptors
+    return codexMcpResourceDescriptors.filter((descriptor) =>
+      [
+        descriptor.uri,
+        descriptor.name,
+        descriptor.description,
+        descriptor.mimeType,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(filter))
+    )
+  }, [codexMcpDescriptorFilter, codexMcpResourceDescriptors])
+  const filteredCodexMcpToolDescriptors = useMemo(() => {
+    const filter = codexMcpDescriptorFilter.trim().toLowerCase()
+    if (!filter) return codexMcpToolDescriptors
+    return codexMcpToolDescriptors.filter((descriptor) =>
+      [descriptor.name, descriptor.description]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(filter))
+    )
+  }, [codexMcpDescriptorFilter, codexMcpToolDescriptors])
+  const selectedCodexMcpToolDescriptor = useMemo(
+    () =>
+      codexMcpToolDescriptors.find(
+        (descriptor) => descriptor.name === codexMcpToolName.trim()
+      ),
+    [codexMcpToolDescriptors, codexMcpToolName]
+  )
+  const codexMcpToolArgumentValidation = useMemo(() => {
+    if (!selectedCodexMcpToolDescriptor?.inputSchema) return []
+    try {
+      const parsed = JSON.parse(codexMcpToolArguments || '{}')
+      return validateJsonAgainstSchema(
+        selectedCodexMcpToolDescriptor.inputSchema,
+        parsed
+      )
+    } catch (e) {
+      return ['Tool arguments JSON parse failed: ' + String(e)]
+    }
+  }, [codexMcpToolArguments, selectedCodexMcpToolDescriptor])
   const selectableCodexPluginIds = useMemo(
     () => collectCodexPluginIds(codexMarketplaceSnapshot),
     [codexMarketplaceSnapshot]
@@ -1170,6 +1207,176 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       ].filter((id, index, values) => values.indexOf(id) === index),
     [codexMarketplaceSnapshot, skills]
   )
+  const codexPluginDescriptors = useMemo(
+    () => collectCodexPluginDescriptors(codexMarketplaceSnapshot),
+    [codexMarketplaceSnapshot]
+  )
+  const codexMarketplaceDescriptors = useMemo(
+    () => collectCodexMarketplaceDescriptors(codexMarketplaceSnapshot),
+    [codexMarketplaceSnapshot]
+  )
+  const codexSkillDescriptors = useMemo(
+    () =>
+      [
+        ...collectCodexSkillDescriptors(skills),
+        ...collectCodexSkillDescriptors(codexMarketplaceSnapshot),
+      ].filter(
+        (descriptor, index, values) =>
+          values.findIndex((item) => item.id === descriptor.id) === index
+      ),
+    [codexMarketplaceSnapshot, skills]
+  )
+  const filteredCodexPluginDescriptors = useMemo(() => {
+    const filter = codexMarketplaceFilter.trim().toLowerCase()
+    return codexPluginDescriptors.filter((plugin) => {
+      if (codexMarketplaceInstalledOnly && !plugin.installed) return false
+      if (!filter) return true
+      return [plugin.id, plugin.name, plugin.description, plugin.version]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(filter))
+    })
+  }, [
+    codexMarketplaceFilter,
+    codexMarketplaceInstalledOnly,
+    codexPluginDescriptors,
+  ])
+  const filteredCodexSkillDescriptors = useMemo(() => {
+    const filter = codexMarketplaceFilter.trim().toLowerCase()
+    return codexSkillDescriptors.filter((skill) => {
+      if (!filter) return true
+      return [skill.id, skill.name, skill.description, skill.pluginId]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(filter))
+    })
+  }, [codexMarketplaceFilter, codexSkillDescriptors])
+  const selectedCodexPluginDescriptor = useMemo(
+    () =>
+      codexPluginDescriptors.find(
+        (plugin) => plugin.id === codexPluginId.trim()
+      ),
+    [codexPluginDescriptors, codexPluginId]
+  )
+  const selectedCodexPluginMetadataKeys = useMemo(() => {
+    const raw = selectedCodexPluginDescriptor?.raw
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return []
+    return Object.keys(raw as Record<string, unknown>).sort()
+  }, [selectedCodexPluginDescriptor])
+  const selectedCodexSkillDescriptor = useMemo(
+    () =>
+      codexSkillDescriptors.find(
+        (skill) => skill.id === codexPluginSkillId.trim()
+      ),
+    [codexSkillDescriptors, codexPluginSkillId]
+  )
+  const codexRawRpcCatalog = useMemo(() => {
+    const threadId = targetCodexThreadId || '<threadId>'
+    const pluginId = codexPluginId.trim() || '<pluginId>'
+    const processHandle = codexProcessHandle.trim() || '<processHandle>'
+    const mcpServer = codexMcpServerName.trim() || '<server>'
+    const mcpTool = codexMcpToolName.trim() || '<toolName>'
+    return [
+      {
+        group: 'Thread',
+        method: 'thread/list',
+        params: {},
+        description: 'List stored Codex threads.',
+      },
+      {
+        group: 'Thread',
+        method: 'thread/read',
+        params: { threadId },
+        description: 'Read a Codex thread by id.',
+      },
+      {
+        group: 'Thread',
+        method: 'thread/turns/items/list',
+        params: {
+          threadId,
+          limit: Number.parseInt(codexTurnItemsLimit, 10) || 50,
+        },
+        description: 'Read turn items for a Codex thread.',
+      },
+      {
+        group: 'Config',
+        method: 'config/read',
+        params: {},
+        description: 'Read current Codex app-server config.',
+      },
+      {
+        group: 'Config',
+        method: 'config/value/write',
+        params: { keyPath: codexConfigKeyPath, value: '<value>' },
+        description: 'Write a single Codex config value.',
+      },
+      {
+        group: 'MCP',
+        method: 'mcpServer/status/list',
+        params: {},
+        description: 'List MCP server runtime status.',
+      },
+      {
+        group: 'MCP',
+        method: 'mcpServer/resource/read',
+        params: { server: mcpServer, uri: codexMcpResourceUri || '<uri>' },
+        description: 'Read an MCP resource through Codex.',
+      },
+      {
+        group: 'MCP',
+        method: 'mcpServer/tool/call',
+        params: { server: mcpServer, toolName: mcpTool, arguments: {} },
+        description: 'Call an MCP tool through Codex.',
+      },
+      {
+        group: 'Plugin',
+        method: 'plugin/installed',
+        params: { suggestions: [] },
+        description: 'List installed Codex plugins.',
+      },
+      {
+        group: 'Plugin',
+        method: 'plugin/read',
+        params: { plugin: pluginId, pluginId },
+        description: 'Read plugin metadata.',
+      },
+      {
+        group: 'Account',
+        method: 'account/read',
+        params: {},
+        description: 'Read Codex account/auth state.',
+      },
+      {
+        group: 'Runtime',
+        method: 'process/kill',
+        params: { processHandle },
+        description: 'Kill a spawned app-server process.',
+      },
+      {
+        group: 'Runtime',
+        method: 'fs/readDirectory',
+        params: { path: codexRuntimePath || cwd },
+        description: 'Read a directory through Codex filesystem RPC.',
+      },
+    ]
+  }, [
+    codexConfigKeyPath,
+    codexMcpResourceUri,
+    codexMcpServerName,
+    codexMcpToolName,
+    codexPluginId,
+    codexProcessHandle,
+    codexRuntimePath,
+    codexTurnItemsLimit,
+    cwd,
+    targetCodexThreadId,
+  ])
+  const filteredCodexRawRpcCatalog = useMemo(() => {
+    const filter = codexRawRpcCatalogFilter.trim().toLowerCase()
+    if (!filter) return codexRawRpcCatalog
+    return codexRawRpcCatalog.filter((item) =>
+      [item.group, item.method, item.description]
+        .some((value) => value.toLowerCase().includes(filter))
+    )
+  }, [codexRawRpcCatalog, codexRawRpcCatalogFilter])
 
   const loadStatus = async () => {
     setLoading(true)
@@ -1252,16 +1459,20 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   // bridged RPCs. This makes skills/plugins/hooks first-class inspectable/manageable
   // from Jan's UI while Codex remains the engine.
   const currentThreadIdForCaps = useThreads((s) => s.currentThreadId)
-  const selectedProvider = useModelProvider((s) => s.selectedProvider)
-  const isCodexForCaps = isCodexAppServerProvider(selectedProvider)
+  const activeCodexProfile = useCodexProviderProfiles((s) =>
+    s.activeProfileId ? s.profiles[s.activeProfileId] : null
+  )
+  const isCodexProtoTransport = activeCodexProfile?.transport === 'proto'
 
   const refreshCodexCapabilities = async () => {
     if (!currentThreadIdForCaps) {
       setCapError('No active thread. Open a chat with a Codex provider profile to inspect runtime capabilities.')
       return
     }
-    if (!isCodexForCaps) {
-      setCapError('Current provider is not Codex app-server. Capabilities are available only for codex-backed chats.')
+    if (isCodexProtoTransport) {
+      setCapError(
+        'This Codex profile uses proto transport. Chat streaming is available, but app-server-only capability controls are unsupported until the profile uses app-server transport.'
+      )
       return
     }
     setCapLoading(true)
@@ -1298,7 +1509,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   }
 
   const refreshCodexAccount = async (refreshToken = false) => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return
+    if (!currentThreadIdForCaps) return
     setAccountBusy(true)
     setCapError(null)
     try {
@@ -1375,7 +1586,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     action: () => Promise<unknown>,
     success?: string
   ) => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return
+    if (!currentThreadIdForCaps) return
     setRemoteBusy(true)
     setCapError(null)
     try {
@@ -1397,7 +1608,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   }
 
   const startRemoteControlPairing = async () => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return
+    if (!currentThreadIdForCaps) return
     setRemoteBusy(true)
     setCapError(null)
     try {
@@ -1440,7 +1651,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   }
 
   const refreshCodexAdminSnapshot = async () => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return
+    if (!currentThreadIdForCaps) return
     setAdminBusy(true)
     setCapError(null)
     try {
@@ -1451,24 +1662,21 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
         collaborationModes,
         externalAgents,
       ] = await Promise.all([
-        callCodexAppServer(currentThreadIdForCaps, 'config/read').catch((e) => ({
+        readCodexConfig(currentThreadIdForCaps).catch((e) => ({
           error: String(e),
         })),
-        callCodexAppServer(
-          currentThreadIdForCaps,
-          'configRequirements/read'
-        ).catch((e) => ({ error: String(e) })),
+        readCodexConfigRequirements(currentThreadIdForCaps).catch((e) => ({
+          error: String(e),
+        })),
         listCodexPermissionProfiles(currentThreadIdForCaps, { cwd }).catch(
           (e) => ({ error: String(e) })
         ),
         listCodexCollaborationModes(currentThreadIdForCaps).catch((e) => ({
           error: String(e),
         })),
-        callCodexAppServer(
-          currentThreadIdForCaps,
-          'externalAgentConfig/detect',
-          { cwd }
-        ).catch((e) => ({ error: String(e) })),
+        detectCodexExternalAgentConfig(currentThreadIdForCaps, {
+          cwd,
+        }).catch((e) => ({ error: String(e) })),
       ])
       setCodexAdminSnapshot({
         config,
@@ -1485,16 +1693,16 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   }
 
   const refreshCodexMarketplaceSnapshot = async () => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return
+    if (!currentThreadIdForCaps) return
     setMarketplaceBusy(true)
     setCapError(null)
     try {
       const [pluginList, installedPlugins, skills, hooks, apps] =
         await Promise.all([
-          callCodexAppServer(currentThreadIdForCaps, 'plugin/list', {
+          listCodexPlugins(currentThreadIdForCaps, {
             includeDisabled: true,
           }).catch((e) => ({ error: String(e) })),
-          callCodexAppServer(currentThreadIdForCaps, 'plugin/installed', {
+          listInstalledCodexPlugins(currentThreadIdForCaps, {
             suggestions: [],
           }).catch((e) => ({ error: String(e) })),
           listCodexSkills(currentThreadIdForCaps).catch((e) => ({
@@ -1503,9 +1711,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           listCodexHooks(currentThreadIdForCaps).catch((e) => ({
             error: String(e),
           })),
-          callCodexAppServer(currentThreadIdForCaps, 'app/list', {}).catch(
-            (e) => ({ error: String(e) })
-          ),
+          listCodexApps(currentThreadIdForCaps).catch((e) => ({
+            error: String(e),
+          })),
         ])
       setCodexMarketplaceSnapshot({
         pluginList,
@@ -1526,15 +1734,43 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     params: Record<string, unknown>,
     success: string
   ) => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return
+    if (!currentThreadIdForCaps) return
     setMarketplaceBusy(true)
     setCapError(null)
     try {
-      const result = await callCodexAppServer(
-        currentThreadIdForCaps,
-        method,
-        params
-      )
+      let result: unknown
+      if (method === 'plugin/install') {
+        result = await installCodexPlugin(currentThreadIdForCaps, params)
+      } else if (method === 'plugin/uninstall') {
+        result = await uninstallCodexPlugin(currentThreadIdForCaps, params)
+      } else if (method === 'plugin/read') {
+        result = await readCodexPlugin(currentThreadIdForCaps, params)
+      } else if (method === 'plugin/skill/read') {
+        result = await readCodexPluginSkill(currentThreadIdForCaps, params)
+      } else if (method === 'marketplace/add') {
+        result = await addCodexMarketplace(currentThreadIdForCaps, params)
+      } else if (method === 'marketplace/remove') {
+        const marketplaceName = typeof params.marketplaceName === 'string'
+          ? params.marketplaceName
+          : ''
+        if (!marketplaceName) {
+          throw new Error('marketplaceName is required.')
+        }
+        result = await removeCodexMarketplace(
+          currentThreadIdForCaps,
+          marketplaceName
+        )
+      } else if (method === 'marketplace/upgrade') {
+        result = await upgradeCodexMarketplace(currentThreadIdForCaps, params)
+      } else if (method === 'skills/config/write') {
+        result = await writeCodexSkillConfig(currentThreadIdForCaps, params)
+      } else {
+        result = await callCodexAppServer(
+          currentThreadIdForCaps,
+          method,
+          params
+        )
+      }
       setCodexMarketplaceSnapshot((previous: any) => ({
         ...(previous ?? {}),
         lastAction: { method, params, result },
@@ -1552,19 +1788,126 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     params: Record<string, unknown>,
     success?: string
   ) => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return null
+    if (!currentThreadIdForCaps) return null
     setRuntimeBusy(true)
     setCapError(null)
     try {
-      const result = await callCodexAppServer(
-        currentThreadIdForCaps,
-        method,
-        params
-      )
+      let result: unknown
+      if (method === 'fs/readDirectory') {
+        const path = typeof params.path === 'string' ? params.path : ''
+        if (!path) throw new Error('path is required.')
+        result = await readCodexDirectory(currentThreadIdForCaps, path)
+      } else if (method === 'fs/getMetadata') {
+        const path = typeof params.path === 'string' ? params.path : ''
+        if (!path) throw new Error('path is required.')
+        result = await getCodexMetadata(currentThreadIdForCaps, path)
+      } else if (method === 'fs/createDirectory') {
+        const path = typeof params.path === 'string' ? params.path : ''
+        if (!path) throw new Error('path is required.')
+        const recursive =
+          typeof params.recursive === 'boolean' ? params.recursive : undefined
+        result = await createCodexDirectory(currentThreadIdForCaps, path, recursive)
+      } else if (method === 'fs/remove') {
+        result = await removeCodexFileSystemPath(currentThreadIdForCaps, params)
+      } else if (method === 'fs/copy') {
+        result = await copyCodexFileSystemPath(currentThreadIdForCaps, params)
+      } else if (method === 'fs/readFile') {
+        const path = typeof params.path === 'string' ? params.path : ''
+        if (!path) throw new Error('path is required.')
+        result = await readCodexFile(currentThreadIdForCaps, path)
+      } else if (method === 'fs/writeFile') {
+        const path = typeof params.path === 'string' ? params.path : ''
+        const dataBase64 =
+          typeof params.dataBase64 === 'string' ? params.dataBase64 : undefined
+        if (!path) throw new Error('path is required.')
+        if (typeof dataBase64 !== 'string') throw new Error('dataBase64 is required.')
+        result = await writeCodexFile(currentThreadIdForCaps, path, dataBase64)
+      } else if (method === 'fs/watch') {
+        const watchId = typeof params.watchId === 'string' ? params.watchId : ''
+        const path = typeof params.path === 'string' ? params.path : ''
+        if (!watchId || !path) throw new Error('watchId and path are required.')
+        result = await watchCodexFileSystem(currentThreadIdForCaps, watchId, path)
+      } else if (method === 'fs/unwatch') {
+        const watchId = typeof params.watchId === 'string' ? params.watchId : ''
+        if (!watchId) throw new Error('watchId is required.')
+        result = await unwatchCodexFileSystem(currentThreadIdForCaps, watchId)
+      } else if (method === 'command/exec') {
+        result = await execCodexCommand(currentThreadIdForCaps, params)
+      } else if (method === 'process/spawn') {
+        result = await spawnCodexProcess(currentThreadIdForCaps, params)
+      } else if (method === 'process/writeStdin') {
+        const processHandle =
+          typeof params.processHandle === 'string' ? params.processHandle : ''
+        if (!processHandle) throw new Error('processHandle is required.')
+        result = await writeCodexProcessInput(currentThreadIdForCaps, processHandle, {
+          deltaBase64:
+            typeof params.deltaBase64 === 'string'
+              ? params.deltaBase64
+              : undefined,
+          closeStdin:
+            typeof params.closeStdin === 'boolean'
+              ? params.closeStdin
+              : undefined,
+        })
+      } else if (method === 'command/stdin') {
+        const processId = typeof params.processId === 'string' ? params.processId : ''
+        if (!processId) throw new Error('processId is required.')
+        result = await writeCodexCommandInput(currentThreadIdForCaps, processId, {
+          deltaBase64:
+            typeof params.deltaBase64 === 'string'
+              ? params.deltaBase64
+              : undefined,
+          closeStdin:
+            typeof params.closeStdin === 'boolean'
+              ? params.closeStdin
+              : undefined,
+        })
+      } else if (method === 'process/resizePty') {
+        const processHandle =
+          typeof params.processHandle === 'string' ? params.processHandle : ''
+        const size = params.size as { rows: number; cols: number } | undefined
+        if (!processHandle) throw new Error('processHandle is required.')
+        if (!size || typeof size.rows !== 'number' || typeof size.cols !== 'number') {
+          throw new Error('size with rows and cols is required.')
+        }
+        result = await resizeCodexProcessTerminal(
+          currentThreadIdForCaps,
+          processHandle,
+          size
+        )
+      } else if (method === 'command/resize') {
+        const processId = typeof params.processId === 'string' ? params.processId : ''
+        const size = params.size as { rows: number; cols: number } | undefined
+        if (!processId) throw new Error('processId is required.')
+        if (!size || typeof size.rows !== 'number' || typeof size.cols !== 'number') {
+          throw new Error('size with rows and cols is required.')
+        }
+        result = await resizeCodexCommandTerminal(
+          currentThreadIdForCaps,
+          processId,
+          size
+        )
+      } else if (method === 'process/kill') {
+        const processHandle =
+          typeof params.processHandle === 'string' ? params.processHandle : ''
+        if (!processHandle) throw new Error('processHandle is required.')
+        result = await killCodexProcess(currentThreadIdForCaps, processHandle)
+      } else if (method === 'command/terminate') {
+        const processId = typeof params.processId === 'string' ? params.processId : ''
+        if (!processId) throw new Error('processId is required.')
+        result = await terminateCodexCommand(currentThreadIdForCaps, processId)
+      } else {
+        result = await callCodexAppServer(
+          currentThreadIdForCaps,
+          method,
+          params
+        )
+      }
       setCodexRuntimeSnapshot((previous: any) => ({
         ...(previous ?? {}),
         lastAction: { method, params, result },
       }))
+      recordCodexRuntimeTerminalAction(method, params, result)
       if (success) toast.success(success)
       return result
     } catch (e) {
@@ -1574,6 +1917,170 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       setRuntimeBusy(false)
     }
   }
+
+  const appendCodexTerminalLines = useCallback((
+    handle: string,
+    lines: string[],
+    patch: Partial<Omit<CodexProcessTerminalSession, 'handle' | 'lines'>> = {}
+  ) => {
+    if (!handle) return
+    setCodexProcessTerminals((previous) => {
+      const index = previous.findIndex((session) => session.handle === handle)
+      if (index === -1) {
+        return [
+          {
+            handle,
+            label: patch.label ?? handle,
+            kind: patch.kind ?? 'process',
+            status: patch.status ?? 'unknown',
+            createdAt: Date.now(),
+            lines: lines.length ? lines : [`attached ${handle}`],
+          },
+          ...previous,
+        ].slice(0, 8)
+      }
+
+      const next = [...previous]
+      const existing = next[index]
+      next[index] = {
+        ...existing,
+        ...patch,
+        lines: [...existing.lines, ...lines].slice(-400),
+      }
+      return next
+    })
+  }, [])
+
+  const extractCodexRuntimeHandle = (
+    params: Record<string, unknown>,
+    result: unknown
+  ) => {
+    const resultRecord =
+      result && typeof result === 'object'
+        ? (result as Record<string, unknown>)
+        : {}
+    const paramHandle =
+      typeof params.processHandle === 'string'
+        ? params.processHandle
+        : typeof params.processId === 'string'
+          ? params.processId
+          : ''
+    return (
+      (typeof resultRecord.processHandle === 'string' &&
+        resultRecord.processHandle) ||
+      (typeof resultRecord.processId === 'string' && resultRecord.processId) ||
+      (typeof resultRecord.handle === 'string' && resultRecord.handle) ||
+      paramHandle ||
+      ''
+    )
+  }
+
+  const codexRuntimeResultLines = (result: unknown) => {
+    const lines: string[] = []
+    if (!result || typeof result !== 'object') return lines
+    const record = result as Record<string, unknown>
+    for (const [key, label] of [
+      ['stdout', 'stdout'],
+      ['stderr', 'stderr'],
+      ['output', 'output'],
+    ] as const) {
+      const value = record[key]
+      if (typeof value === 'string' && value) lines.push(`${label}: ${value}`)
+    }
+    for (const [key, label] of [
+      ['stdoutBase64', 'stdout'],
+      ['stderrBase64', 'stderr'],
+      ['deltaBase64', 'output'],
+      ['dataBase64', 'data'],
+    ] as const) {
+      const value = record[key]
+      if (typeof value === 'string' && value) {
+        const decoded = decodeUtf8Base64(value)
+        if (decoded) lines.push(`${label}: ${decoded}`)
+      }
+    }
+    const exitCode =
+      typeof record.exitCode === 'number'
+        ? record.exitCode
+        : typeof record.code === 'number'
+          ? record.code
+          : null
+    if (exitCode !== null) lines.push(`exit ${exitCode}`)
+    return lines
+  }
+
+  const recordCodexRuntimeTerminalAction = (
+    method: string,
+    params: Record<string, unknown>,
+    result: unknown
+  ) => {
+    const handle = extractCodexRuntimeHandle(params, result)
+    if (!handle) return
+
+    const commandLabel =
+      typeof params.command === 'string'
+        ? params.command
+        : Array.isArray(params.command)
+          ? params.command.join(' ')
+          : handle
+    const lines = codexRuntimeResultLines(result)
+    const isCommandMethod = method.startsWith('command/')
+    const status =
+      method === 'process/kill' || method === 'command/terminate'
+        ? 'exited'
+        : method === 'process/spawn' || method === 'command/exec'
+          ? 'running'
+          : 'unknown'
+
+    if (method === 'process/writeStdin' || method === 'command/stdin') {
+      const delta =
+        typeof params.deltaBase64 === 'string'
+          ? decodeUtf8Base64(params.deltaBase64)
+          : ''
+      if (delta) lines.unshift(`stdin: ${delta}`)
+    }
+
+    if (method === 'process/resizePty' || method === 'command/resize') {
+      lines.unshift(`resize: ${JSON.stringify(params.size ?? {})}`)
+    }
+
+    if (method === 'process/spawn' || method === 'command/exec') {
+      lines.unshift(`started: ${commandLabel}`)
+    } else if (method === 'process/kill' || method === 'command/terminate') {
+      lines.unshift('terminated')
+    }
+
+    appendCodexTerminalLines(handle, lines, {
+      label: commandLabel,
+      kind: isCommandMethod ? 'command' : 'process',
+      status,
+    })
+  }
+
+  useEffect(() => {
+    const newEvents = codexProcessEvents.filter(
+      (event) => event.timestamp > lastCodexProcessEventTimestampRef.current
+    )
+    if (!newEvents.length) return
+
+    lastCodexProcessEventTimestampRef.current =
+      newEvents[newEvents.length - 1]?.timestamp ??
+      lastCodexProcessEventTimestampRef.current
+
+    for (const event of newEvents) {
+      const lines: string[] = []
+      if (event.text) {
+        lines.push(`[${event.stream}] ${event.text}`)
+      }
+      if (event.stdout) lines.push(`[stdout] ${event.stdout}`)
+      if (event.stderr) lines.push(`[stderr] ${event.stderr}`)
+      appendCodexTerminalLines(event.processHandle, lines, {
+        label: event.processHandle,
+        kind: 'process',
+        status: typeof event.exitCode === 'number' ? 'exited' : 'running',
+      })
+    }
+  }, [appendCodexTerminalLines, codexProcessEvents])
 
   const readCodexRuntimeFile = async () => {
     const path = codexRuntimePath.trim()
@@ -1630,15 +2137,24 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     params: Record<string, unknown>,
     success?: string
   ) => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return null
+    if (!currentThreadIdForCaps) return null
     setMcpBusy(true)
     setCapError(null)
     try {
-      const result = await callCodexAppServer(
-        currentThreadIdForCaps,
-        method,
-        params
-      )
+      let result: unknown
+      if (method === 'mcpServer/resource/read') {
+        result = await readCodexMcpResource(currentThreadIdForCaps, params)
+      } else if (method === 'mcpServer/tool/call') {
+        result = await callCodexMcpTool(currentThreadIdForCaps, params)
+      } else if (method === 'config/mcpServer/reload') {
+        result = await reloadCodexMcpConfig(currentThreadIdForCaps, params)
+      } else {
+        result = await callCodexAppServer(
+          currentThreadIdForCaps,
+          method,
+          params
+        )
+      }
       setCodexMcpSnapshot((previous: any) => ({
         ...(previous ?? {}),
         lastAction: { method, params, result },
@@ -1654,25 +2170,21 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   }
 
   const refreshCodexModelSnapshot = async () => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return
+    if (!currentThreadIdForCaps) return
     setModelAdminBusy(true)
     setCapError(null)
     try {
       const [models, providerCapabilities, experimentalFeatures] =
         await Promise.all([
-          callCodexAppServer(currentThreadIdForCaps, 'model/list', {
+          listCodexModels(currentThreadIdForCaps, {
             includeHidden: true,
           }).catch((e) => ({ error: String(e) })),
-          callCodexAppServer(
-            currentThreadIdForCaps,
-            'modelProvider/capabilities/read',
-            {}
-          ).catch((e) => ({ error: String(e) })),
-          callCodexAppServer(
-            currentThreadIdForCaps,
-            'experimentalFeature/list',
-            {}
-          ).catch((e) => ({ error: String(e) })),
+          readCodexModelProviderCapabilities(currentThreadIdForCaps, {}).catch(
+            (e) => ({ error: String(e) })
+          ),
+          listCodexExperimentalFeatures(currentThreadIdForCaps, {}).catch((e) => ({
+            error: String(e),
+          })),
         ])
       setCodexModelSnapshot({
         models,
@@ -1691,15 +2203,27 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     params: Record<string, unknown>,
     success: string
   ) => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return
+    if (!currentThreadIdForCaps) return
     setModelAdminBusy(true)
     setCapError(null)
     try {
-      const result = await callCodexAppServer(
-        currentThreadIdForCaps,
-        method,
-        params
-      )
+      let result: unknown
+      if (method === 'experimentalFeature/enablement/set') {
+        result = await setCodexExperimentalFeatureEnablement(
+          currentThreadIdForCaps,
+          params
+        )
+      } else if (method === 'environment/add') {
+        result = await addCodexEnvironment(currentThreadIdForCaps, params)
+      } else if (method === 'tool/requestUserInput') {
+        result = await requestCodexToolUserInput(currentThreadIdForCaps, params)
+      } else {
+        result = await callCodexAppServer(
+          currentThreadIdForCaps,
+          method,
+          params
+        )
+      }
       setCodexModelSnapshot((previous: any) => ({
         ...(previous ?? {}),
         lastAction: { method, params, result },
@@ -1712,18 +2236,545 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     }
   }
 
+  // Method name aliases for raw RPC to support compatibility across Codex
+  // app-server versions that may use either spelling for the same capability.
+  // Raw RPC accepts either; we normalize to a canonical form for dispatch and
+  // for the fallback send path (preferring the forms used as primary in
+  // requestAppServerMethodWithFallback where applicable, and consistent
+  // naming like other mcpServer/* methods).
+  const resolveCodexRawRpcMethod = (m: string): string => {
+    if (m === 'mcpServerStatus/list') return 'mcpServer/status/list'
+    if (m === 'thread/compact/start') return 'thread/compact/start'
+    if (m === 'review/start') return 'review/start'
+    return m
+  }
+
   const runCodexRawRpc = async () => {
-    const method = codexRawRpcMethod.trim()
-    if (!currentThreadIdForCaps || !isCodexForCaps || !method) return
+    const entered = codexRawRpcMethod.trim()
+    if (!currentThreadIdForCaps || !entered) return
+    const method = resolveCodexRawRpcMethod(entered)
     setRawRpcBusy(true)
     setCapError(null)
     try {
       const params = JSON.parse(codexRawRpcParams || '{}')
-      const result = await callCodexAppServer(
-        currentThreadIdForCaps,
-        method,
-        params
-      )
+      const readThreadId = (from: unknown) => {
+        if (
+          from &&
+          typeof from === 'object' &&
+          'threadId' in from &&
+          typeof (from as { threadId?: unknown }).threadId === 'string'
+        ) {
+          return (from as { threadId: string }).threadId
+        }
+        return targetCodexThreadId ?? ''
+      }
+
+      const readThreadParams = (
+        from: unknown
+      ): Record<string, unknown> => {
+        if (!from || typeof from !== 'object') {
+          return {}
+        }
+        const { threadId: _, ...rest } = from as Record<string, unknown>
+        return rest as Record<string, unknown>
+      }
+
+      const readRemotePairingCode = (from: unknown) => {
+        if (typeof from === 'object' && from !== null) {
+          const record = from as { manualPairingCode?: unknown; pairingCode?: unknown }
+          if (typeof record.manualPairingCode === 'string') {
+            return record.manualPairingCode
+          }
+          if (typeof record.pairingCode === 'string') {
+            return record.pairingCode
+          }
+        }
+        return undefined
+      }
+
+      let result: unknown
+
+      if (method === 'thread/list') {
+        result = await listCodexThreads(currentThreadIdForCaps, params)
+      } else if (method === 'thread/read') {
+        const threadId = readThreadId(params)
+        if (!threadId) throw new Error('threadId is required for thread/read.')
+        result = await readCodexThread(currentThreadIdForCaps, threadId, params)
+      } else if (method === 'thread/loaded/list') {
+        result = await listLoadedCodexThreads(currentThreadIdForCaps)
+      } else if (method === 'thread/turns/list') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/turns/list.')
+        }
+        result = await listCodexThreadTurns(
+          currentThreadIdForCaps,
+          threadId,
+          readThreadParams(params)
+        )
+      } else if (method === 'thread/turns/items/list') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error(
+            'threadId is required for thread/turns/items/list.'
+          )
+        }
+        result = await listCodexThreadTurnItems(
+          currentThreadIdForCaps,
+          threadId,
+          readThreadParams(params)
+        )
+      } else if (method === 'thread/metadata/update') {
+        const threadId = readThreadId(params)
+        const metadata =
+          typeof params.metadata === 'object' && params.metadata !== null
+            ? (params.metadata as Record<string, unknown>)
+            : readThreadParams(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/metadata/update.')
+        }
+        result = await updateCodexThreadMetadata(
+          currentThreadIdForCaps,
+          threadId,
+          metadata
+        )
+      } else if (method === 'thread/settings/update') {
+        const threadId = readThreadId(params)
+        const settings =
+          typeof params.settings === 'object' && params.settings !== null
+            ? (params.settings as Record<string, unknown>)
+            : readThreadParams(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/settings/update.')
+        }
+        result = await updateCodexThreadSettings(
+          currentThreadIdForCaps,
+          threadId,
+          settings
+        )
+      } else if (method === 'thread/name/set') {
+        const threadId = readThreadId(params)
+        const name =
+          typeof params.name === 'string'
+            ? params.name
+            : typeof params.threadName === 'string'
+              ? params.threadName
+              : ''
+        if (!threadId) {
+          throw new Error('threadId is required for thread/name/set.')
+        }
+        if (!name) {
+          throw new Error('name is required for thread/name/set.')
+        }
+        result = await setCodexThreadName(currentThreadIdForCaps, threadId, name)
+      } else if (method === 'thread/memoryMode/set') {
+        const threadId = readThreadId(params)
+        const memoryMode = readThreadParams(params).memoryMode
+        if (!threadId) {
+          throw new Error('threadId is required for thread/memoryMode/set.')
+        }
+        if (memoryMode !== 'enabled' && memoryMode !== 'disabled') {
+          throw new Error(
+            'memoryMode must be "enabled" or "disabled" for thread/memoryMode/set.'
+          )
+        }
+        result = await setCodexThreadMemoryMode(
+          currentThreadIdForCaps,
+          threadId,
+          memoryMode
+        )
+      } else if (method === 'thread/goal/set') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/goal/set.')
+        }
+        result = await setCodexThreadGoal(
+          currentThreadIdForCaps,
+          threadId,
+          readThreadParams(params)
+        )
+      } else if (method === 'thread/goal/get') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/goal/get.')
+        }
+        result = await getCodexThreadGoal(currentThreadIdForCaps, threadId)
+      } else if (method === 'thread/goal/clear') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/goal/clear.')
+        }
+        result = await clearCodexThreadGoal(currentThreadIdForCaps, threadId)
+      } else if (method === 'thread/fork') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/fork.')
+        }
+        result = await forkCodexThread(
+          currentThreadIdForCaps,
+          threadId,
+          readThreadParams(params)
+        )
+      } else if (method === 'thread/archive') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/archive.')
+        }
+        result = await archiveCodexThread(currentThreadIdForCaps, threadId)
+      } else if (method === 'thread/unarchive') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/unarchive.')
+        }
+        result = await unarchiveCodexThread(currentThreadIdForCaps, threadId)
+      } else if (method === 'thread/unsubscribe') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/unsubscribe.')
+        }
+        result = await unsubscribeCodexThread(currentThreadIdForCaps, threadId)
+      } else if (method === 'thread/interrupt') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/interrupt.')
+        }
+        result = await interruptCodexThreadTurn(
+          currentThreadIdForCaps,
+          threadId,
+          readThreadParams(params)
+        )
+      } else if (
+        method === 'thread/compact/start' ||
+        method === 'thread/compact'
+      ) {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/compact.')
+        }
+        result = await compactCodexThreadById(
+          currentThreadIdForCaps,
+          threadId,
+          readThreadParams(params)
+        )
+      } else if (method === 'thread/reload') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/reload.')
+        }
+        result = await reloadCodexThread(currentThreadIdForCaps, threadId)
+      } else if (method === 'thread/rollback') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/rollback.')
+        }
+        result = await rollbackCodexThreadById(
+          currentThreadIdForCaps,
+          threadId,
+          readThreadParams(params)
+        )
+      } else if (method === 'review/start' || method === 'thread/review') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/review.')
+        }
+        result = await startCodexThreadReview(
+          currentThreadIdForCaps,
+          threadId,
+          readThreadParams(params)
+        )
+      } else if (method === 'thread/inject_items') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/inject_items.')
+        }
+        const items = Array.isArray(params.items) ? params.items : []
+        result = await injectCodexThreadItems(
+          currentThreadIdForCaps,
+          threadId,
+          items
+        )
+      } else if (method === 'thread/backgroundTerminals/clean') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error(
+            'threadId is required for thread/backgroundTerminals/clean.'
+          )
+        }
+        result = await cleanCodexBackgroundTerminals(
+          currentThreadIdForCaps,
+          threadId
+        )
+      } else if (method === 'thread/realtime/start') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/realtime/start.')
+        }
+        result = await startCodexThreadRealtime(
+          currentThreadIdForCaps,
+          threadId,
+          readThreadParams(params)
+        )
+      } else if (method === 'thread/realtime/appendAudio') {
+        const threadId = readThreadId(params)
+        const audioBase64 =
+          typeof params.audioBase64 === 'string'
+            ? params.audioBase64
+            : typeof params.audio === 'string'
+              ? params.audio
+              : ''
+        if (!threadId) {
+          throw new Error(
+            'threadId is required for thread/realtime/appendAudio.'
+          )
+        }
+        if (!audioBase64) {
+          throw new Error(
+            'audioBase64 is required for thread/realtime/appendAudio.'
+          )
+        }
+        result = await appendCodexThreadRealtimeAudio(
+          currentThreadIdForCaps,
+          threadId,
+          audioBase64
+        )
+      } else if (method === 'thread/realtime/appendText') {
+        const threadId = readThreadId(params)
+        const text =
+          typeof params.text === 'string'
+            ? params.text
+            : typeof params.message === 'string'
+              ? params.message
+              : ''
+        if (!threadId) {
+          throw new Error('threadId is required for thread/realtime/appendText.')
+        }
+        if (!text) {
+          throw new Error('text is required for thread/realtime/appendText.')
+        }
+        result = await appendCodexThreadRealtimeText(
+          currentThreadIdForCaps,
+          threadId,
+          text
+        )
+      } else if (method === 'thread/realtime/stop') {
+        const threadId = readThreadId(params)
+        if (!threadId) {
+          throw new Error('threadId is required for thread/realtime/stop.')
+        }
+        result = await stopCodexThreadRealtime(currentThreadIdForCaps, threadId)
+      } else if (method === 'thread/memory/reset') {
+        result = await resetCodexMemory(currentThreadIdForCaps)
+      } else if (method === 'model/list') {
+        result = await listCodexModels(currentThreadIdForCaps, params)
+      } else if (method === 'modelProvider/capabilities/read') {
+        result = await readCodexModelProviderCapabilities(
+          currentThreadIdForCaps,
+          params
+        )
+      } else if (method === 'experimentalFeature/list') {
+        result = await listCodexExperimentalFeatures(
+          currentThreadIdForCaps,
+          params
+        )
+      } else if (method === 'config/read') {
+        result = await readCodexConfig(currentThreadIdForCaps)
+      } else if (method === 'config/value/write') {
+        const keyPath =
+          typeof params.keyPath === 'string'
+            ? params.keyPath
+                .split('.')
+                .map((pathPart: string) => pathPart.trim())
+                .filter(Boolean)
+            : Array.isArray(params.keyPath)
+              ? params.keyPath
+                  .map((pathPart) =>
+                    typeof pathPart === 'string'
+                      ? pathPart.trim()
+                      : String(pathPart ?? '').trim()
+                  )
+                  .filter(Boolean)
+              : []
+        if (!keyPath.length) {
+          throw new Error('keyPath is required for config/value/write.')
+        }
+        result = await writeCodexConfigValue(
+          currentThreadIdForCaps,
+          keyPath,
+          params.value
+        )
+      } else if (method === 'configRequirements/read') {
+        result = await readCodexConfigRequirements(currentThreadIdForCaps)
+      } else if (method === 'externalAgentConfig/detect') {
+        result = await detectCodexExternalAgentConfig(
+          currentThreadIdForCaps,
+          params
+        )
+      } else if (method === 'externalAgentConfig/import') {
+        result = await importCodexExternalAgentConfig(
+          currentThreadIdForCaps,
+          { ...params, cwd }
+        )
+      } else if (method === 'feedback/upload') {
+        result = await uploadCodexFeedback(currentThreadIdForCaps, {
+          ...params,
+          cwd,
+        })
+      } else if (method === 'windowsSandbox/setupStart') {
+        result = await startCodexWindowsSandbox(currentThreadIdForCaps, params)
+      } else if (method === 'mcpServer/resource/read') {
+        result = await readCodexMcpResource(currentThreadIdForCaps, params)
+      } else if (method === 'mcpServer/tool/call') {
+        const server =
+          typeof params.server === 'string' ? params.server : ''
+        if (!server) {
+          throw new Error('server is required for mcpServer/tool/call.')
+        }
+        result = await callCodexMcpTool(currentThreadIdForCaps, params)
+      } else if (
+        method === 'mcpServer/status/list' ||
+        method === 'mcpServerStatus/list'
+      ) {
+        result = await listCodexMcpServerStatus(currentThreadIdForCaps, params)
+      } else if (method === 'mcpServer/oauth/login') {
+        const server =
+          typeof params.server === 'string'
+            ? params.server
+            : typeof params.provider === 'string'
+              ? params.provider
+              : ''
+        if (!server) {
+          throw new Error('server is required for mcpServer/oauth/login.')
+        }
+        result = await startCodexMcpOauthLogin(currentThreadIdForCaps, server)
+      } else if (method === 'config/mcpServer/reload') {
+        result = await reloadCodexMcpConfig(currentThreadIdForCaps, readThreadParams(params))
+      } else if (method === 'permissionProfile/list') {
+        result = await listCodexPermissionProfiles(currentThreadIdForCaps, params)
+      } else if (method === 'collaborationMode/list') {
+        result = await listCodexCollaborationModes(currentThreadIdForCaps)
+      } else if (method === 'skills/list') {
+        result = await listCodexSkills(currentThreadIdForCaps, params)
+      } else if (method === 'skills/config/write') {
+        result = await writeCodexSkillConfig(currentThreadIdForCaps, params)
+      } else if (method === 'hooks/list') {
+        result = await listCodexHooks(currentThreadIdForCaps)
+      } else if (method === 'plugin/list') {
+        result = await listCodexPlugins(currentThreadIdForCaps, params)
+      } else if (method === 'plugin/installed') {
+        result = await listInstalledCodexPlugins(currentThreadIdForCaps, params)
+      } else if (method === 'plugin/read') {
+        result = await readCodexPlugin(currentThreadIdForCaps, params)
+      } else if (method === 'plugin/skill/read') {
+        result = await readCodexPluginSkill(currentThreadIdForCaps, params)
+      } else if (method === 'plugin/install') {
+        result = await installCodexPlugin(currentThreadIdForCaps, params)
+      } else if (method === 'plugin/uninstall') {
+        result = await uninstallCodexPlugin(currentThreadIdForCaps, params)
+      } else if (method === 'marketplace/add') {
+        result = await addCodexMarketplace(currentThreadIdForCaps, params)
+      } else if (method === 'marketplace/remove') {
+        const marketplaceName =
+          typeof params.marketplaceName === 'string'
+            ? params.marketplaceName
+            : ''
+        if (!marketplaceName) {
+          throw new Error('marketplaceName is required for marketplace/remove.')
+        }
+        result = await removeCodexMarketplace(
+          currentThreadIdForCaps,
+          marketplaceName
+        )
+      } else if (method === 'marketplace/upgrade') {
+        result = await upgradeCodexMarketplace(currentThreadIdForCaps, params)
+      } else if (method === 'app/list') {
+        result = await listCodexApps(currentThreadIdForCaps, params)
+      } else if (method === 'account/read') {
+        const refreshToken =
+          typeof params.refreshToken === 'boolean' ? params.refreshToken : false
+        result = await readCodexAccount(currentThreadIdForCaps, refreshToken)
+      } else if (method === 'account/login/start') {
+        result = await startCodexAccountLogin(currentThreadIdForCaps, params)
+      } else if (method === 'account/login/cancel') {
+        const loginId =
+          typeof params.loginId === 'string'
+            ? params.loginId
+            : typeof params.verificationCode === 'string'
+              ? params.verificationCode
+              : ''
+        if (!loginId) {
+          throw new Error('loginId is required for account/login/cancel.')
+        }
+        result = await cancelCodexAccountLogin(currentThreadIdForCaps, loginId)
+      } else if (method === 'account/logout') {
+        result = await logoutCodexAccount(currentThreadIdForCaps)
+      } else if (method === 'account/rateLimits/read') {
+        result = await readCodexAccountRateLimits(currentThreadIdForCaps)
+      } else if (method === 'account/usage/read') {
+        result = await readCodexAccountUsage(
+          currentThreadIdForCaps,
+          readThreadParams(params)
+        )
+      } else if (method === 'account/sendAddCreditsNudgeEmail') {
+        const creditType = readThreadParams(params).creditType
+        if (creditType !== 'credits' && creditType !== 'usage_limit') {
+          throw new Error(
+            'creditType must be "credits" or "usage_limit" for account/sendAddCreditsNudgeEmail.'
+          )
+        }
+        result = await sendCodexAddCreditsNudgeEmail(
+          currentThreadIdForCaps,
+          creditType
+        )
+      } else if (method === 'process/kill') {
+        const processHandle =
+          typeof params.processHandle === 'string' ? params.processHandle : ''
+        if (!processHandle) throw new Error('processHandle is required.')
+        result = await killCodexProcess(currentThreadIdForCaps, processHandle)
+      } else if (method === 'remoteControl/enable') {
+        result = await enableCodexRemoteControl(currentThreadIdForCaps)
+      } else if (method === 'remoteControl/disable') {
+        result = await disableCodexRemoteControl(currentThreadIdForCaps)
+      } else if (method === 'remoteControl/status/read') {
+        result = await readCodexRemoteControlStatus(currentThreadIdForCaps)
+      } else if (method === 'remoteControl/pairing/start') {
+        result = await startCodexRemoteControlPairing(
+          currentThreadIdForCaps,
+          readThreadParams(params)
+        )
+      } else if (method === 'remoteControl/pairing/status') {
+        const pairingCode = readRemotePairingCode(params)
+        result = await readCodexRemoteControlPairingStatus(
+          currentThreadIdForCaps,
+          {
+            manualPairingCode: pairingCode,
+          }
+        )
+      } else if (method === 'remoteControl/client/list') {
+        result = await listCodexRemoteControlClients(
+          currentThreadIdForCaps,
+          readThreadParams(params)
+        )
+      } else if (method === 'remoteControl/client/revoke') {
+        const clientId =
+          typeof params.clientId === 'string'
+            ? params.clientId
+            : typeof params.client_id === 'string'
+              ? params.client_id
+              : ''
+        if (!clientId) {
+          throw new Error('clientId is required for remoteControl/client/revoke.')
+        }
+        result = await revokeCodexRemoteControlClient(
+          currentThreadIdForCaps,
+          clientId
+        )
+      } else {
+        result = await callCodexAppServer(
+          currentThreadIdForCaps,
+          method,
+          params
+        )
+      }
       setCodexRawRpcSnapshot({ method, params, result })
       toast.success(`Codex RPC completed: ${method}`)
     } catch (e) {
@@ -1733,25 +2784,25 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     }
   }
 
-  const runCodexCliAction = async (
-    label: string,
-    action: () => Promise<unknown>
+  const setCodexRawRpcPreset = (
+    method: string,
+    params: Record<string, unknown>
   ) => {
-    setCliBusy(true)
-    setCapError(null)
+    setCodexRawRpcMethod(method)
+    setCodexRawRpcParams(JSON.stringify(params, null, 2))
+  }
+
+  const parseCodexRawRpcPresetJson = (value: string, fallback: unknown) => {
     try {
-      const result = await action()
-      setCodexCliSnapshot({ label, result })
-      toast.success(`Codex CLI completed: ${label}`)
+      return JSON.parse(value)
     } catch (e) {
-      setCapError(`Codex CLI ${label} failed: ${String(e)}`)
-    } finally {
-      setCliBusy(false)
+      setCapError('Raw RPC preset JSON parse failed: ' + String(e))
+      return fallback
     }
   }
 
   const refreshCodexThreads = async () => {
-    if (!currentThreadIdForCaps || !isCodexForCaps) return
+    if (!currentThreadIdForCaps) return
     setThreadBusy(true)
     setCapError(null)
     try {
@@ -1944,7 +2995,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
         <div className="font-medium mb-1 flex items-center justify-between gap-2">
           <span>Codex Agent Review Analysis / Findings</span>
           <div className="flex gap-1 shrink-0">
-            {isCodexForCaps && currentThreadIdForCaps ? (
+            {currentThreadIdForCaps ? (
               <>
                 <button
                   type="button"
@@ -2049,7 +3100,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
             type="button"
             className="text-[10px] px-2 py-0.5 border rounded hover:bg-accent disabled:opacity-50"
             onClick={() => void refreshCodexCapabilities()}
-            disabled={capLoading || !currentThreadIdForCaps}
+            disabled={
+              capLoading || !currentThreadIdForCaps || isCodexProtoTransport
+            }
           >
             {capLoading ? 'Loading...' : 'Refresh from Codex session'}
           </button>
@@ -2059,7 +3112,17 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           Static declaration happens via the Advanced config snippet in the active profile.
           These extend what the agent can do without changing the git diff.
         </div>
+        {isCodexProtoTransport ? (
+          <ProtoFallbackNotice />
+        ) : null}
         {capError && <div className="text-destructive text-[10px] mb-1">{capError}</div>}
+        <fieldset
+          disabled={isCodexProtoTransport}
+          className={cn(
+            'contents',
+            isCodexProtoTransport && 'pointer-events-none opacity-60'
+          )}
+        >
         <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
           <div className="font-mono mb-1 flex items-center justify-between gap-2">
             <span>Threads</span>
@@ -2103,9 +3166,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                   if (Number.isFinite(parsedLimit) && parsedLimit > 0) {
                     params.limit = parsedLimit
                   }
-                  const result = await callCodexAppServer(
+                  const result = await listCodexThreadTurnItems(
                     currentThreadIdForCaps!,
-                    'thread/turns/items/list',
+                    threadId,
                     params
                   )
                   setCodexThreadTurnItems(result)
@@ -2139,6 +3202,103 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               value={codexInjectItemsJson}
               onChange={(event) => setCodexInjectItemsJson(event.target.value)}
             />
+          </div>
+          <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
+            <button
+              type="button"
+              className="text-[9px] underline"
+              onClick={() =>
+                setCodexThreadMetadataJson(
+                  JSON.stringify(
+                    {
+                      source: 'jan',
+                      workspace: cwd,
+                      updatedAt: new Date().toISOString(),
+                    },
+                    null,
+                    2
+                  )
+                )
+              }
+            >
+              Metadata template
+            </button>
+            <button
+              type="button"
+              className="text-[9px] underline"
+              onClick={() =>
+                setCodexThreadSettingsJson(
+                  JSON.stringify(
+                    {
+                      approvalPolicy: 'on-request',
+                      sandbox: 'workspace-write',
+                    },
+                    null,
+                    2
+                  )
+                )
+              }
+            >
+              Settings template
+            </button>
+            <button
+              type="button"
+              className="text-[9px] underline"
+              onClick={() =>
+                setCodexInjectItemsJson(
+                  JSON.stringify(
+                    [
+                      {
+                        type: 'message',
+                        role: 'user',
+                        content: [{ type: 'text', text: codexRealtimeText }],
+                      },
+                    ],
+                    null,
+                    2
+                  )
+                )
+              }
+            >
+              Inject text template
+            </button>
+            <button
+              type="button"
+              className="text-[9px] underline"
+              onClick={() =>
+                setCodexAdvancedReviewJson(
+                  JSON.stringify(
+                    {
+                      type: 'uncommittedChanges',
+                      delivery: 'detached',
+                    },
+                    null,
+                    2
+                  )
+                )
+              }
+            >
+              Review uncommitted template
+            </button>
+            <button
+              type="button"
+              className="text-[9px] underline"
+              onClick={() =>
+                setCodexAdvancedReviewJson(
+                  JSON.stringify(
+                    {
+                      type: 'branch',
+                      base: 'main',
+                      delivery: 'detached',
+                    },
+                    null,
+                    2
+                  )
+                )
+              }
+            >
+              Review branch template
+            </button>
           </div>
           <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-3">
             <Input
@@ -2238,10 +3398,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               onClick={() =>
                 void withTargetCodexThread(
                   (threadId) =>
-                    callCodexAppServer(
+                    unsubscribeCodexThread(
                       currentThreadIdForCaps!,
-                      'thread/unsubscribe',
-                      { threadId }
+                      threadId
                     ),
                   'Codex thread unsubscribed'
                 )
@@ -2271,21 +3430,16 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               className="text-[9px] underline disabled:opacity-50"
               disabled={!targetCodexThreadId || threadBusy}
               onClick={() => {
-                try {
-                  void withTargetCodexThread(
-                    (threadId) =>
-                      callCodexAppServer(
-                        currentThreadIdForCaps!,
-                        'thread/metadata/update',
-                        {
-                          threadId,
-                          metadata: JSON.parse(
-                            codexThreadMetadataJson || '{}'
+                    try {
+                      void withTargetCodexThread(
+                        (threadId) =>
+                          updateCodexThreadMetadata(
+                            currentThreadIdForCaps!,
+                            threadId,
+                            JSON.parse(codexThreadMetadataJson || '{}')
                           ),
-                        }
-                      ),
-                    'Codex thread metadata updated'
-                  )
+                        'Codex thread metadata updated'
+                      )
                 } catch (e) {
                   setCapError('Thread metadata JSON parse failed: ' + String(e))
                 }
@@ -2298,21 +3452,16 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               className="text-[9px] underline disabled:opacity-50"
               disabled={!targetCodexThreadId || threadBusy}
               onClick={() => {
-                try {
-                  void withTargetCodexThread(
-                    (threadId) =>
-                      callCodexAppServer(
-                        currentThreadIdForCaps!,
-                        'thread/settings/update',
-                        {
-                          threadId,
-                          settings: JSON.parse(
-                            codexThreadSettingsJson || '{}'
+                    try {
+                      void withTargetCodexThread(
+                        (threadId) =>
+                          updateCodexThreadSettings(
+                            currentThreadIdForCaps!,
+                            threadId,
+                            JSON.parse(codexThreadSettingsJson || '{}')
                           ),
-                        }
-                      ),
-                    'Codex thread settings updated'
-                  )
+                        'Codex thread settings updated'
+                      )
                 } catch (e) {
                   setCapError('Thread settings JSON parse failed: ' + String(e))
                 }
@@ -2406,7 +3555,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               disabled={threadBusy}
               onClick={() =>
                 void withTargetCodexThread(
-                  () => callCodexAppServer(currentThreadIdForCaps!, 'memory/reset'),
+                  () => resetCodexMemory(currentThreadIdForCaps!),
                   'Codex memory reset'
                 )
               }
@@ -2420,10 +3569,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               onClick={() =>
                 void withTargetCodexThread(
                   (threadId) =>
-                    callCodexAppServer(
+                    interruptCodexThreadTurn(
                       currentThreadIdForCaps!,
-                      'turn/interrupt',
-                      { threadId }
+                      threadId
                     ),
                   'Codex turn interrupt requested'
                 )
@@ -2438,10 +3586,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               onClick={() =>
                 void withTargetCodexThread(
                   (threadId) =>
-                    callCodexAppServer(
+                    compactCodexThreadById(
                       currentThreadIdForCaps!,
-                      'thread/compact',
-                      { threadId }
+                      threadId
                     ),
                   'Codex thread compact requested'
                 )
@@ -2456,10 +3603,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               onClick={() =>
                 void withTargetCodexThread(
                   (threadId) =>
-                    callCodexAppServer(
+                    reloadCodexThread(
                       currentThreadIdForCaps!,
-                      'thread/reload',
-                      { threadId }
+                      threadId
                     ),
                   'Codex thread reload requested'
                 )
@@ -2481,10 +3627,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 }
                 void withTargetCodexThread(
                   (threadId) =>
-                    callCodexAppServer(
+                    rollbackCodexThreadById(
                       currentThreadIdForCaps!,
-                      'thread/rollback',
-                      { threadId, ...params }
+                      threadId,
+                      params
                     ),
                   'Codex rollback requested'
                 )
@@ -2501,10 +3647,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                   const params = JSON.parse(codexAdvancedReviewJson || '{}')
                   void withTargetCodexThread(
                     (threadId) =>
-                      callCodexAppServer(
+                      startCodexThreadReview(
                         currentThreadIdForCaps!,
-                        'review/start',
-                        { threadId, ...params }
+                        threadId,
+                        params
                       ),
                     'Codex review requested'
                   )
@@ -2523,13 +3669,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 try {
                   void withTargetCodexThread(
                     (threadId) =>
-                      callCodexAppServer(
+                      injectCodexThreadItems(
                         currentThreadIdForCaps!,
-                        'thread/inject_items',
-                        {
-                          threadId,
-                          items: JSON.parse(codexInjectItemsJson || '[]'),
-                        }
+                        threadId,
+                        JSON.parse(codexInjectItemsJson || '[]')
                       ),
                     'Codex thread items injected'
                   )
@@ -2547,10 +3690,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               onClick={() =>
                 void withTargetCodexThread(
                   (threadId) =>
-                    callCodexAppServer(
+                    cleanCodexBackgroundTerminals(
                       currentThreadIdForCaps!,
-                      'thread/backgroundTerminals/clean',
-                      { threadId }
+                      threadId
                     ),
                   'Codex background terminals cleaned'
                 )
@@ -2565,10 +3707,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               onClick={() =>
                 void withTargetCodexThread(
                   (threadId) =>
-                    callCodexAppServer(
+                    startCodexThreadRealtime(
                       currentThreadIdForCaps!,
-                      'thread/realtime/start',
-                      { threadId }
+                      threadId
                     ),
                   'Codex realtime started'
                 )
@@ -2584,10 +3725,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 const text = codexRealtimeText
                 void withTargetCodexThread(
                   (threadId) =>
-                    callCodexAppServer(
+                    appendCodexThreadRealtimeText(
                       currentThreadIdForCaps!,
-                      'thread/realtime/appendText',
-                      { threadId, text }
+                      threadId,
+                      text
                     ),
                   'Codex realtime text appended'
                 )
@@ -2604,10 +3745,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 if (!audioBase64) return
                 void withTargetCodexThread(
                   (threadId) =>
-                    callCodexAppServer(
+                    appendCodexThreadRealtimeAudio(
                       currentThreadIdForCaps!,
-                      'thread/realtime/appendAudio',
-                      { threadId, audioBase64: audioBase64.trim() }
+                      threadId,
+                      audioBase64.trim()
                     ),
                   'Codex realtime audio appended'
                 )
@@ -2622,10 +3763,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               onClick={() =>
                 void withTargetCodexThread(
                   (threadId) =>
-                    callCodexAppServer(
+                    stopCodexThreadRealtime(
                       currentThreadIdForCaps!,
-                      'thread/realtime/stop',
-                      { threadId }
+                      threadId
                     ),
                   'Codex realtime stopped'
                 )
@@ -2646,6 +3786,80 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 : '— stored threads'}
             </pre>
           </div>
+          {codexThreadDescriptors.length ? (
+            <div className="mt-1 grid grid-cols-1 gap-1 md:grid-cols-3">
+              <Input
+                className="h-6 px-2 text-[10px]"
+                placeholder="Search threads"
+                value={codexThreadFilter}
+                onChange={(event) => setCodexThreadFilter(event.target.value)}
+              />
+              <select
+                className="h-6 rounded border bg-background px-2 text-[10px]"
+                value={codexThreadSourceFilter}
+                onChange={(event) =>
+                  setCodexThreadSourceFilter(
+                    event.target.value as 'all' | 'loaded' | 'stored'
+                  )
+                }
+              >
+                <option value="all">All sources</option>
+                <option value="loaded">Loaded only</option>
+                <option value="stored">Stored only</option>
+              </select>
+              <select
+                className="h-6 rounded border bg-background px-2 text-[10px]"
+                value={codexThreadSort}
+                onChange={(event) =>
+                  setCodexThreadSort(
+                    event.target.value as 'updated' | 'name' | 'source'
+                  )
+                }
+              >
+                <option value="updated">Sort by updated</option>
+                <option value="name">Sort by name</option>
+                <option value="source">Sort by source</option>
+              </select>
+            </div>
+          ) : null}
+          {codexThreadDescriptors.length ? (
+            <div className="mt-1 grid grid-cols-1 gap-1 md:grid-cols-2">
+              <div className="col-span-full text-[9px] text-muted-foreground">
+                {filteredCodexThreadDescriptors.length}/
+                {codexThreadDescriptors.length} threads
+              </div>
+              {filteredCodexThreadDescriptors.map((thread) => (
+                <button
+                  key={thread.id}
+                  type="button"
+                  className={cn(
+                    'min-w-0 rounded border px-1.5 py-1 text-left hover:bg-accent',
+                    targetCodexThreadId === thread.id && 'bg-accent'
+                  )}
+                  title={thread.id}
+                  onClick={() => setCodexThreadId(thread.id)}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-mono text-[9px]">
+                      {thread.name ?? thread.id}
+                    </span>
+                    <span className="shrink-0 text-[9px] text-muted-foreground">
+                      {thread.source}
+                    </span>
+                  </div>
+                  <div className="truncate text-[9px] text-muted-foreground">
+                    {thread.status ? `${thread.status} · ` : ''}
+                    {thread.updatedAt ?? thread.id}
+                  </div>
+                </button>
+              ))}
+              {!filteredCodexThreadDescriptors.length ? (
+                <div className="col-span-full rounded border px-1.5 py-2 text-[9px] text-muted-foreground">
+                  No matching Codex threads.
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {selectableCodexThreadIds.length ? (
             <div className="mt-1 flex flex-wrap gap-1">
               {selectableCodexThreadIds.map((threadId) => (
@@ -2662,6 +3876,42 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                   {threadId}
                 </button>
               ))}
+            </div>
+          ) : null}
+          {selectedCodexThreadSummary ? (
+            <div className="mt-1 rounded border bg-background/40 p-1 text-[10px]">
+              <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
+                <span className="truncate">
+                  Selected thread:{' '}
+                  {selectedCodexThreadSummary.name ??
+                    selectedCodexThreadSummary.id}
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  {selectedCodexThreadSummary.source ?? 'manual'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[9px] md:grid-cols-4">
+                <span className="text-muted-foreground">status</span>
+                <span className="truncate">
+                  {selectedCodexThreadSummary.status ?? '—'}
+                </span>
+                <span className="text-muted-foreground">updated</span>
+                <span className="truncate">
+                  {selectedCodexThreadSummary.updatedAt ?? '—'}
+                </span>
+                <span className="text-muted-foreground">turns</span>
+                <span>{selectedCodexThreadSummary.turns ?? '—'}</span>
+                <span className="text-muted-foreground">items</span>
+                <span>{selectedCodexThreadSummary.turnItems ?? '—'}</span>
+                <span className="text-muted-foreground">goal</span>
+                <span className="truncate md:col-span-3">
+                  {selectedCodexThreadSummary.goal || '—'}
+                </span>
+                <span className="text-muted-foreground">snapshot</span>
+                <span className="truncate md:col-span-3">
+                  {selectedCodexThreadSummary.snapshot || '—'}
+                </span>
+              </div>
             </div>
           ) : null}
           <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words">
@@ -2908,11 +4158,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 onClick={() =>
                   void runRemoteControlAction(
                     () =>
-                      callCodexAppServer(
-                        currentThreadIdForCaps!,
-                        'remoteControl/client/list',
-                        {}
-                      ),
+                      listCodexRemoteControlClients(currentThreadIdForCaps!, {}),
                     'Remote clients loaded'
                   )
                 }
@@ -2971,10 +4217,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               onClick={() => {
                 void runRemoteControlAction(
                   () =>
-                    callCodexAppServer(
+                    revokeCodexRemoteControlClient(
                       currentThreadIdForCaps!,
-                      'remoteControl/client/revoke',
-                      { clientId: remoteClientId.trim() }
+                      remoteClientId.trim()
                     ),
                   'Remote client revoked'
                 )
@@ -3060,16 +4305,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 setAdminBusy(true)
                 setCapError(null)
                 try {
-                  await callCodexAppServer(
+                  await writeCodexConfigValue(
                     currentThreadIdForCaps,
-                    'config/value/write',
-                    {
-                      keyPath: keyPath
-                        .split('.')
-                        .map((part) => part.trim())
-                        .filter(Boolean),
-                      value: JSON.parse(codexConfigValueJson || 'null'),
-                    }
+                    keyPath.split('.').map((part) => part.trim()).filter(Boolean),
+                    JSON.parse(codexConfigValueJson || 'null')
                   )
                   await refreshCodexAdminSnapshot()
                   toast.success('Codex config value written')
@@ -3091,9 +4330,8 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 setCapError(null)
                 try {
                   const params = JSON.parse(codexConfigBatchJson || '{}')
-                  const result = await callCodexAppServer(
+                  const result = await writeCodexConfigBatch(
                     currentThreadIdForCaps,
-                    'config/batchWrite',
                     params
                   )
                   setCodexAdminSnapshot((previous: any) => ({
@@ -3120,9 +4358,8 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 setAdminBusy(true)
                 setCapError(null)
                 try {
-                  const result = await callCodexAppServer(
+                  const result = await uploadCodexFeedback(
                     currentThreadIdForCaps,
-                    'feedback/upload',
                     { cwd }
                   )
                   setCodexAdminSnapshot((previous: any) => ({
@@ -3148,9 +4385,8 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 setAdminBusy(true)
                 setCapError(null)
                 try {
-                  const result = await callCodexAppServer(
+                  const result = await startCodexWindowsSandbox(
                     currentThreadIdForCaps,
-                    'windowsSandbox/setupStart',
                     JSON.parse(codexWindowsSandboxJson || '{}')
                   )
                   setCodexAdminSnapshot((previous: any) => ({
@@ -3179,13 +4415,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                   const parsedParams = JSON.parse(
                     codexExternalAgentImportJson || '{}'
                   )
-                  const result = await callCodexAppServer(
+                  const result = await importCodexExternalAgentConfig(
                     currentThreadIdForCaps,
-                    'externalAgentConfig/import',
-                    {
-                      cwd,
-                      ...parsedParams,
-                    }
+                    { cwd, ...parsedParams }
                   )
                   setCodexAdminSnapshot((previous: any) => ({
                     ...(previous ?? {}),
@@ -3331,148 +4563,32 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               : '— (refresh to load)'}
           </pre>
         </div>
-        <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-1 flex items-center justify-between gap-2">
-            <span>Raw app-server RPC</span>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                rawRpcBusy ||
-                !codexRawRpcMethod.trim()
-              }
-              onClick={() => void runCodexRawRpc()}
-            >
-              {rawRpcBusy ? 'Calling' : 'Call'}
-            </button>
-          </div>
-          <div className="mb-1 text-[10px] text-muted-foreground">
-            Escape hatch for current or future Codex app-server methods that do
-            not yet have dedicated UI controls.
-          </div>
-          <Input
-            className="mb-1 h-6 px-2 text-[10px]"
-            placeholder="method, e.g. model/list"
-            value={codexRawRpcMethod}
-            onChange={(event) => setCodexRawRpcMethod(event.target.value)}
-          />
-          <textarea
-            className="mb-1 min-h-16 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder="params JSON"
-            value={codexRawRpcParams}
-            onChange={(event) => setCodexRawRpcParams(event.target.value)}
-          />
-          <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
-            {codexRawRpcSnapshot
-              ? JSON.stringify(codexRawRpcSnapshot, null, 2)
-              : '— (raw RPC result)'}
-          </pre>
-        </div>
-        <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-1 flex items-center justify-between gap-2">
-            <span>Codex CLI</span>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={cliBusy}
-              onClick={() =>
-                void runCodexCliAction('doctor', () =>
-                  runCodexDoctor({ cwd })
-                )
-              }
-            >
-              Doctor
-            </button>
-          </div>
-          <div className="mb-1 text-[10px] text-muted-foreground">
-            Runs Codex CLI subcommands through the desktop bridge against the
-            active workspace. This complements app-server chat with CLI-native
-            diagnostics and non-interactive automation.
-          </div>
-          <textarea
-            className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder="codex exec prompt"
-            value={codexCliExecPrompt}
-            onChange={(event) => setCodexCliExecPrompt(event.target.value)}
-          />
-          <Input
-            className="mb-1 h-6 px-2 text-[10px]"
-            placeholder="codex resume --last prompt (optional)"
-            value={codexCliResumePrompt}
-            onChange={(event) => setCodexCliResumePrompt(event.target.value)}
-          />
-          <textarea
-            className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder="raw Codex CLI args JSON array"
-            value={codexCliRawArgs}
-            onChange={(event) => setCodexCliRawArgs(event.target.value)}
-          />
-          <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={cliBusy || !codexCliExecPrompt.trim()}
-              onClick={() => {
-                void runCodexCliAction('exec', () =>
-                  runCodexExec({
-                    prompt: codexCliExecPrompt.trim(),
-                    cwd,
-                    sandbox: 'workspace-write',
-                  })
-                )
-              }}
-            >
-              Exec
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={cliBusy}
-              onClick={() => {
-                void runCodexCliAction('resume --last', () =>
-                  runCodexResume({
-                    last: true,
-                    prompt: codexCliResumePrompt.trim() || undefined,
-                    cwd,
-                  })
-                )
-              }}
-            >
-              Resume last
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={cliBusy}
-              onClick={() => {
-                try {
-                  const args = JSON.parse(codexCliRawArgs || '[]')
-                  if (!Array.isArray(args)) {
-                    setCapError('Codex CLI args must be a JSON array.')
-                    return
-                  }
-                  void runCodexCliAction('raw', () =>
-                    runCodexCliSubcommand({
-                      command: 'codex',
-                      args: args.map((arg) => String(arg)),
-                      cwd,
-                    })
-                  )
-                } catch (e) {
-                  setCapError('Codex CLI args JSON parse failed: ' + String(e))
-                }
-              }}
-            >
-              Raw CLI
-            </button>
-          </div>
-          <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
-            {codexCliSnapshot
-              ? JSON.stringify(codexCliSnapshot, null, 2)
-              : '— (CLI result)'}
-          </pre>
-        </div>
+        <RawRpcTool
+          codexConfigKeyPath={codexConfigKeyPath}
+          codexConfigValueJson={codexConfigValueJson}
+          codexMcpServerName={codexMcpServerName}
+          codexMcpToolArguments={codexMcpToolArguments}
+          codexMcpToolName={codexMcpToolName}
+          codexPluginId={codexPluginId}
+          codexProcessHandle={codexProcessHandle}
+          codexRawRpcCatalog={codexRawRpcCatalog}
+          codexRawRpcCatalogFilter={codexRawRpcCatalogFilter}
+          codexRawRpcMethod={codexRawRpcMethod}
+          codexRawRpcParams={codexRawRpcParams}
+          codexRawRpcSnapshot={codexRawRpcSnapshot}
+          codexTurnItemsLimit={codexTurnItemsLimit}
+          currentThreadIdForCaps={currentThreadIdForCaps}
+          filteredCodexRawRpcCatalog={filteredCodexRawRpcCatalog}
+          parseCodexRawRpcPresetJson={parseCodexRawRpcPresetJson}
+          rawRpcBusy={rawRpcBusy}
+          runCodexRawRpc={runCodexRawRpc}
+          setCodexRawRpcCatalogFilter={setCodexRawRpcCatalogFilter}
+          setCodexRawRpcMethod={setCodexRawRpcMethod}
+          setCodexRawRpcParams={setCodexRawRpcParams}
+          setCodexRawRpcPreset={setCodexRawRpcPreset}
+          targetCodexThreadId={targetCodexThreadId}
+        />
+        <CodexCliPanel cwd={cwd} />
         <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
           <div className="font-mono mb-1 flex items-center justify-between gap-2">
             <span>Plugins / Marketplace / Skills</span>
@@ -3515,6 +4631,22 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               value={codexMarketplaceSource}
               onChange={(event) => setCodexMarketplaceSource(event.target.value)}
             />
+            <Input
+              className="h-6 px-2 text-[10px]"
+              placeholder="Search plugins / skills"
+              value={codexMarketplaceFilter}
+              onChange={(event) => setCodexMarketplaceFilter(event.target.value)}
+            />
+            <label className="flex h-6 items-center gap-1 rounded border px-2 text-[10px] text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={codexMarketplaceInstalledOnly}
+                onChange={(event) =>
+                  setCodexMarketplaceInstalledOnly(event.target.checked)
+                }
+              />
+              Installed plugins only
+            </label>
           </div>
           <textarea
             className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
@@ -3695,6 +4827,210 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               Write skill config
             </button>
           </div>
+          {codexMarketplaceDescriptors.length ? (
+            <div className="mb-1 rounded border bg-background/40 p-1">
+              <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
+                <span>Marketplace sources</span>
+                <span className="text-muted-foreground">
+                  {codexMarketplaceDescriptors.length}
+                </span>
+              </div>
+              <div className="max-h-24 space-y-1 overflow-auto">
+                {codexMarketplaceDescriptors.map((marketplace) => (
+                  <button
+                    key={marketplace.name}
+                    type="button"
+                    className="block w-full rounded border px-1.5 py-1 text-left hover:bg-accent"
+                    title={marketplace.description ?? marketplace.source ?? marketplace.name}
+                    onClick={() => {
+                      setCodexMarketplaceName(marketplace.name)
+                      if (marketplace.source) {
+                        setCodexMarketplaceSource(marketplace.source)
+                      }
+                    }}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate font-mono text-[9px]">
+                        {marketplace.name}
+                      </span>
+                      <span className="shrink-0 text-[9px] text-muted-foreground">
+                        {marketplace.status ?? 'source'}
+                      </span>
+                    </div>
+                    <div className="truncate text-[9px] text-muted-foreground">
+                      {marketplace.source ??
+                        marketplace.description ??
+                        'no source metadata'}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {codexPluginDescriptors.length || codexSkillDescriptors.length ? (
+            <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
+              <div className="rounded border bg-background/40 p-1">
+                <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
+                  <span>Plugins</span>
+                  <span className="text-muted-foreground">
+                    {filteredCodexPluginDescriptors.length}/
+                    {codexPluginDescriptors.length}
+                  </span>
+                </div>
+                {filteredCodexPluginDescriptors.length ? (
+                  <div className="max-h-32 space-y-1 overflow-auto">
+                    {filteredCodexPluginDescriptors.map((plugin) => (
+                      <button
+                        key={plugin.id}
+                        type="button"
+                        className="block w-full rounded border px-1.5 py-1 text-left hover:bg-accent"
+                        title={plugin.description ?? plugin.id}
+                        onClick={() => setCodexPluginId(plugin.id)}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate font-mono text-[9px]">
+                            {plugin.name ?? plugin.id}
+                          </span>
+                          <span className="shrink-0 text-[9px] text-muted-foreground">
+                            {plugin.installed ? 'installed' : 'available'}
+                          </span>
+                        </div>
+                        <div className="truncate text-[9px] text-muted-foreground">
+                          {plugin.version ? `v${plugin.version} · ` : ''}
+                          {plugin.description ?? plugin.id}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[9px] text-muted-foreground">
+                    No matching plugin descriptors.
+                  </div>
+                )}
+              </div>
+              <div className="rounded border bg-background/40 p-1">
+                <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
+                  <span>Skills</span>
+                  <span className="text-muted-foreground">
+                    {filteredCodexSkillDescriptors.length}/
+                    {codexSkillDescriptors.length}
+                  </span>
+                </div>
+                {filteredCodexSkillDescriptors.length ? (
+                  <div className="max-h-32 space-y-1 overflow-auto">
+                    {filteredCodexSkillDescriptors.map((skill) => (
+                      <button
+                        key={skill.id}
+                        type="button"
+                        className="block w-full rounded border px-1.5 py-1 text-left hover:bg-accent"
+                        title={skill.description ?? skill.id}
+                        onClick={() => {
+                          setCodexPluginSkillId(skill.id)
+                          if (skill.pluginId) setCodexPluginId(skill.pluginId)
+                        }}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate font-mono text-[9px]">
+                            {skill.name ?? skill.id}
+                          </span>
+                          <span className="shrink-0 text-[9px] text-muted-foreground">
+                            {skill.enabled ? 'enabled' : skill.pluginId ?? ''}
+                          </span>
+                        </div>
+                        <div className="truncate text-[9px] text-muted-foreground">
+                          {skill.description ?? skill.pluginId ?? skill.id}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[9px] text-muted-foreground">
+                    No matching skill descriptors.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+          <MarketplaceSelectionDetails
+            currentThreadIdForCaps={currentThreadIdForCaps}
+            marketplaceBusy={marketplaceBusy}
+            selectedCodexPluginDescriptor={selectedCodexPluginDescriptor}
+            selectedCodexPluginMetadataKeys={selectedCodexPluginMetadataKeys}
+            selectedCodexSkillDescriptor={selectedCodexSkillDescriptor}
+            onCopyPluginMetadata={async () => {
+              if (!selectedCodexPluginDescriptor?.raw) return
+              await navigator.clipboard.writeText(
+                JSON.stringify(selectedCodexPluginDescriptor.raw, null, 2)
+              )
+              toast.success('Codex plugin metadata copied')
+            }}
+            onReadPlugin={() => {
+              if (!selectedCodexPluginDescriptor) return
+              void runCodexMarketplaceAction(
+                'plugin/read',
+                {
+                  plugin: selectedCodexPluginDescriptor.id,
+                  pluginId: selectedCodexPluginDescriptor.id,
+                },
+                'Codex plugin metadata loaded'
+              )
+            }}
+            onInstallPlugin={() => {
+              if (!selectedCodexPluginDescriptor) return
+              void runCodexMarketplaceAction(
+                'plugin/install',
+                {
+                  plugin: selectedCodexPluginDescriptor.id,
+                  pluginId: selectedCodexPluginDescriptor.id,
+                },
+                'Codex plugin install requested'
+              )
+            }}
+            onUninstallPlugin={() => {
+              if (!selectedCodexPluginDescriptor) return
+              void runCodexMarketplaceAction(
+                'plugin/uninstall',
+                {
+                  plugin: selectedCodexPluginDescriptor.id,
+                  pluginId: selectedCodexPluginDescriptor.id,
+                },
+                'Codex plugin uninstall requested'
+              )
+            }}
+            onReadSkill={() => {
+              if (!selectedCodexSkillDescriptor) return
+              const pluginId =
+                selectedCodexPluginDescriptor?.id ||
+                selectedCodexSkillDescriptor.pluginId
+              if (!pluginId) return
+              void runCodexMarketplaceAction(
+                'plugin/skill/read',
+                {
+                  plugin: pluginId,
+                  pluginId,
+                  skill: selectedCodexSkillDescriptor.id,
+                  skillId: selectedCodexSkillDescriptor.id,
+                },
+                'Codex plugin skill loaded'
+              )
+            }}
+            onWriteSkillConfig={() => {
+              if (!selectedCodexSkillDescriptor) return
+              try {
+                void runCodexMarketplaceAction(
+                  'skills/config/write',
+                  {
+                    skill: selectedCodexSkillDescriptor.id,
+                    skillId: selectedCodexSkillDescriptor.id,
+                    config: JSON.parse(codexSkillConfigJson || '{}'),
+                  },
+                  'Codex skill config written'
+                )
+              } catch (e) {
+                setCapError('Skill config JSON parse failed: ' + String(e))
+              }
+            }}
+          />
           <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
             {codexMarketplaceSnapshot
               ? JSON.stringify(codexMarketplaceSnapshot, null, 2)
@@ -4097,6 +5433,190 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               Cmd terminate
             </button>
           </div>
+          <div
+            className={cn(
+              'mb-1 rounded border border-border/60 bg-[#050505] text-[10px] text-zinc-100',
+              codexProcessTerminalExpanded &&
+                'fixed inset-4 z-50 flex flex-col shadow-2xl'
+            )}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-white/10 px-2 py-1 font-mono">
+              <span>Codex process terminal</span>
+              <div className="flex gap-2">
+                <Input
+                  className="h-5 w-32 border-white/20 bg-black/40 px-1.5 text-[9px] text-zinc-100"
+                  placeholder="Search output"
+                  value={codexProcessTerminalFilter}
+                  onChange={(event) =>
+                    setCodexProcessTerminalFilter(event.target.value)
+                  }
+                />
+                <button
+                  type="button"
+                  className="text-[9px] underline disabled:opacity-50"
+                  disabled={!selectedCodexProcessTerminal}
+                  onClick={async () => {
+                    if (!selectedCodexProcessTerminal) return
+                    await navigator.clipboard.writeText(
+                      selectedCodexProcessTerminal.lines.join('\n')
+                    )
+                    toast.success('Codex terminal output copied')
+                  }}
+                >
+                  Copy output
+                </button>
+                <Input
+                  className="h-5 w-12 border-white/20 bg-black/40 px-1.5 text-[9px] text-zinc-100"
+                  placeholder="rows"
+                  value={codexProcessTerminalRows}
+                  onChange={(event) =>
+                    setCodexProcessTerminalRows(event.target.value)
+                  }
+                />
+                <Input
+                  className="h-5 w-12 border-white/20 bg-black/40 px-1.5 text-[9px] text-zinc-100"
+                  placeholder="cols"
+                  value={codexProcessTerminalCols}
+                  onChange={(event) =>
+                    setCodexProcessTerminalCols(event.target.value)
+                  }
+                />
+                <button
+                  type="button"
+                  className="text-[9px] underline disabled:opacity-50"
+                  disabled={!selectedCodexProcessTerminal || runtimeBusy}
+                  onClick={() => {
+                    if (!selectedCodexProcessTerminal) return
+                    const rows =
+                      Number.parseInt(codexProcessTerminalRows, 10) || 24
+                    const cols =
+                      Number.parseInt(codexProcessTerminalCols, 10) || 80
+                    const size = { rows, cols }
+                    setCodexRuntimePtySize(JSON.stringify(size))
+                    const handle = selectedCodexProcessTerminal.handle
+                    if (selectedCodexProcessTerminal.kind === 'command') {
+                      void runCodexRuntimeAction(
+                        'command/resize',
+                        { processId: handle, size },
+                        'Codex command PTY resized'
+                      )
+                    } else {
+                      void runCodexRuntimeAction(
+                        'process/resizePty',
+                        { processHandle: handle, size },
+                        'Codex PTY resized'
+                      )
+                    }
+                  }}
+                >
+                  Apply size
+                </button>
+                <button
+                  type="button"
+                  className="text-[9px] underline"
+                  onClick={() =>
+                    setCodexProcessTerminalExpanded((expanded) => !expanded)
+                  }
+                >
+                  {codexProcessTerminalExpanded ? 'Collapse' : 'Expand'}
+                </button>
+                <button
+                  type="button"
+                  className="text-[9px] underline disabled:opacity-50"
+                  disabled={!codexProcessHandle.trim()}
+                  onClick={() =>
+                    appendCodexTerminalLines(
+                      codexProcessHandle.trim(),
+                      [`attached ${codexProcessHandle.trim()}`],
+                      { label: codexProcessHandle.trim() }
+                    )
+                  }
+                >
+                  Attach handle
+                </button>
+                <button
+                  type="button"
+                  className="text-[9px] underline disabled:opacity-50"
+                  disabled={!codexProcessTerminals.length}
+                  onClick={() => {
+                    setCodexProcessTerminals([])
+                    clearCodexProcessEvents()
+                    lastCodexProcessEventTimestampRef.current = Date.now()
+                  }}
+                >
+                  Clear terminals
+                </button>
+              </div>
+            </div>
+            {codexProcessTerminals.length ? (
+              <div
+                className={cn(
+                  'grid grid-cols-1 md:grid-cols-[11rem_1fr]',
+                  codexProcessTerminalExpanded && 'min-h-0 flex-1'
+                )}
+              >
+                <div
+                  className={cn(
+                    'max-h-44 overflow-auto border-b border-white/10 p-1 md:border-b-0 md:border-r',
+                    codexProcessTerminalExpanded && 'max-h-none'
+                  )}
+                >
+                  {codexProcessTerminals.map((session) => (
+                    <button
+                      key={session.handle}
+                      type="button"
+                      className={cn(
+                        'mb-1 flex w-full min-w-0 flex-col rounded border border-white/10 px-1.5 py-1 text-left hover:bg-white/10',
+                        codexProcessHandle.trim() === session.handle &&
+                          'bg-white/10'
+                      )}
+                      title={session.handle}
+                      onClick={() => setCodexProcessHandle(session.handle)}
+                    >
+                      <span className="truncate font-mono text-[9px]">
+                        {session.kind}:{session.label}
+                      </span>
+                      <span className="text-[9px] text-zinc-400">
+                        {session.status} · {session.lines.length} lines
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <div
+                  className={cn(
+                    'max-h-52 min-h-28 overflow-auto p-2 font-mono leading-relaxed',
+                    codexProcessTerminalExpanded && 'max-h-none min-h-0'
+                  )}
+                >
+                  {selectedCodexProcessTerminal ? (
+                    filteredCodexProcessTerminalLines.length ? (
+                      filteredCodexProcessTerminalLines.map((line, index) => (
+                      <div
+                        key={`${codexProcessHandle}-${index}`}
+                        className="whitespace-pre-wrap break-words"
+                      >
+                        {line || ' '}
+                      </div>
+                      ))
+                    ) : (
+                      <div className="text-zinc-500">
+                        No terminal lines match the current search.
+                      </div>
+                    )
+                  ) : (
+                    <div className="text-zinc-500">
+                      Select a process session to view output.
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="px-2 py-3 text-zinc-500">
+                Spawn a process, run command/exec, or attach a known process
+                handle to start a terminal session.
+              </div>
+            )}
+          </div>
           <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
             {codexRuntimeSnapshot
               ? JSON.stringify(codexRuntimeSnapshot, null, 2)
@@ -4170,6 +5690,20 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
             value={codexMcpToolArguments}
             onChange={(event) => setCodexMcpToolArguments(event.target.value)}
           />
+          {selectedCodexMcpToolDescriptor?.inputSchema ? (
+            <div
+              className={cn(
+                'mb-1 rounded border px-2 py-1 text-[9px]',
+                codexMcpToolArgumentValidation.length
+                  ? 'border-destructive/40 bg-destructive/5 text-destructive'
+                  : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+              )}
+            >
+              {codexMcpToolArgumentValidation.length
+                ? codexMcpToolArgumentValidation.slice(0, 4).join('; ')
+                : 'Tool arguments match the selected tool schema.'}
+            </div>
+          ) : null}
           <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
             <button
               type="button"
@@ -4214,7 +5748,8 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 !currentThreadIdForCaps ||
                 mcpBusy ||
                 !codexMcpServerName.trim() ||
-                !codexMcpToolName.trim()
+                !codexMcpToolName.trim() ||
+                codexMcpToolArgumentValidation.length > 0
               }
               onClick={() => {
                 try {
@@ -4254,6 +5789,140 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               ))}
             </div>
           ) : null}
+          {selectableCodexMcpResourceUris.length ? (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {selectableCodexMcpResourceUris.map((resourceUri) => (
+                <button
+                  key={resourceUri}
+                  type="button"
+                  className={cn(
+                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
+                    codexMcpResourceUri.trim() === resourceUri && 'bg-accent'
+                  )}
+                  title={resourceUri}
+                  onClick={() => setCodexMcpResourceUri(resourceUri)}
+                >
+                  resource:{resourceUri}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {selectableCodexMcpToolNames.length ? (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {selectableCodexMcpToolNames.map((toolName) => (
+                <button
+                  key={toolName}
+                  type="button"
+                  className={cn(
+                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
+                    codexMcpToolName.trim() === toolName && 'bg-accent'
+                  )}
+                  title={toolName}
+                  onClick={() => setCodexMcpToolName(toolName)}
+                >
+                  tool:{toolName}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {codexMcpResourceDescriptors.length ||
+          codexMcpToolDescriptors.length ? (
+            <div className="mt-2 grid grid-cols-1 gap-1 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <Input
+                  className="h-6 px-2 text-[10px]"
+                  placeholder="Search MCP resources / tools"
+                  value={codexMcpDescriptorFilter}
+                  onChange={(event) =>
+                    setCodexMcpDescriptorFilter(event.target.value)
+                  }
+                />
+              </div>
+              <div className="rounded border bg-background/40 p-1">
+                <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
+                  <span>MCP resources</span>
+                  <span className="text-muted-foreground">
+                    {filteredCodexMcpResourceDescriptors.length}/
+                    {codexMcpResourceDescriptors.length}
+                  </span>
+                </div>
+                {filteredCodexMcpResourceDescriptors.length ? (
+                  <div className="max-h-28 space-y-1 overflow-auto">
+                    {filteredCodexMcpResourceDescriptors.map((descriptor) => (
+                      <button
+                        key={descriptor.uri}
+                        type="button"
+                        className="block w-full rounded border px-1.5 py-1 text-left hover:bg-accent"
+                        title={descriptor.description ?? descriptor.uri}
+                        onClick={() => setCodexMcpResourceUri(descriptor.uri)}
+                      >
+                        <div className="truncate font-mono text-[9px]">
+                          {descriptor.name ?? descriptor.uri}
+                        </div>
+                        <div className="truncate text-[9px] text-muted-foreground">
+                          {descriptor.mimeType
+                            ? `${descriptor.mimeType} · `
+                            : ''}
+                          {descriptor.uri}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[9px] text-muted-foreground">
+                    No matching resource descriptors.
+                  </div>
+                )}
+              </div>
+              <div className="rounded border bg-background/40 p-1">
+                <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
+                  <span>MCP tools</span>
+                  <span className="text-muted-foreground">
+                    {filteredCodexMcpToolDescriptors.length}/
+                    {codexMcpToolDescriptors.length}
+                  </span>
+                </div>
+                {filteredCodexMcpToolDescriptors.length ? (
+                  <div className="max-h-28 space-y-1 overflow-auto">
+                    {filteredCodexMcpToolDescriptors.map((descriptor) => (
+                      <button
+                        key={descriptor.name}
+                        type="button"
+                        className="block w-full rounded border px-1.5 py-1 text-left hover:bg-accent"
+                        title={descriptor.description ?? descriptor.name}
+                        onClick={() => {
+                          setCodexMcpToolName(descriptor.name)
+                          setCodexMcpToolArguments(
+                            JSON.stringify(
+                              buildJsonTemplateFromSchema(
+                                descriptor.inputSchema
+                              ),
+                              null,
+                              2
+                            )
+                          )
+                        }}
+                      >
+                        <div className="truncate font-mono text-[9px]">
+                          {descriptor.name}
+                        </div>
+                        <div className="truncate text-[9px] text-muted-foreground">
+                          {descriptor.description ??
+                            (descriptor.inputSchema
+                              ? 'schema available'
+                              : 'no schema')}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[9px] text-muted-foreground">
+                    No matching tool descriptors.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
           <pre className="mt-1 whitespace-pre-wrap break-words max-h-24 overflow-auto">
             {codexMcpSnapshot
               ? JSON.stringify(codexMcpSnapshot, null, 2)
@@ -4291,8 +5960,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           </pre>
         </div>
         <div className="mt-1 text-[9px] text-muted-foreground">
-          Full layer also includes remoteControl/*, marketplace, config read/write, listCollaborationModes, codex doctor/exec (Studio), and git worktrees (Projects menu).
+          Full layer also includes remoteControl/*, marketplace, config read/write, listCollaborationModes, Studio CLI actions, and git worktrees (Projects menu).
         </div>
+        </fieldset>
       </div>
     </section>
   )

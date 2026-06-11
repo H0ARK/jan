@@ -4,7 +4,6 @@ export type ChatSlashCommandId =
   | 'interrupt'
   | 'rollback'
   | 'reload'
-  | 'doctor'
   | 'mcp'
   | 'clear'
   | 'help'
@@ -58,12 +57,6 @@ export const CHAT_SLASH_COMMANDS: ChatSlashCommand[] = [
     description: 'Reload Codex user configuration',
     codexOnly: true,
     requiresThread: true,
-  },
-  {
-    id: 'doctor',
-    name: 'doctor',
-    description: 'Run Codex doctor diagnostics',
-    codexOnly: true,
   },
   {
     id: 'mcp',

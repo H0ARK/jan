@@ -43,12 +43,34 @@ export class CodexProtoSession {
   private initializePromise: Promise<CodexInitializeResult> | null = null
   private readonly queue = createEventQueue()
   private readonly mapperByAppThreadId = new Map<string, CodexProtoEventMapper>()
+  private readonly threadOptions = new Map<string, CodexSessionOptions>()
   private readonly pendingRequestMethods = new Map<string, string>()
   private readonly unsubscriptions: Unsubscribe[] = []
   private sessionConfiguredEvent: CodexAppServerEvent | null = null
   private initialized = false
 
   constructor(private readonly params: CodexProtoSessionParams) {}
+
+  setThreadOptions(appThreadId: string, options: CodexSessionOptions) {
+    this.threadOptions.set(appThreadId, options)
+  }
+
+  clearThreadBinding(appThreadId: string) {
+    this.mapperByAppThreadId.delete(appThreadId)
+    this.threadOptions.delete(appThreadId)
+  }
+
+  clearAllThreadBindings() {
+    this.mapperByAppThreadId.clear()
+    this.threadOptions.clear()
+  }
+
+  private resolveOptions(appThreadId: string): CodexSessionOptions {
+    const threadOptions = this.threadOptions.get(appThreadId)
+    return threadOptions
+      ? { ...this.params.options, ...threadOptions }
+      : this.params.options
+  }
 
   initialize(): Promise<CodexInitializeResult> {
     if (this.initializePromise && this.process) return this.initializePromise
@@ -149,10 +171,11 @@ export class CodexProtoSession {
         op: {
           type: 'user_input',
           items: buildUserInputItems(params),
-          cwd: params.cwd ?? this.params.options.cwd ?? null,
-          approval_policy: this.params.options.approvalPolicy ?? null,
-          sandbox: this.params.options.sandbox ?? null,
-          model: this.params.options.model ?? null,
+          cwd: params.cwd ?? this.resolveOptions(params.appThreadId).cwd ?? null,
+          approval_policy:
+            this.resolveOptions(params.appThreadId).approvalPolicy ?? null,
+          sandbox: this.resolveOptions(params.appThreadId).sandbox ?? null,
+          model: this.resolveOptions(params.appThreadId).model ?? null,
         },
         client_user_message_id: params.clientUserMessageId ?? null,
       })
