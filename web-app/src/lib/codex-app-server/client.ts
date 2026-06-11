@@ -28,6 +28,7 @@ import type {
   CodexWireServerRequest,
   Unsubscribe,
 } from './types'
+import { CODEX_APP_SERVER_METHOD_FALLBACKS } from './method-aliases'
 
 type CodexAppServerSessionParams = {
   spawner: CodexProcessSpawner
@@ -217,7 +218,7 @@ export class CodexAppServerSession {
       )
     }
 
-    return this.manager.rpc.request('thread/compact/start', {
+    return this.requestAppServerWithFallback('thread/compact/start', {
       threadId: mapping.codexThreadId,
     })
   }
@@ -291,7 +292,7 @@ export class CodexAppServerSession {
     // be the source of the diff content itself.
     const delivery = options.delivery ?? 'detached'
 
-    return this.manager.rpc.request('review/start', {
+    return this.requestAppServerWithFallback('review/start', {
       threadId: mapping.codexThreadId,
       delivery,
       target,
@@ -583,7 +584,7 @@ export class CodexAppServerSession {
   }
 
   async listMcpServerStatus(params: Record<string, unknown> = {}) {
-    return this.requestAppServer('mcpServerStatus/list', params)
+    return this.requestAppServer('mcpServer/status/list', params)
   }
 
   async readMcpResource(params: Record<string, unknown>) {
@@ -841,7 +842,42 @@ export class CodexAppServerSession {
     params?: Record<string, unknown>
   ): Promise<T> {
     await this.initialize()
-    return this.manager.rpc.request(method, params)
+    return this.requestAppServerWithFallback(method, params ?? {})
+  }
+
+  private async requestAppServerWithFallback<T>(
+    method: string,
+    params: Record<string, unknown>
+  ): Promise<T> {
+    const fallbackMethod = CODEX_APP_SERVER_METHOD_FALLBACKS[method]
+    if (!fallbackMethod) {
+      return this.manager.rpc.request(method, params) as Promise<T>
+    }
+
+    try {
+      return (await this.manager.rpc.request(method, params)) as T
+    } catch (error) {
+      if (this.isMissingMethodError(error)) {
+        return (await this.manager.rpc.request(fallbackMethod, params)) as T
+      }
+      throw error
+    }
+  }
+
+  private isMissingMethodError(error: unknown) {
+    const message =
+      typeof error === 'string'
+        ? error
+        : typeof error === 'object' && error !== null
+          ? JSON.stringify(error)
+          : String(error ?? '')
+    return (
+      /method.*not found/i.test(message) ||
+      /unknown method/i.test(message) ||
+      /MethodNotFound/i.test(message) ||
+      /Method was not found/i.test(message) ||
+      /"code":-?32601/.test(message)
+    )
   }
 
   private async ensureThread(appThreadId: string) {

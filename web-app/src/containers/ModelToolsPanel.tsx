@@ -204,7 +204,6 @@ import { useRuntimePermission } from '@/stores/runtime-permission-store'
 import { toast } from 'sonner'
 
 import {
-  buildJsonTemplateFromSchema,
   collectCodexItemIds,
   collectCodexMarketplaceDescriptors,
   collectCodexMcpResourceDescriptors,
@@ -233,9 +232,16 @@ import {
   type CodexThreadDescriptor,
 } from './model-tools-panel/shared/codex-helpers'
 import { CodexCliPanel } from './model-tools-panel/tools/CodexCliPanel'
+import { McpPanel } from './model-tools-panel/tools/McpPanel'
+import { PluginsMarketplaceTool } from './model-tools-panel/tools/PluginsMarketplaceTool'
 import { ProtoFallbackNotice } from './model-tools-panel/tools/ProtoFallbackNotice'
-import { MarketplaceSelectionDetails } from './model-tools-panel/tools/MarketplaceSelectionDetails'
 import { RawRpcTool } from './model-tools-panel/tools/RawRpcTool'
+import { RuntimeFsProcessPanel } from './model-tools-panel/tools/RuntimeFsProcessPanel'
+import { AccountPanel } from './model-tools-panel/tools/AccountPanel'
+import {
+  buildCodexRawRpcCatalog,
+  resolveCodexRawRpcMethod,
+} from './model-tools-panel/tools/raw-rpc-utils'
 
 const ANSI_ESCAPE_PATTERN = new RegExp(
   `${String.fromCharCode(27)}(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])`,
@@ -1268,107 +1274,33 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       ),
     [codexSkillDescriptors, codexPluginSkillId]
   )
-  const codexRawRpcCatalog = useMemo(() => {
-    const threadId = targetCodexThreadId || '<threadId>'
-    const pluginId = codexPluginId.trim() || '<pluginId>'
-    const processHandle = codexProcessHandle.trim() || '<processHandle>'
-    const mcpServer = codexMcpServerName.trim() || '<server>'
-    const mcpTool = codexMcpToolName.trim() || '<toolName>'
-    return [
-      {
-        group: 'Thread',
-        method: 'thread/list',
-        params: {},
-        description: 'List stored Codex threads.',
-      },
-      {
-        group: 'Thread',
-        method: 'thread/read',
-        params: { threadId },
-        description: 'Read a Codex thread by id.',
-      },
-      {
-        group: 'Thread',
-        method: 'thread/turns/items/list',
-        params: {
-          threadId,
-          limit: Number.parseInt(codexTurnItemsLimit, 10) || 50,
-        },
-        description: 'Read turn items for a Codex thread.',
-      },
-      {
-        group: 'Config',
-        method: 'config/read',
-        params: {},
-        description: 'Read current Codex app-server config.',
-      },
-      {
-        group: 'Config',
-        method: 'config/value/write',
-        params: { keyPath: codexConfigKeyPath, value: '<value>' },
-        description: 'Write a single Codex config value.',
-      },
-      {
-        group: 'MCP',
-        method: 'mcpServer/status/list',
-        params: {},
-        description: 'List MCP server runtime status.',
-      },
-      {
-        group: 'MCP',
-        method: 'mcpServer/resource/read',
-        params: { server: mcpServer, uri: codexMcpResourceUri || '<uri>' },
-        description: 'Read an MCP resource through Codex.',
-      },
-      {
-        group: 'MCP',
-        method: 'mcpServer/tool/call',
-        params: { server: mcpServer, toolName: mcpTool, arguments: {} },
-        description: 'Call an MCP tool through Codex.',
-      },
-      {
-        group: 'Plugin',
-        method: 'plugin/installed',
-        params: { suggestions: [] },
-        description: 'List installed Codex plugins.',
-      },
-      {
-        group: 'Plugin',
-        method: 'plugin/read',
-        params: { plugin: pluginId, pluginId },
-        description: 'Read plugin metadata.',
-      },
-      {
-        group: 'Account',
-        method: 'account/read',
-        params: {},
-        description: 'Read Codex account/auth state.',
-      },
-      {
-        group: 'Runtime',
-        method: 'process/kill',
-        params: { processHandle },
-        description: 'Kill a spawned app-server process.',
-      },
-      {
-        group: 'Runtime',
-        method: 'fs/readDirectory',
-        params: { path: codexRuntimePath || cwd },
-        description: 'Read a directory through Codex filesystem RPC.',
-      },
+  const codexRawRpcCatalog = useMemo(
+    () =>
+      buildCodexRawRpcCatalog({
+        targetCodexThreadId,
+        codexPluginId,
+        codexProcessHandle,
+        codexConfigKeyPath,
+        codexMcpResourceUri,
+        codexMcpServerName,
+        codexMcpToolName,
+        codexRuntimePath,
+        codexTurnItemsLimit,
+        cwd,
+      }),
+    [
+      codexConfigKeyPath,
+      codexPluginId,
+      codexMcpResourceUri,
+      codexMcpServerName,
+      codexMcpToolName,
+      codexProcessHandle,
+      codexRuntimePath,
+      codexTurnItemsLimit,
+      targetCodexThreadId,
+      cwd,
     ]
-  }, [
-    codexConfigKeyPath,
-    codexMcpResourceUri,
-    codexMcpServerName,
-    codexMcpToolName,
-    codexPluginId,
-    codexProcessHandle,
-    codexRuntimePath,
-    codexTurnItemsLimit,
-    cwd,
-    targetCodexThreadId,
-  ])
+  )
   const filteredCodexRawRpcCatalog = useMemo(() => {
     const filter = codexRawRpcCatalogFilter.trim().toLowerCase()
     if (!filter) return codexRawRpcCatalog
@@ -2169,6 +2101,19 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     }
   }
 
+  const runCodexMcpOauthLogin = async () => {
+    if (!currentThreadIdForCaps) return
+    const server = codexMcpServerName.trim()
+    if (!server) return
+    try {
+      await startCodexMcpOauthLogin(currentThreadIdForCaps, server)
+      toast.success(`MCP OAuth login started for ${server}`)
+      await refreshCodexCapabilities()
+    } catch (e) {
+      setCapError('MCP OAuth login failed: ' + String(e))
+    }
+  }
+
   const refreshCodexModelSnapshot = async () => {
     if (!currentThreadIdForCaps) return
     setModelAdminBusy(true)
@@ -2234,19 +2179,6 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     } finally {
       setModelAdminBusy(false)
     }
-  }
-
-  // Method name aliases for raw RPC to support compatibility across Codex
-  // app-server versions that may use either spelling for the same capability.
-  // Raw RPC accepts either; we normalize to a canonical form for dispatch and
-  // for the fallback send path (preferring the forms used as primary in
-  // requestAppServerMethodWithFallback where applicable, and consistent
-  // naming like other mcpServer/* methods).
-  const resolveCodexRawRpcMethod = (m: string): string => {
-    if (m === 'mcpServerStatus/list') return 'mcpServer/status/list'
-    if (m === 'thread/compact/start') return 'thread/compact/start'
-    if (m === 'review/start') return 'review/start'
-    return m
   }
 
   const runCodexRawRpc = async () => {
@@ -3972,147 +3904,35 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
             </div>
           ) : null}
         </div>
-        <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-1 flex items-center justify-between gap-2">
-            <span>Account</span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                className="text-[9px] underline disabled:opacity-50"
-                disabled={!currentThreadIdForCaps || accountBusy}
-                onClick={() => void refreshCodexAccount(true)}
-              >
-                Refresh
-              </button>
-              <button
-                type="button"
-                className="text-[9px] underline disabled:opacity-50"
-                disabled={!currentThreadIdForCaps || accountBusy}
-                onClick={() => void startDeviceCodeLogin()}
-              >
-                Login
-              </button>
-              <button
-                type="button"
-                className="text-[9px] underline disabled:opacity-50"
-                disabled={!currentThreadIdForCaps || accountBusy || !accountLogin?.loginId}
-                onClick={() => void cancelDeviceCodeLogin()}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="text-[9px] underline disabled:opacity-50"
-                disabled={!currentThreadIdForCaps || accountBusy}
-                onClick={() => void logoutCodex()}
-              >
-                Logout
-              </button>
-            </div>
-          </div>
-          <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
-            <textarea
-              className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-              placeholder="Account login params JSON"
-              value={accountLoginParamsJson}
-              onChange={(event) =>
-                setAccountLoginParamsJson(event.target.value)
-              }
-            />
-            <textarea
-              className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-              placeholder="Account usage params JSON"
-              value={accountUsageParamsJson}
-              onChange={(event) =>
-                setAccountUsageParamsJson(event.target.value)
-              }
-            />
-          </div>
-          <Input
-            className="mb-1 h-6 px-2 text-[10px]"
-            placeholder="Credits nudge type"
-            value={accountCreditsNudgeType}
-            onChange={(event) => setAccountCreditsNudgeType(event.target.value)}
-          />
-          <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px]">
-            <span className="text-muted-foreground">Required</span>
-            <span>{String(accountRequiresAuth ?? 'unknown')}</span>
-            <span className="text-muted-foreground">Mode</span>
-            <span>{String(accountType)}</span>
-            <span className="text-muted-foreground">Email</span>
-            <span className="truncate">{accountEmail ?? '—'}</span>
-            <span className="text-muted-foreground">Plan</span>
-            <span>{accountPlan ?? '—'}</span>
-          </div>
-          {accountLogin?.verificationUrl || accountLogin?.userCode ? (
-            <div className="mt-1 rounded border border-border/60 p-1">
-              <div className="truncate" title={accountLogin.verificationUrl}>
-                {accountLogin.verificationUrl}
-              </div>
-              <div className="font-mono">{accountLogin.userCode ?? '—'}</div>
-            </div>
-          ) : null}
-          <div className="mt-1 flex gap-2">
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || accountBusy}
-              onClick={async () => {
-                if (!currentThreadIdForCaps) return
-                setAccountBusy(true)
-                setCapError(null)
-                try {
-                  const [rateLimitSnapshot, usageSnapshot] =
-                    await Promise.all([
-                      readCodexAccountRateLimits(currentThreadIdForCaps).catch(
-                        (e) => ({ error: String(e) })
-                      ),
-                      readCodexAccountUsage(
-                        currentThreadIdForCaps,
-                        JSON.parse(accountUsageParamsJson || '{}')
-                      ).catch((e) => ({ error: String(e) })),
-                    ])
-                  setAccountRateLimits(rateLimitSnapshot)
-                  setAccountUsage(usageSnapshot)
-                } catch (e) {
-                  setCapError('Read limits/usage failed: ' + String(e))
-                } finally {
-                  setAccountBusy(false)
-                }
-              }}
-            >
-              Read limits/usage
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || accountBusy}
-              onClick={async () => {
-                if (!currentThreadIdForCaps) return
-                try {
-                  await sendCodexAddCreditsNudgeEmail(
-                    currentThreadIdForCaps,
-                    accountCreditsNudgeType.trim() as any
-                  )
-                  toast.success('Credits nudge sent')
-                } catch (e) {
-                  setCapError('Credits nudge failed: ' + String(e))
-                }
-              }}
-            >
-              Credits nudge
-            </button>
-          </div>
-          <pre className="mt-1 whitespace-pre-wrap break-words max-h-24 overflow-auto">
-            {accountRateLimits || accountUsage
-              ? JSON.stringify(
-                  { rateLimits: accountRateLimits, usage: accountUsage },
-                  null,
-                  2
-                )
-              : '— (refresh to load)'}
-          </pre>
-        </div>
+        <AccountPanel
+          accountBusy={accountBusy}
+          currentThreadIdForCaps={currentThreadIdForCaps}
+          accountLoginParamsJson={accountLoginParamsJson}
+          accountUsageParamsJson={accountUsageParamsJson}
+          accountCreditsNudgeType={accountCreditsNudgeType}
+          accountInfo={accountInfo}
+          accountRateLimits={accountRateLimits}
+          accountUsage={accountUsage}
+          accountLogin={accountLogin}
+          accountRequiresAuth={accountRequiresAuth}
+          accountType={accountType}
+          accountEmail={accountEmail}
+          accountPlan={accountPlan}
+          onSetAccountLoginParamsJson={setAccountLoginParamsJson}
+          onSetAccountUsageParamsJson={setAccountUsageParamsJson}
+          onSetAccountCreditsNudgeType={setAccountCreditsNudgeType}
+          onSetCapError={setCapError}
+          onSetAccountBusy={setAccountBusy}
+          onRefreshCodexAccount={refreshCodexAccount}
+          onStartDeviceCodeLogin={startDeviceCodeLogin}
+          onCancelDeviceCodeLogin={cancelDeviceCodeLogin}
+          onLogoutCodex={logoutCodex}
+          onReadCodexAccountRateLimits={readCodexAccountRateLimits}
+          onReadCodexAccountUsage={readCodexAccountUsage}
+          onSendCodexAddCreditsNudgeEmail={sendCodexAddCreditsNudgeEmail}
+          onSetAccountRateLimits={setAccountRateLimits}
+          onSetAccountUsage={setAccountUsage}
+        />
         <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
           <div className="font-mono mb-1 flex items-center justify-between gap-2">
             <span>Remote Control</span>
@@ -4589,1346 +4409,271 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           targetCodexThreadId={targetCodexThreadId}
         />
         <CodexCliPanel cwd={cwd} />
-        <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-1 flex items-center justify-between gap-2">
-            <span>Plugins / Marketplace / Skills</span>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || marketplaceBusy}
-              onClick={() => void refreshCodexMarketplaceSnapshot()}
-            >
-              {marketplaceBusy ? 'Loading' : 'Refresh'}
-            </button>
-          </div>
-          <div className="mb-1 text-[10px] text-muted-foreground">
-            Manages app-server plugin install state, plugin metadata,
-            marketplaces, app descriptors, and skill config without leaving the
-            Codex-backed workspace.
-          </div>
-          <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Plugin id/name"
-              value={codexPluginId}
-              onChange={(event) => setCodexPluginId(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Plugin skill id/name"
-              value={codexPluginSkillId}
-              onChange={(event) => setCodexPluginSkillId(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Marketplace name"
-              value={codexMarketplaceName}
-              onChange={(event) => setCodexMarketplaceName(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Marketplace source"
-              value={codexMarketplaceSource}
-              onChange={(event) => setCodexMarketplaceSource(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Search plugins / skills"
-              value={codexMarketplaceFilter}
-              onChange={(event) => setCodexMarketplaceFilter(event.target.value)}
-            />
-            <label className="flex h-6 items-center gap-1 rounded border px-2 text-[10px] text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={codexMarketplaceInstalledOnly}
-                onChange={(event) =>
-                  setCodexMarketplaceInstalledOnly(event.target.checked)
-                }
-              />
-              Installed plugins only
-            </label>
-          </div>
-          <textarea
-            className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder="Skill config JSON"
-            value={codexSkillConfigJson}
-            onChange={(event) => setCodexSkillConfigJson(event.target.value)}
-          />
-          <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                marketplaceBusy ||
-                !codexPluginId.trim()
-              }
-              onClick={() => {
-                void runCodexMarketplaceAction(
-                  'plugin/install',
-                  {
-                    plugin: codexPluginId.trim(),
-                    pluginId: codexPluginId.trim(),
-                  },
-                  'Codex plugin install requested'
-                )
-              }}
-            >
-              Install plugin
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                marketplaceBusy ||
-                !codexPluginId.trim()
-              }
-              onClick={() => {
-                void runCodexMarketplaceAction(
-                  'plugin/uninstall',
-                  {
-                    plugin: codexPluginId.trim(),
-                    pluginId: codexPluginId.trim(),
-                  },
-                  'Codex plugin uninstall requested'
-                )
-              }}
-            >
-              Uninstall plugin
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                marketplaceBusy ||
-                !codexPluginId.trim()
-              }
-              onClick={() => {
-                void runCodexMarketplaceAction(
-                  'plugin/read',
-                  {
-                    plugin: codexPluginId.trim(),
-                    pluginId: codexPluginId.trim(),
-                  },
-                  'Codex plugin metadata loaded'
-                )
-              }}
-            >
-              Read plugin
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                marketplaceBusy ||
-                !codexPluginId.trim() ||
-                !codexPluginSkillId.trim()
-              }
-              onClick={() => {
-                void runCodexMarketplaceAction(
-                  'plugin/skill/read',
-                  {
-                    plugin: codexPluginId.trim(),
-                    pluginId: codexPluginId.trim(),
-                    skill: codexPluginSkillId.trim(),
-                    skillId: codexPluginSkillId.trim(),
-                  },
-                  'Codex plugin skill loaded'
-                )
-              }}
-            >
-              Read plugin skill
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                marketplaceBusy ||
-                !codexMarketplaceName.trim() ||
-                !codexMarketplaceSource.trim()
-              }
-              onClick={() => {
-                void runCodexMarketplaceAction(
-                  'marketplace/add',
-                  {
-                    marketplaceName: codexMarketplaceName.trim(),
-                    source: codexMarketplaceSource.trim(),
-                  },
-                  'Codex marketplace added'
-                )
-              }}
-            >
-              Add marketplace
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                marketplaceBusy ||
-                !codexMarketplaceName.trim()
-              }
-              onClick={() => {
-                void runCodexMarketplaceAction(
-                  'marketplace/remove',
-                  { marketplaceName: codexMarketplaceName.trim() },
-                  'Codex marketplace removed'
-                )
-              }}
-            >
-              Remove marketplace
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                marketplaceBusy ||
-                !codexMarketplaceName.trim()
-              }
-              onClick={() => {
-                void runCodexMarketplaceAction(
-                  'marketplace/upgrade',
-                  { marketplaceName: codexMarketplaceName.trim() },
-                  'Codex marketplace upgrade requested'
-                )
-              }}
-            >
-              Upgrade marketplace
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                marketplaceBusy ||
-                !codexPluginSkillId.trim()
-              }
-              onClick={() => {
-                try {
-                  void runCodexMarketplaceAction(
-                    'skills/config/write',
-                    {
-                      skill: codexPluginSkillId.trim(),
-                      skillId: codexPluginSkillId.trim(),
-                      config: JSON.parse(codexSkillConfigJson || '{}'),
-                    },
-                    'Codex skill config written'
-                  )
-                } catch (e) {
-                  setCapError('Skill config JSON parse failed: ' + String(e))
-                }
-              }}
-            >
-              Write skill config
-            </button>
-          </div>
-          {codexMarketplaceDescriptors.length ? (
-            <div className="mb-1 rounded border bg-background/40 p-1">
-              <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
-                <span>Marketplace sources</span>
-                <span className="text-muted-foreground">
-                  {codexMarketplaceDescriptors.length}
-                </span>
-              </div>
-              <div className="max-h-24 space-y-1 overflow-auto">
-                {codexMarketplaceDescriptors.map((marketplace) => (
-                  <button
-                    key={marketplace.name}
-                    type="button"
-                    className="block w-full rounded border px-1.5 py-1 text-left hover:bg-accent"
-                    title={marketplace.description ?? marketplace.source ?? marketplace.name}
-                    onClick={() => {
-                      setCodexMarketplaceName(marketplace.name)
-                      if (marketplace.source) {
-                        setCodexMarketplaceSource(marketplace.source)
-                      }
-                    }}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate font-mono text-[9px]">
-                        {marketplace.name}
-                      </span>
-                      <span className="shrink-0 text-[9px] text-muted-foreground">
-                        {marketplace.status ?? 'source'}
-                      </span>
-                    </div>
-                    <div className="truncate text-[9px] text-muted-foreground">
-                      {marketplace.source ??
-                        marketplace.description ??
-                        'no source metadata'}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          {codexPluginDescriptors.length || codexSkillDescriptors.length ? (
-            <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
-              <div className="rounded border bg-background/40 p-1">
-                <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
-                  <span>Plugins</span>
-                  <span className="text-muted-foreground">
-                    {filteredCodexPluginDescriptors.length}/
-                    {codexPluginDescriptors.length}
-                  </span>
-                </div>
-                {filteredCodexPluginDescriptors.length ? (
-                  <div className="max-h-32 space-y-1 overflow-auto">
-                    {filteredCodexPluginDescriptors.map((plugin) => (
-                      <button
-                        key={plugin.id}
-                        type="button"
-                        className="block w-full rounded border px-1.5 py-1 text-left hover:bg-accent"
-                        title={plugin.description ?? plugin.id}
-                        onClick={() => setCodexPluginId(plugin.id)}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate font-mono text-[9px]">
-                            {plugin.name ?? plugin.id}
-                          </span>
-                          <span className="shrink-0 text-[9px] text-muted-foreground">
-                            {plugin.installed ? 'installed' : 'available'}
-                          </span>
-                        </div>
-                        <div className="truncate text-[9px] text-muted-foreground">
-                          {plugin.version ? `v${plugin.version} · ` : ''}
-                          {plugin.description ?? plugin.id}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-[9px] text-muted-foreground">
-                    No matching plugin descriptors.
-                  </div>
-                )}
-              </div>
-              <div className="rounded border bg-background/40 p-1">
-                <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
-                  <span>Skills</span>
-                  <span className="text-muted-foreground">
-                    {filteredCodexSkillDescriptors.length}/
-                    {codexSkillDescriptors.length}
-                  </span>
-                </div>
-                {filteredCodexSkillDescriptors.length ? (
-                  <div className="max-h-32 space-y-1 overflow-auto">
-                    {filteredCodexSkillDescriptors.map((skill) => (
-                      <button
-                        key={skill.id}
-                        type="button"
-                        className="block w-full rounded border px-1.5 py-1 text-left hover:bg-accent"
-                        title={skill.description ?? skill.id}
-                        onClick={() => {
-                          setCodexPluginSkillId(skill.id)
-                          if (skill.pluginId) setCodexPluginId(skill.pluginId)
-                        }}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate font-mono text-[9px]">
-                            {skill.name ?? skill.id}
-                          </span>
-                          <span className="shrink-0 text-[9px] text-muted-foreground">
-                            {skill.enabled ? 'enabled' : skill.pluginId ?? ''}
-                          </span>
-                        </div>
-                        <div className="truncate text-[9px] text-muted-foreground">
-                          {skill.description ?? skill.pluginId ?? skill.id}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-[9px] text-muted-foreground">
-                    No matching skill descriptors.
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : null}
-          <MarketplaceSelectionDetails
-            currentThreadIdForCaps={currentThreadIdForCaps}
-            marketplaceBusy={marketplaceBusy}
-            selectedCodexPluginDescriptor={selectedCodexPluginDescriptor}
-            selectedCodexPluginMetadataKeys={selectedCodexPluginMetadataKeys}
-            selectedCodexSkillDescriptor={selectedCodexSkillDescriptor}
-            onCopyPluginMetadata={async () => {
-              if (!selectedCodexPluginDescriptor?.raw) return
-              await navigator.clipboard.writeText(
-                JSON.stringify(selectedCodexPluginDescriptor.raw, null, 2)
-              )
-              toast.success('Codex plugin metadata copied')
-            }}
-            onReadPlugin={() => {
-              if (!selectedCodexPluginDescriptor) return
+        <PluginsMarketplaceTool
+          codexMarketplaceDescriptors={codexMarketplaceDescriptors}
+          codexMarketplaceFilter={codexMarketplaceFilter}
+          codexMarketplaceInstalledOnly={codexMarketplaceInstalledOnly}
+          codexMarketplaceName={codexMarketplaceName}
+          codexMarketplaceSnapshot={codexMarketplaceSnapshot}
+          codexMarketplaceSource={codexMarketplaceSource}
+          codexPluginDescriptors={codexPluginDescriptors}
+          codexPluginId={codexPluginId}
+          codexPluginSkillId={codexPluginSkillId}
+          codexSkillConfigJson={codexSkillConfigJson}
+          codexSkillDescriptors={codexSkillDescriptors}
+          currentThreadIdForCaps={currentThreadIdForCaps}
+          filteredCodexPluginDescriptors={filteredCodexPluginDescriptors}
+          filteredCodexSkillDescriptors={filteredCodexSkillDescriptors}
+          marketplaceBusy={marketplaceBusy}
+          onAddMarketplace={() => {
+            void runCodexMarketplaceAction(
+              'marketplace/add',
+              {
+                marketplaceName: codexMarketplaceName.trim(),
+                source: codexMarketplaceSource.trim(),
+              },
+              'Codex marketplace added'
+            )
+          }}
+          onCopyPluginMetadata={async () => {
+            if (!selectedCodexPluginDescriptor?.raw) return
+            await navigator.clipboard.writeText(
+              JSON.stringify(selectedCodexPluginDescriptor.raw, null, 2)
+            )
+            toast.success('Codex plugin metadata copied')
+          }}
+          onInstallPlugin={() => {
+            void runCodexMarketplaceAction(
+              'plugin/install',
+              {
+                plugin: codexPluginId.trim(),
+                pluginId: codexPluginId.trim(),
+              },
+              'Codex plugin install requested'
+            )
+          }}
+          onInstallSelectedPlugin={() => {
+            if (!selectedCodexPluginDescriptor) return
+            void runCodexMarketplaceAction(
+              'plugin/install',
+              {
+                plugin: selectedCodexPluginDescriptor.id,
+                pluginId: selectedCodexPluginDescriptor.id,
+              },
+              'Codex plugin install requested'
+            )
+          }}
+          onReadPlugin={() => {
+            void runCodexMarketplaceAction(
+              'plugin/read',
+              {
+                plugin: codexPluginId.trim(),
+                pluginId: codexPluginId.trim(),
+              },
+              'Codex plugin metadata loaded'
+            )
+          }}
+          onReadPluginSkill={() => {
+            void runCodexMarketplaceAction(
+              'plugin/skill/read',
+              {
+                plugin: codexPluginId.trim(),
+                pluginId: codexPluginId.trim(),
+                skill: codexPluginSkillId.trim(),
+                skillId: codexPluginSkillId.trim(),
+              },
+              'Codex plugin skill loaded'
+            )
+          }}
+          onReadSelectedPlugin={() => {
+            if (!selectedCodexPluginDescriptor) return
+            void runCodexMarketplaceAction(
+              'plugin/read',
+              {
+                plugin: selectedCodexPluginDescriptor.id,
+                pluginId: selectedCodexPluginDescriptor.id,
+              },
+              'Codex plugin metadata loaded'
+            )
+          }}
+          onReadSelectedSkill={() => {
+            const skillId = selectedCodexSkillDescriptor?.id
+            const pluginId =
+              selectedCodexSkillDescriptor?.pluginId ||
+              selectedCodexPluginDescriptor?.id
+            if (!pluginId || !skillId) return
+            void runCodexMarketplaceAction(
+              'plugin/skill/read',
+              {
+                plugin: pluginId,
+                pluginId,
+                skill: skillId,
+                skillId,
+              },
+              'Codex plugin skill loaded'
+            )
+          }}
+          onRefresh={() => {
+            void refreshCodexMarketplaceSnapshot()
+          }}
+          onRemoveMarketplace={() => {
+            void runCodexMarketplaceAction(
+              'marketplace/remove',
+              { marketplaceName: codexMarketplaceName.trim() },
+              'Codex marketplace removed'
+            )
+          }}
+          onSelectInstalledOnly={setCodexMarketplaceInstalledOnly}
+          onSelectMarketplaceFilter={setCodexMarketplaceFilter}
+          onSelectMarketplaceName={setCodexMarketplaceName}
+          onSelectMarketplaceSource={setCodexMarketplaceSource}
+          onSelectPluginId={setCodexPluginId}
+          onSelectPluginSkillId={setCodexPluginSkillId}
+          onSetSkillConfigJson={setCodexSkillConfigJson}
+          onUninstallPlugin={() => {
+            void runCodexMarketplaceAction(
+              'plugin/uninstall',
+              {
+                plugin: codexPluginId.trim(),
+                pluginId: codexPluginId.trim(),
+              },
+              'Codex plugin uninstall requested'
+            )
+          }}
+          onUninstallSelectedPlugin={() => {
+            if (!selectedCodexPluginDescriptor) return
+            void runCodexMarketplaceAction(
+              'plugin/uninstall',
+              {
+                plugin: selectedCodexPluginDescriptor.id,
+                pluginId: selectedCodexPluginDescriptor.id,
+              },
+              'Codex plugin uninstall requested'
+            )
+          }}
+          onUpgradeMarketplace={() => {
+            void runCodexMarketplaceAction(
+              'marketplace/upgrade',
+              { marketplaceName: codexMarketplaceName.trim() },
+              'Codex marketplace upgrade requested'
+            )
+          }}
+          onWriteSelectedSkillConfig={() => {
+            const skillId = selectedCodexSkillDescriptor?.id
+            if (!skillId) return
+            try {
               void runCodexMarketplaceAction(
-                'plugin/read',
+                'skills/config/write',
                 {
-                  plugin: selectedCodexPluginDescriptor.id,
-                  pluginId: selectedCodexPluginDescriptor.id,
+                  skill: skillId,
+                  skillId,
+                  config: JSON.parse(codexSkillConfigJson || '{}'),
                 },
-                'Codex plugin metadata loaded'
+                'Codex skill config written'
               )
-            }}
-            onInstallPlugin={() => {
-              if (!selectedCodexPluginDescriptor) return
+            } catch (e) {
+              setCapError('Skill config JSON parse failed: ' + String(e))
+            }
+          }}
+          onWriteSkillConfig={() => {
+            try {
               void runCodexMarketplaceAction(
-                'plugin/install',
+                'skills/config/write',
                 {
-                  plugin: selectedCodexPluginDescriptor.id,
-                  pluginId: selectedCodexPluginDescriptor.id,
+                  skill: codexPluginSkillId.trim(),
+                  skillId: codexPluginSkillId.trim(),
+                  config: JSON.parse(codexSkillConfigJson || '{}'),
                 },
-                'Codex plugin install requested'
+                'Codex skill config written'
               )
-            }}
-            onUninstallPlugin={() => {
-              if (!selectedCodexPluginDescriptor) return
-              void runCodexMarketplaceAction(
-                'plugin/uninstall',
-                {
-                  plugin: selectedCodexPluginDescriptor.id,
-                  pluginId: selectedCodexPluginDescriptor.id,
-                },
-                'Codex plugin uninstall requested'
-              )
-            }}
-            onReadSkill={() => {
-              if (!selectedCodexSkillDescriptor) return
-              const pluginId =
-                selectedCodexPluginDescriptor?.id ||
-                selectedCodexSkillDescriptor.pluginId
-              if (!pluginId) return
-              void runCodexMarketplaceAction(
-                'plugin/skill/read',
-                {
-                  plugin: pluginId,
-                  pluginId,
-                  skill: selectedCodexSkillDescriptor.id,
-                  skillId: selectedCodexSkillDescriptor.id,
-                },
-                'Codex plugin skill loaded'
-              )
-            }}
-            onWriteSkillConfig={() => {
-              if (!selectedCodexSkillDescriptor) return
-              try {
-                void runCodexMarketplaceAction(
-                  'skills/config/write',
-                  {
-                    skill: selectedCodexSkillDescriptor.id,
-                    skillId: selectedCodexSkillDescriptor.id,
-                    config: JSON.parse(codexSkillConfigJson || '{}'),
-                  },
-                  'Codex skill config written'
-                )
-              } catch (e) {
-                setCapError('Skill config JSON parse failed: ' + String(e))
-              }
-            }}
-          />
-          <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
-            {codexMarketplaceSnapshot
-              ? JSON.stringify(codexMarketplaceSnapshot, null, 2)
-              : '— (refresh to load)'}
-          </pre>
-          {selectableCodexPluginIds.length ? (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {selectableCodexPluginIds.map((pluginId) => (
-                <button
-                  key={pluginId}
-                  type="button"
-                  className={cn(
-                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
-                    codexPluginId.trim() === pluginId && 'bg-accent'
-                  )}
-                  title={pluginId}
-                  onClick={() => setCodexPluginId(pluginId)}
-                >
-                  {pluginId}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {selectableCodexSkillIds.length ? (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {selectableCodexSkillIds.map((skillId) => (
-                <button
-                  key={skillId}
-                  type="button"
-                  className={cn(
-                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
-                    codexPluginSkillId.trim() === skillId && 'bg-accent'
-                  )}
-                  title={skillId}
-                  onClick={() => setCodexPluginSkillId(skillId)}
-                >
-                  skill:{skillId}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-        <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-1 flex items-center justify-between gap-2">
-            <span>Runtime FS / Process</span>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || runtimeBusy}
-              onClick={() =>
-                setCodexRuntimeSnapshot((previous: any) => ({
-                  ...(previous ?? {}),
-                  cwd,
-                }))
-              }
-            >
-              Set cwd
-            </button>
-          </div>
-          <div className="mb-1 text-[10px] text-muted-foreground">
-            Calls Codex app-server filesystem and process RPCs directly through
-            the active agent session. This is the Codex runtime view, separate
-            from Jan's local file browser.
-          </div>
-          <div className="mb-1 flex gap-1">
-            <Input
-              className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-              placeholder="Path for fs/readFile, fs/writeFile, fs/readDirectory"
-              value={codexRuntimePath}
-              onChange={(event) => setCodexRuntimePath(event.target.value)}
-            />
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexRuntimePath.trim() || runtimeBusy}
-              onClick={() => void readCodexRuntimeFile()}
-            >
-              Read
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexRuntimePath.trim() || runtimeBusy}
-              onClick={() => void writeCodexRuntimeFile()}
-            >
-              Write
-            </button>
-          </div>
-          <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-3">
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Copy destination path"
-              value={codexRuntimeCopyDestination}
-              onChange={(event) =>
-                setCodexRuntimeCopyDestination(event.target.value)
-              }
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Watch id"
-              value={codexRuntimeWatchId}
-              onChange={(event) => setCodexRuntimeWatchId(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder='Spawn command JSON or shell command'
-              value={codexRuntimeSpawnCommand}
-              onChange={(event) =>
-                setCodexRuntimeSpawnCommand(event.target.value)
-              }
-            />
-          </div>
-          <textarea
-            className="mb-1 min-h-16 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder="File text for fs/writeFile, populated by fs/readFile"
-            value={codexRuntimeFileText}
-            onChange={(event) => setCodexRuntimeFileText(event.target.value)}
-          />
-          <textarea
-            className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder="command/exec params JSON"
-            value={codexCommandExecParams}
-            onChange={(event) => setCodexCommandExecParams(event.target.value)}
-          />
-          <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexRuntimePath.trim() || runtimeBusy}
-              onClick={() =>
-                void runCodexRuntimeAction(
-                  'fs/readDirectory',
-                  { path: codexRuntimePath.trim() },
-                  'Codex directory read'
-                )
-              }
-            >
-              Read directory
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexRuntimePath.trim() || runtimeBusy}
-              onClick={() =>
-                void runCodexRuntimeAction(
-                  'fs/getMetadata',
-                  { path: codexRuntimePath.trim() },
-                  'Codex metadata read'
-                )
-              }
-            >
-              Metadata
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexRuntimePath.trim() || runtimeBusy}
-              onClick={() =>
-                void runCodexRuntimeAction(
-                  'fs/createDirectory',
-                  { path: codexRuntimePath.trim(), recursive: true },
-                  'Codex directory created'
-                )
-              }
-            >
-              Mkdir
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexRuntimePath.trim() || runtimeBusy}
-              onClick={() => {
-                const confirmed = window.confirm(
-                  `Remove ${codexRuntimePath.trim()} through Codex app-server?`
-                )
-                if (!confirmed) return
-                void runCodexRuntimeAction(
-                  'fs/remove',
-                  {
-                    path: codexRuntimePath.trim(),
-                    recursive: true,
-                    force: true,
-                  },
-                  'Codex filesystem path removed'
-                )
-              }}
-            >
-              Remove
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !codexRuntimePath.trim() ||
-                !codexRuntimeCopyDestination.trim() ||
-                runtimeBusy
-              }
-              onClick={() => {
-                void runCodexRuntimeAction(
-                  'fs/copy',
-                  {
-                    sourcePath: codexRuntimePath.trim(),
-                    destinationPath: codexRuntimeCopyDestination.trim(),
-                  },
-                  'Codex filesystem path copied'
-                )
-              }}
-            >
-              Copy
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !codexRuntimePath.trim() ||
-                !codexRuntimeWatchId.trim() ||
-                runtimeBusy
-              }
-              onClick={() => {
-                void runCodexRuntimeAction(
-                  'fs/watch',
-                  {
-                    watchId: codexRuntimeWatchId.trim(),
-                    path: codexRuntimePath.trim(),
-                  },
-                  'Codex filesystem watch started'
-                )
-              }}
-            >
-              Watch
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexRuntimeWatchId.trim() || runtimeBusy}
-              onClick={() => {
-                void runCodexRuntimeAction(
-                  'fs/unwatch',
-                  { watchId: codexRuntimeWatchId.trim() },
-                  'Codex filesystem watch stopped'
-                )
-              }}
-            >
-              Unwatch
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={runtimeBusy}
-              onClick={() => void spawnCodexRuntimeProcess()}
-            >
-              Spawn process
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={runtimeBusy}
-              onClick={() => {
-                try {
-                  const params = JSON.parse(codexCommandExecParams || '{}')
-                  void runCodexRuntimeAction(
-                    'command/exec',
-                    {
-                      cwd,
-                      ...params,
-                    },
-                    'Codex command exec started'
-                  )
-                } catch (e) {
-                  setCapError('Command exec JSON parse failed: ' + String(e))
-                }
-              }}
-            >
-              Command exec
-            </button>
-          </div>
-          <div className="mb-1 flex gap-1">
-            <Input
-              className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-              placeholder="Process handle"
-              value={codexProcessHandle}
-              onChange={(event) => setCodexProcessHandle(event.target.value)}
-            />
-            <Input
-              className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-              placeholder="stdin"
-              value={codexRuntimeStdin}
-              onChange={(event) => setCodexRuntimeStdin(event.target.value)}
-            />
-            <Input
-              className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-              placeholder='PTY size JSON'
-              value={codexRuntimePtySize}
-              onChange={(event) => setCodexRuntimePtySize(event.target.value)}
-            />
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexProcessHandle.trim() || runtimeBusy}
-              onClick={() => {
-                void runCodexRuntimeAction(
-                  'process/writeStdin',
-                  {
-                    processHandle: codexProcessHandle.trim(),
-                    deltaBase64: encodeUtf8Base64(codexRuntimeStdin),
-                  },
-                  'Codex stdin sent'
-                )
-              }}
-            >
-              Stdin
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexProcessHandle.trim() || runtimeBusy}
-              onClick={() => {
-                void runCodexRuntimeAction(
-                  'command/stdin',
-                  {
-                    processId: codexProcessHandle.trim(),
-                    deltaBase64: encodeUtf8Base64(codexRuntimeStdin),
-                  },
-                  'Codex command stdin sent'
-                )
-              }}
-            >
-              Cmd stdin
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexProcessHandle.trim() || runtimeBusy}
-              onClick={() => {
-                try {
-                  const size = JSON.parse(codexRuntimePtySize || '{}')
-                  void runCodexRuntimeAction(
-                    'process/resizePty',
-                    {
-                      processHandle: codexProcessHandle.trim(),
-                      size,
-                    },
-                    'Codex PTY resized'
-                  )
-                } catch (e) {
-                  setCapError('PTY size JSON parse failed: ' + String(e))
-                }
-              }}
-            >
-              Resize
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexProcessHandle.trim() || runtimeBusy}
-              onClick={() => {
-                try {
-                  const size = JSON.parse(codexRuntimePtySize || '{}')
-                  void runCodexRuntimeAction(
-                    'command/resize',
-                    {
-                      processId: codexProcessHandle.trim(),
-                      size,
-                    },
-                    'Codex command PTY resized'
-                  )
-                } catch (e) {
-                  setCapError('Command PTY size JSON parse failed: ' + String(e))
-                }
-              }}
-            >
-              Cmd resize
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexProcessHandle.trim() || runtimeBusy}
-              onClick={() =>
-                void runCodexRuntimeAction(
-                  'process/kill',
-                  { processHandle: codexProcessHandle.trim() },
-                  'Codex process killed'
-                )
-              }
-            >
-              Kill
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!codexProcessHandle.trim() || runtimeBusy}
-              onClick={() =>
-                void runCodexRuntimeAction(
-                  'command/terminate',
-                  { processId: codexProcessHandle.trim() },
-                  'Codex command terminated'
-                )
-              }
-            >
-              Cmd terminate
-            </button>
-          </div>
-          <div
-            className={cn(
-              'mb-1 rounded border border-border/60 bg-[#050505] text-[10px] text-zinc-100',
-              codexProcessTerminalExpanded &&
-                'fixed inset-4 z-50 flex flex-col shadow-2xl'
-            )}
-          >
-            <div className="flex items-center justify-between gap-2 border-b border-white/10 px-2 py-1 font-mono">
-              <span>Codex process terminal</span>
-              <div className="flex gap-2">
-                <Input
-                  className="h-5 w-32 border-white/20 bg-black/40 px-1.5 text-[9px] text-zinc-100"
-                  placeholder="Search output"
-                  value={codexProcessTerminalFilter}
-                  onChange={(event) =>
-                    setCodexProcessTerminalFilter(event.target.value)
-                  }
-                />
-                <button
-                  type="button"
-                  className="text-[9px] underline disabled:opacity-50"
-                  disabled={!selectedCodexProcessTerminal}
-                  onClick={async () => {
-                    if (!selectedCodexProcessTerminal) return
-                    await navigator.clipboard.writeText(
-                      selectedCodexProcessTerminal.lines.join('\n')
-                    )
-                    toast.success('Codex terminal output copied')
-                  }}
-                >
-                  Copy output
-                </button>
-                <Input
-                  className="h-5 w-12 border-white/20 bg-black/40 px-1.5 text-[9px] text-zinc-100"
-                  placeholder="rows"
-                  value={codexProcessTerminalRows}
-                  onChange={(event) =>
-                    setCodexProcessTerminalRows(event.target.value)
-                  }
-                />
-                <Input
-                  className="h-5 w-12 border-white/20 bg-black/40 px-1.5 text-[9px] text-zinc-100"
-                  placeholder="cols"
-                  value={codexProcessTerminalCols}
-                  onChange={(event) =>
-                    setCodexProcessTerminalCols(event.target.value)
-                  }
-                />
-                <button
-                  type="button"
-                  className="text-[9px] underline disabled:opacity-50"
-                  disabled={!selectedCodexProcessTerminal || runtimeBusy}
-                  onClick={() => {
-                    if (!selectedCodexProcessTerminal) return
-                    const rows =
-                      Number.parseInt(codexProcessTerminalRows, 10) || 24
-                    const cols =
-                      Number.parseInt(codexProcessTerminalCols, 10) || 80
-                    const size = { rows, cols }
-                    setCodexRuntimePtySize(JSON.stringify(size))
-                    const handle = selectedCodexProcessTerminal.handle
-                    if (selectedCodexProcessTerminal.kind === 'command') {
-                      void runCodexRuntimeAction(
-                        'command/resize',
-                        { processId: handle, size },
-                        'Codex command PTY resized'
-                      )
-                    } else {
-                      void runCodexRuntimeAction(
-                        'process/resizePty',
-                        { processHandle: handle, size },
-                        'Codex PTY resized'
-                      )
-                    }
-                  }}
-                >
-                  Apply size
-                </button>
-                <button
-                  type="button"
-                  className="text-[9px] underline"
-                  onClick={() =>
-                    setCodexProcessTerminalExpanded((expanded) => !expanded)
-                  }
-                >
-                  {codexProcessTerminalExpanded ? 'Collapse' : 'Expand'}
-                </button>
-                <button
-                  type="button"
-                  className="text-[9px] underline disabled:opacity-50"
-                  disabled={!codexProcessHandle.trim()}
-                  onClick={() =>
-                    appendCodexTerminalLines(
-                      codexProcessHandle.trim(),
-                      [`attached ${codexProcessHandle.trim()}`],
-                      { label: codexProcessHandle.trim() }
-                    )
-                  }
-                >
-                  Attach handle
-                </button>
-                <button
-                  type="button"
-                  className="text-[9px] underline disabled:opacity-50"
-                  disabled={!codexProcessTerminals.length}
-                  onClick={() => {
-                    setCodexProcessTerminals([])
-                    clearCodexProcessEvents()
-                    lastCodexProcessEventTimestampRef.current = Date.now()
-                  }}
-                >
-                  Clear terminals
-                </button>
-              </div>
-            </div>
-            {codexProcessTerminals.length ? (
-              <div
-                className={cn(
-                  'grid grid-cols-1 md:grid-cols-[11rem_1fr]',
-                  codexProcessTerminalExpanded && 'min-h-0 flex-1'
-                )}
-              >
-                <div
-                  className={cn(
-                    'max-h-44 overflow-auto border-b border-white/10 p-1 md:border-b-0 md:border-r',
-                    codexProcessTerminalExpanded && 'max-h-none'
-                  )}
-                >
-                  {codexProcessTerminals.map((session) => (
-                    <button
-                      key={session.handle}
-                      type="button"
-                      className={cn(
-                        'mb-1 flex w-full min-w-0 flex-col rounded border border-white/10 px-1.5 py-1 text-left hover:bg-white/10',
-                        codexProcessHandle.trim() === session.handle &&
-                          'bg-white/10'
-                      )}
-                      title={session.handle}
-                      onClick={() => setCodexProcessHandle(session.handle)}
-                    >
-                      <span className="truncate font-mono text-[9px]">
-                        {session.kind}:{session.label}
-                      </span>
-                      <span className="text-[9px] text-zinc-400">
-                        {session.status} · {session.lines.length} lines
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <div
-                  className={cn(
-                    'max-h-52 min-h-28 overflow-auto p-2 font-mono leading-relaxed',
-                    codexProcessTerminalExpanded && 'max-h-none min-h-0'
-                  )}
-                >
-                  {selectedCodexProcessTerminal ? (
-                    filteredCodexProcessTerminalLines.length ? (
-                      filteredCodexProcessTerminalLines.map((line, index) => (
-                      <div
-                        key={`${codexProcessHandle}-${index}`}
-                        className="whitespace-pre-wrap break-words"
-                      >
-                        {line || ' '}
-                      </div>
-                      ))
-                    ) : (
-                      <div className="text-zinc-500">
-                        No terminal lines match the current search.
-                      </div>
-                    )
-                  ) : (
-                    <div className="text-zinc-500">
-                      Select a process session to view output.
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="px-2 py-3 text-zinc-500">
-                Spawn a process, run command/exec, or attach a known process
-                handle to start a terminal session.
-              </div>
-            )}
-          </div>
-          <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
-            {codexRuntimeSnapshot
-              ? JSON.stringify(codexRuntimeSnapshot, null, 2)
-              : '— (runtime action results)'}
-          </pre>
-          {selectableCodexProcessHandles.length ? (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {selectableCodexProcessHandles.map((processHandle) => (
-                <button
-                  key={processHandle}
-                  type="button"
-                  className={cn(
-                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
-                    codexProcessHandle.trim() === processHandle && 'bg-accent'
-                  )}
-                  title={processHandle}
-                  onClick={() => setCodexProcessHandle(processHandle)}
-                >
-                  proc:{processHandle}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-        <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-0.5 flex items-center justify-between">
-            <span>MCP server status</span>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps}
-              onClick={async () => {
-                if (!currentThreadIdForCaps) return
-                const server = codexMcpServerName.trim()
-                if (!server) return
-                try {
-                  await startCodexMcpOauthLogin(currentThreadIdForCaps, server)
-                  toast.success(`MCP OAuth login started for ${server}`)
-                  await refreshCodexCapabilities()
-                } catch (e) {
-                  setCapError('MCP OAuth login failed: ' + String(e))
-                }
-              }}
-            >
-              MCP OAuth login
-            </button>
-          </div>
-          <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-3">
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="MCP server"
-              value={codexMcpServerName}
-              onChange={(event) => setCodexMcpServerName(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Resource URI"
-              value={codexMcpResourceUri}
-              onChange={(event) => setCodexMcpResourceUri(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Tool name"
-              value={codexMcpToolName}
-              onChange={(event) => setCodexMcpToolName(event.target.value)}
-            />
-          </div>
-          <textarea
-            className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder="MCP tool arguments JSON"
-            value={codexMcpToolArguments}
-            onChange={(event) => setCodexMcpToolArguments(event.target.value)}
-          />
-          {selectedCodexMcpToolDescriptor?.inputSchema ? (
-            <div
-              className={cn(
-                'mb-1 rounded border px-2 py-1 text-[9px]',
-                codexMcpToolArgumentValidation.length
-                  ? 'border-destructive/40 bg-destructive/5 text-destructive'
-                  : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-              )}
-            >
-              {codexMcpToolArgumentValidation.length
-                ? codexMcpToolArgumentValidation.slice(0, 4).join('; ')
-                : 'Tool arguments match the selected tool schema.'}
-            </div>
-          ) : null}
-          <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                mcpBusy ||
-                !codexMcpServerName.trim() ||
-                !codexMcpResourceUri.trim()
-              }
-              onClick={() => {
-                void runCodexMcpAction(
-                  'mcpServer/resource/read',
-                  {
-                    server: codexMcpServerName.trim(),
-                    uri: codexMcpResourceUri.trim(),
-                  },
-                  'Codex MCP resource read'
-                )
-              }}
-            >
-              Read resource
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || mcpBusy}
-              onClick={() =>
-                void runCodexMcpAction(
-                  'config/mcpServer/reload',
-                  {},
-                  'Codex MCP config reloaded'
-                )
-              }
-            >
-              Reload config
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                mcpBusy ||
-                !codexMcpServerName.trim() ||
-                !codexMcpToolName.trim() ||
-                codexMcpToolArgumentValidation.length > 0
-              }
-              onClick={() => {
-                try {
-                  void runCodexMcpAction(
-                    'mcpServer/tool/call',
-                    {
-                      server: codexMcpServerName.trim(),
-                      toolName: codexMcpToolName.trim(),
-                      arguments: JSON.parse(codexMcpToolArguments || '{}'),
-                    },
-                    'Codex MCP tool called'
-                  )
-                } catch (e) {
-                  setCapError('MCP tool arguments JSON parse failed: ' + String(e))
-                }
-              }}
-            >
-              Call tool
-            </button>
-          </div>
-          <pre className="whitespace-pre-wrap break-words max-h-20 overflow-auto">{mcpStatus ? JSON.stringify(mcpStatus, null, 2) : '— (refresh to load)'}</pre>
-          {selectableCodexMcpServerNames.length ? (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {selectableCodexMcpServerNames.map((serverName) => (
-                <button
-                  key={serverName}
-                  type="button"
-                  className={cn(
-                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
-                    codexMcpServerName.trim() === serverName && 'bg-accent'
-                  )}
-                  title={serverName}
-                  onClick={() => setCodexMcpServerName(serverName)}
-                >
-                  {serverName}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {selectableCodexMcpResourceUris.length ? (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {selectableCodexMcpResourceUris.map((resourceUri) => (
-                <button
-                  key={resourceUri}
-                  type="button"
-                  className={cn(
-                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
-                    codexMcpResourceUri.trim() === resourceUri && 'bg-accent'
-                  )}
-                  title={resourceUri}
-                  onClick={() => setCodexMcpResourceUri(resourceUri)}
-                >
-                  resource:{resourceUri}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {selectableCodexMcpToolNames.length ? (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {selectableCodexMcpToolNames.map((toolName) => (
-                <button
-                  key={toolName}
-                  type="button"
-                  className={cn(
-                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
-                    codexMcpToolName.trim() === toolName && 'bg-accent'
-                  )}
-                  title={toolName}
-                  onClick={() => setCodexMcpToolName(toolName)}
-                >
-                  tool:{toolName}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {codexMcpResourceDescriptors.length ||
-          codexMcpToolDescriptors.length ? (
-            <div className="mt-2 grid grid-cols-1 gap-1 md:grid-cols-2">
-              <div className="md:col-span-2">
-                <Input
-                  className="h-6 px-2 text-[10px]"
-                  placeholder="Search MCP resources / tools"
-                  value={codexMcpDescriptorFilter}
-                  onChange={(event) =>
-                    setCodexMcpDescriptorFilter(event.target.value)
-                  }
-                />
-              </div>
-              <div className="rounded border bg-background/40 p-1">
-                <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
-                  <span>MCP resources</span>
-                  <span className="text-muted-foreground">
-                    {filteredCodexMcpResourceDescriptors.length}/
-                    {codexMcpResourceDescriptors.length}
-                  </span>
-                </div>
-                {filteredCodexMcpResourceDescriptors.length ? (
-                  <div className="max-h-28 space-y-1 overflow-auto">
-                    {filteredCodexMcpResourceDescriptors.map((descriptor) => (
-                      <button
-                        key={descriptor.uri}
-                        type="button"
-                        className="block w-full rounded border px-1.5 py-1 text-left hover:bg-accent"
-                        title={descriptor.description ?? descriptor.uri}
-                        onClick={() => setCodexMcpResourceUri(descriptor.uri)}
-                      >
-                        <div className="truncate font-mono text-[9px]">
-                          {descriptor.name ?? descriptor.uri}
-                        </div>
-                        <div className="truncate text-[9px] text-muted-foreground">
-                          {descriptor.mimeType
-                            ? `${descriptor.mimeType} · `
-                            : ''}
-                          {descriptor.uri}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-[9px] text-muted-foreground">
-                    No matching resource descriptors.
-                  </div>
-                )}
-              </div>
-              <div className="rounded border bg-background/40 p-1">
-                <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
-                  <span>MCP tools</span>
-                  <span className="text-muted-foreground">
-                    {filteredCodexMcpToolDescriptors.length}/
-                    {codexMcpToolDescriptors.length}
-                  </span>
-                </div>
-                {filteredCodexMcpToolDescriptors.length ? (
-                  <div className="max-h-28 space-y-1 overflow-auto">
-                    {filteredCodexMcpToolDescriptors.map((descriptor) => (
-                      <button
-                        key={descriptor.name}
-                        type="button"
-                        className="block w-full rounded border px-1.5 py-1 text-left hover:bg-accent"
-                        title={descriptor.description ?? descriptor.name}
-                        onClick={() => {
-                          setCodexMcpToolName(descriptor.name)
-                          setCodexMcpToolArguments(
-                            JSON.stringify(
-                              buildJsonTemplateFromSchema(
-                                descriptor.inputSchema
-                              ),
-                              null,
-                              2
-                            )
-                          )
-                        }}
-                      >
-                        <div className="truncate font-mono text-[9px]">
-                          {descriptor.name}
-                        </div>
-                        <div className="truncate text-[9px] text-muted-foreground">
-                          {descriptor.description ??
-                            (descriptor.inputSchema
-                              ? 'schema available'
-                              : 'no schema')}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-[9px] text-muted-foreground">
-                    No matching tool descriptors.
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : null}
-          <pre className="mt-1 whitespace-pre-wrap break-words max-h-24 overflow-auto">
-            {codexMcpSnapshot
-              ? JSON.stringify(codexMcpSnapshot, null, 2)
-              : '— (MCP resource/tool results)'}
-          </pre>
-        </div>
+            } catch (e) {
+              setCapError('Skill config JSON parse failed: ' + String(e))
+            }
+          }}
+          selectableCodexPluginIds={selectableCodexPluginIds}
+          selectableCodexSkillIds={selectableCodexSkillIds}
+          selectedCodexPluginDescriptor={selectedCodexPluginDescriptor}
+          selectedCodexPluginMetadataKeys={selectedCodexPluginMetadataKeys}
+          selectedCodexSkillDescriptor={selectedCodexSkillDescriptor}
+        />
+        <RuntimeFsProcessPanel
+          codexCommandExecParams={codexCommandExecParams}
+          codexProcessHandle={codexProcessHandle}
+          codexProcessTerminalCols={codexProcessTerminalCols}
+          codexProcessTerminalExpanded={codexProcessTerminalExpanded}
+          codexProcessTerminalFilter={codexProcessTerminalFilter}
+          codexProcessTerminalRows={codexProcessTerminalRows}
+          codexProcessTerminals={codexProcessTerminals}
+          codexRuntimeCopyDestination={codexRuntimeCopyDestination}
+          codexRuntimeFileText={codexRuntimeFileText}
+          codexRuntimePath={codexRuntimePath}
+          codexRuntimePtySize={codexRuntimePtySize}
+          codexRuntimeSnapshot={codexRuntimeSnapshot}
+          codexRuntimeSpawnCommand={codexRuntimeSpawnCommand}
+          codexRuntimeStdin={codexRuntimeStdin}
+          codexRuntimeWatchId={codexRuntimeWatchId}
+          currentThreadIdForCaps={currentThreadIdForCaps}
+          cwd={cwd}
+          filteredCodexProcessTerminalLines={filteredCodexProcessTerminalLines}
+          onAppendCodexTerminalLines={appendCodexTerminalLines}
+          onClearCodexProcessEvents={() => {
+            clearCodexProcessEvents()
+            lastCodexProcessEventTimestampRef.current = Date.now()
+          }}
+          onClearCodexProcessTerminals={() => setCodexProcessTerminals([])}
+          onReadCodexRuntimeFile={readCodexRuntimeFile}
+          onRunCodexRuntimeAction={runCodexRuntimeAction}
+          onSetCapError={setCapError}
+          onSetCodexCommandExecParams={setCodexCommandExecParams}
+          onSetCodexProcessHandle={setCodexProcessHandle}
+          onSetCodexProcessTerminalCols={setCodexProcessTerminalCols}
+          onSetCodexProcessTerminalExpanded={setCodexProcessTerminalExpanded}
+          onSetCodexProcessTerminalFilter={setCodexProcessTerminalFilter}
+          onSetCodexProcessTerminalRows={setCodexProcessTerminalRows}
+          onSetCodexRuntimeCopyDestination={setCodexRuntimeCopyDestination}
+          onSetCodexRuntimeFileText={setCodexRuntimeFileText}
+          onSetCodexRuntimePath={setCodexRuntimePath}
+          onSetCodexRuntimePtySize={setCodexRuntimePtySize}
+          onSetCodexRuntimeSnapshot={setCodexRuntimeSnapshot}
+          onSetCodexRuntimeSpawnCommand={setCodexRuntimeSpawnCommand}
+          onSetCodexRuntimeStdin={setCodexRuntimeStdin}
+          onSetCodexRuntimeWatchId={setCodexRuntimeWatchId}
+          onSpawnCodexRuntimeProcess={spawnCodexRuntimeProcess}
+          onWriteCodexRuntimeFile={writeCodexRuntimeFile}
+          runtimeBusy={runtimeBusy}
+          selectableCodexProcessHandles={selectableCodexProcessHandles}
+          selectedCodexProcessTerminal={selectedCodexProcessTerminal}
+        />
+        <McpPanel
+          codexMcpServerName={codexMcpServerName}
+          codexMcpResourceUri={codexMcpResourceUri}
+          codexMcpToolName={codexMcpToolName}
+          codexMcpToolArguments={codexMcpToolArguments}
+          codexMcpDescriptorFilter={codexMcpDescriptorFilter}
+          mcpBusy={mcpBusy}
+          currentThreadIdForCaps={currentThreadIdForCaps}
+          mcpStatus={mcpStatus}
+          codexMcpSnapshot={codexMcpSnapshot}
+          selectableCodexMcpServerNames={selectableCodexMcpServerNames}
+          selectableCodexMcpResourceUris={selectableCodexMcpResourceUris}
+          selectableCodexMcpToolNames={selectableCodexMcpToolNames}
+          codexMcpResourceDescriptors={codexMcpResourceDescriptors}
+          codexMcpToolDescriptors={codexMcpToolDescriptors}
+          filteredCodexMcpResourceDescriptors={
+            filteredCodexMcpResourceDescriptors
+          }
+          filteredCodexMcpToolDescriptors={filteredCodexMcpToolDescriptors}
+          selectedCodexMcpToolDescriptor={selectedCodexMcpToolDescriptor}
+          codexMcpToolArgumentValidation={codexMcpToolArgumentValidation}
+          onSetCodexMcpServerName={setCodexMcpServerName}
+          onSetCodexMcpResourceUri={setCodexMcpResourceUri}
+          onSetCodexMcpToolName={setCodexMcpToolName}
+          onSetCodexMcpToolArguments={setCodexMcpToolArguments}
+          onSetCodexMcpDescriptorFilter={setCodexMcpDescriptorFilter}
+          onSetCapError={setCapError}
+          onRunCodexMcpAction={runCodexMcpAction}
+          onMcpOauthLogin={runCodexMcpOauthLogin}
+        />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[10px]">
           <div className="border rounded p-1 bg-background/50">
             <div className="font-mono mb-0.5">Skills</div>

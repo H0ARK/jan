@@ -865,7 +865,7 @@ describe('Codex app-server integration API', () => {
           params: { questions: [{ id: 'confirm', question: 'Proceed?' }] },
         }),
         expect.objectContaining({
-          method: 'mcpServerStatus/list',
+          method: 'mcpServer/status/list',
           params: { detail: 'full' },
         }),
         expect.objectContaining({

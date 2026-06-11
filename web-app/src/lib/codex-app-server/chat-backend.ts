@@ -14,6 +14,7 @@ import { getServiceHub } from '@/hooks/useServiceHub'
 import { buildCodexConfigToml } from './config'
 import { buildCodexMcpServersConfig } from './mcp-config-bridge'
 import type { CodexAppServerClient } from './api'
+import { CODEX_APP_SERVER_METHOD_FALLBACKS } from './method-aliases'
 import {
   GLOBAL_CODEX_APP_SERVER_SESSION_ID,
   applyCodexRuntimeOptions,
@@ -908,10 +909,9 @@ export async function startCodexMcpOauthLogin(janThreadId: string, server: strin
 }
 
 export async function listCodexMcpServerStatus(janThreadId: string, params: Record<string, unknown> = {}) {
-  return requestAppServerMethodWithFallback(
+  return requestCodexAppServerMethodWithFallback(
     janThreadId,
     'mcpServer/status/list',
-    'mcpServerStatus/list',
     params
   )
 }
@@ -1111,10 +1111,9 @@ export async function compactCodexThreadById(
   codexThreadId: string,
   params: Record<string, unknown> = {}
 ) {
-  return requestAppServerMethodWithFallback(
+  return requestCodexAppServerMethodWithFallback(
     janThreadId,
     'thread/compact/start',
-    'thread/compact',
     {
       threadId: codexThreadId,
       ...params,
@@ -1147,10 +1146,9 @@ export async function startCodexThreadReview(
   codexThreadId: string,
   params: Record<string, unknown> = {}
 ) {
-  return requestAppServerMethodWithFallback(
+  return requestCodexAppServerMethodWithFallback(
     janThreadId,
     'review/start',
-    'thread/review',
     {
       threadId: codexThreadId,
       ...params,
@@ -1587,6 +1585,26 @@ function looksLikeMissingMethodError(error: unknown) {
   )
 }
 
+async function requestCodexAppServerMethodWithFallback<T>(
+  janThreadId: string,
+  primaryMethod: string,
+  params: Record<string, unknown> = {}
+) {
+  const fallbackMethod = CODEX_APP_SERVER_METHOD_FALLBACKS[primaryMethod]
+  if (!fallbackMethod) {
+    return requireCodexSession(janThreadId).requestAppServer(
+      primaryMethod,
+      params
+    ) as T
+  }
+  return requestAppServerMethodWithFallback(
+    janThreadId,
+    primaryMethod,
+    fallbackMethod,
+    params
+  )
+}
+
 async function requestAppServerMethodWithFallback<T>(
   janThreadId: string,
   primaryMethod: string,
@@ -1612,7 +1630,11 @@ async function requestAppServerMethodWithFallback<T>(
 // Generic escape hatch for other advanced app-server calls surfaced in the client
 // (remoteControl/*, marketplace/*, collaborationMode, environment, apps, config read/write, etc.)
 export async function callCodexAppServer(janThreadId: string, method: string, params?: Record<string, unknown>) {
-  return requireCodexSession(janThreadId).requestAppServer(method, params)
+  return requestCodexAppServerMethodWithFallback(
+    janThreadId,
+    method,
+    params ?? {}
+  )
 }
 
 /**
