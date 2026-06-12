@@ -10,8 +10,9 @@ type CodexReviewPanelProps = {
   onSetCodexAdvancedReviewJson: (value: string) => void
   onStartReview: (
     threadId: string,
-    params: Record<string, unknown>
-  ) => Promise<void>
+    target?: any,
+    options?: any
+  ) => Promise<unknown>
 }
 
 const reviewPrompt =

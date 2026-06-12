@@ -122,7 +122,7 @@ export function DataProvider() {
     enableOnStartup,
     serverHost,
     serverPort,
-    setServerPort,
+    setServerPort: _setServerPort,
     apiPrefix,
     apiKey,
     trustedHosts,
@@ -309,7 +309,7 @@ export function DataProvider() {
             isCorsEnabled: corsEnabled,
             isVerboseEnabled: verboseLogs,
             proxyTimeout: proxyTimeout,
-          }).then(async (actualPort: number) => {
+          }).then(async (_actualPort: number) => {
               setServerStatus('running')
               // Persist whichever models are actually running so next startup can restore them
               const activeModels = await serviceHub.models().getActiveModels().catch(() => [] as string[])

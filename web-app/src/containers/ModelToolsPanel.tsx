@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { useTheme } from '@/hooks/useTheme'
 import Editor from '@monaco-editor/react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   ArrowRight,
   ChevronRight,
@@ -339,38 +340,23 @@ async function readDirectoryEntries(
 const DirectoryTreeNode = memo(function DirectoryTreeNode({
   entry,
   depth = 0,
+  expanded = false,
+  loading = false,
+  onToggleExpand,
   onFileClick,
 }: {
   entry: DirectoryTreeEntry
   depth?: number
+  expanded?: boolean
+  loading?: boolean
+  onToggleExpand: (path: string) => void
   onFileClick?: (path: string) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [children, setChildren] = useState<DirectoryTreeEntry[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
   const serviceHub = useServiceHub()
-
-  const loadChildren = useCallback(async () => {
-    if (!entry.isDirectory || children) return
-
-    setLoading(true)
-    setError(null)
-    try {
-      setChildren(await readDirectoryEntries(entry.path))
-    } catch (err) {
-      setChildren([])
-      setError(err instanceof Error ? err.message : 'Unable to read directory')
-    } finally {
-      setLoading(false)
-    }
-  }, [children, entry.isDirectory, entry.path])
 
   const handleItemClick = async () => {
     if (entry.isDirectory) {
-      const nextExpanded = !expanded
-      setExpanded(nextExpanded)
-      if (nextExpanded) await loadChildren()
+      onToggleExpand(entry.path)
     } else {
       if (onFileClick) {
         onFileClick(entry.path)
@@ -403,7 +389,7 @@ const DirectoryTreeNode = memo(function DirectoryTreeNode({
   const Icon = entry.isDirectory ? (expanded ? FolderOpen : Folder) : File
 
   return (
-    <div className="group relative">
+    <div className="group relative w-full">
       <button
         type="button"
         className={cn(
@@ -415,12 +401,16 @@ const DirectoryTreeNode = memo(function DirectoryTreeNode({
         onClick={handleItemClick}
       >
         {entry.isDirectory ? (
-          <ChevronRight
-            className={cn(
-              'size-3 shrink-0 transition-transform',
-              expanded && 'rotate-90'
-            )}
-          />
+          loading ? (
+            <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" />
+          ) : (
+            <ChevronRight
+              className={cn(
+                'size-3 shrink-0 transition-transform',
+                expanded && 'rotate-90'
+              )}
+            />
+          )
         ) : (
           <span className="size-3 shrink-0" />
         )}
@@ -438,44 +428,6 @@ const DirectoryTreeNode = memo(function DirectoryTreeNode({
         >
           <FolderOpen className="size-3" />
         </Button>
-      )}
-
-      {expanded && (
-        <div>
-          {loading ? (
-            <div
-              className="flex h-7 items-center gap-2 px-1.5 text-xs text-muted-foreground"
-              style={{ paddingLeft: `${(depth + 1) * 0.75 + 0.375}rem` }}
-            >
-              <Loader2 className="size-3 animate-spin" />
-              <span>Loading</span>
-            </div>
-          ) : error ? (
-            <div
-              className="truncate px-1.5 py-1 text-xs text-destructive"
-              style={{ paddingLeft: `${(depth + 1) * 0.75 + 0.375}rem` }}
-              title={error}
-            >
-              {error}
-            </div>
-          ) : children?.length ? (
-            children.map((child) => (
-              <DirectoryTreeNode
-                key={child.path}
-                entry={child}
-                depth={depth + 1}
-                onFileClick={onFileClick}
-              />
-            ))
-          ) : (
-            <div
-              className="px-1.5 py-1 text-xs text-muted-foreground"
-              style={{ paddingLeft: `${(depth + 1) * 0.75 + 0.375}rem` }}
-            >
-              Empty
-            </div>
-          )}
-        </div>
       )}
     </div>
   )
@@ -522,6 +474,89 @@ function getLanguageFromFileName(fileName: string | null): string {
   }
 }
 
+type FlatTreeNode = {
+  entry:
+    | DirectoryTreeEntry
+    | { isEmptyPlaceholder: boolean; path: string; name: string }
+    | { isLoadingPlaceholder: boolean; path: string; name: string }
+    | { isErrorPlaceholder: boolean; path: string; name: string; error: string }
+  depth: number
+}
+
+function buildFlatList(
+  path: string,
+  depth: number,
+  childrenMap: Record<string, DirectoryTreeEntry[]>,
+  expandedSet: Set<string>,
+  loadingSet: Set<string>,
+  errorMap: Record<string, string>
+): FlatTreeNode[] {
+  const list: FlatTreeNode[] = []
+  const children = childrenMap[path]
+  if (!children) return list
+
+  for (const child of children) {
+    list.push({ entry: child, depth })
+
+    if (child.isDirectory && expandedSet.has(child.path)) {
+      if (loadingSet.has(child.path)) {
+        list.push({
+          entry: {
+            isLoadingPlaceholder: true,
+            path: `${child.path}::loading`,
+            name: 'Loading',
+          },
+          depth: depth + 1,
+        })
+      } else if (errorMap[child.path]) {
+        list.push({
+          entry: {
+            isErrorPlaceholder: true,
+            path: `${child.path}::error`,
+            name: 'Error',
+            error: errorMap[child.path],
+          },
+          depth: depth + 1,
+        })
+      } else {
+        const subChildren = childrenMap[child.path]
+        if (subChildren === undefined) {
+          list.push({
+            entry: {
+              isLoadingPlaceholder: true,
+              path: `${child.path}::loading`,
+              name: 'Loading',
+            },
+            depth: depth + 1,
+          })
+        } else if (subChildren.length === 0) {
+          list.push({
+            entry: {
+              isEmptyPlaceholder: true,
+              path: `${child.path}::empty`,
+              name: 'Empty',
+            },
+            depth: depth + 1,
+          })
+        } else {
+          list.push(
+            ...buildFlatList(
+              child.path,
+              depth + 1,
+              childrenMap,
+              expandedSet,
+              loadingSet,
+              errorMap
+            )
+          )
+        }
+      }
+    }
+  }
+
+  return list
+}
+
 const FilesSection = memo(function FilesSection({
   scope,
 }: {
@@ -533,7 +568,12 @@ const FilesSection = memo(function FilesSection({
     path ??
     (canBrowseDirectories && scope.type === 'workspace' ? './' : undefined)
 
-  const [entries, setEntries] = useState<DirectoryTreeEntry[]>([])
+  // Central state for tree virtualization
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
+  const [directoryChildren, setDirectoryChildren] = useState<Record<string, DirectoryTreeEntry[]>>({})
+  const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set())
+  const [directoryErrors, setDirectoryErrors] = useState<Record<string, string>>({})
+
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -547,9 +587,13 @@ const FilesSection = memo(function FilesSection({
   const sidePanelWidth = useChatSessionUiSelector((session) => session.sidePanelWidth)
   const { setSidePanelWidth } = useChatSessionUiActions()
 
+  // Clear states and load root on path change
   useEffect(() => {
     if (!effectivePath) {
-      setEntries([])
+      setDirectoryChildren({})
+      setExpandedPaths(new Set())
+      setLoadingPaths(new Set())
+      setDirectoryErrors({})
       setError(null)
       setLoading(false)
       return
@@ -558,13 +602,19 @@ const FilesSection = memo(function FilesSection({
     let cancelled = false
     setLoading(true)
     setError(null)
+    setDirectoryChildren({})
+    setExpandedPaths(new Set())
+    setLoadingPaths(new Set())
+    setDirectoryErrors({})
+
     readDirectoryEntries(effectivePath)
       .then((nextEntries) => {
-        if (!cancelled) setEntries(nextEntries)
+        if (!cancelled) {
+          setDirectoryChildren({ [effectivePath]: nextEntries })
+        }
       })
       .catch((err) => {
         if (!cancelled) {
-          setEntries([])
           setError(
             err instanceof Error ? err.message : 'Unable to read directory'
           )
@@ -578,6 +628,64 @@ const FilesSection = memo(function FilesSection({
       cancelled = true
     }
   }, [effectivePath])
+
+  // Refs for tracking state asynchronously in callbacks without triggering re-creation
+  const stateRef = useRef({ directoryChildren, loadingPaths, expandedPaths })
+  useEffect(() => {
+    stateRef.current = { directoryChildren, loadingPaths, expandedPaths }
+  }, [directoryChildren, loadingPaths, expandedPaths])
+
+  const handleToggleExpand = useCallback(async (dirPath: string) => {
+    const { directoryChildren: currentChildren, loadingPaths: currentLoading, expandedPaths: currentExpanded } = stateRef.current
+    const isExpanding = !currentExpanded.has(dirPath)
+
+    setExpandedPaths((prev) => {
+      const next = new Set(prev)
+      if (isExpanding) {
+        next.add(dirPath)
+      } else {
+        next.delete(dirPath)
+      }
+      return next
+    })
+
+    if (isExpanding && !currentChildren[dirPath] && !currentLoading.has(dirPath)) {
+      setLoadingPaths((prev) => {
+        const next = new Set(prev)
+        next.add(dirPath)
+        return next
+      })
+      setDirectoryErrors((prev) => {
+        const next = { ...prev }
+        delete next[dirPath]
+        return next
+      })
+
+      try {
+        const nextEntries = await readDirectoryEntries(dirPath)
+        setDirectoryChildren((prev) => ({
+          ...prev,
+          [dirPath]: nextEntries,
+        }))
+      } catch (err) {
+        setDirectoryErrors((prev) => ({
+          ...prev,
+          [dirPath]: err instanceof Error ? err.message : 'Unable to read directory',
+        }))
+        // Store empty entries to mark it loaded but empty/failed
+        setDirectoryChildren((prev) => ({
+          ...prev,
+          [dirPath]: [],
+        }))
+      } finally {
+        setLoadingPaths((prev) => {
+          const next = new Set(prev)
+          next.delete(dirPath)
+          return next
+        })
+      }
+    }
+  }, [])
 
   // Restore panel width on unmount if we expanded it
   useEffect(() => {
@@ -612,6 +720,16 @@ const FilesSection = memo(function FilesSection({
     }
   }, [previousWidth, sidePanelWidth, setSidePanelWidth])
 
+  // Stabilize file click callback
+  const handleFileClickRef = useRef(handleFileClick)
+  useEffect(() => {
+    handleFileClickRef.current = handleFileClick
+  }, [handleFileClick])
+
+  const stableHandleFileClick = useCallback((filePath: string) => {
+    handleFileClickRef.current(filePath)
+  }, [])
+
   const handleClosePreview = useCallback(() => {
     setSelectedFilePath(null)
     setFileContent('')
@@ -640,6 +758,28 @@ const FilesSection = memo(function FilesSection({
     }
   }, [selectedFilePath])
 
+  // Build the flat list of visible elements
+  const flatList = useMemo(() => {
+    if (!effectivePath) return []
+    return buildFlatList(
+      effectivePath,
+      0,
+      directoryChildren,
+      expandedPaths,
+      loadingPaths,
+      directoryErrors
+    )
+  }, [effectivePath, directoryChildren, expandedPaths, loadingPaths, directoryErrors])
+
+  const parentRef = useRef<HTMLDivElement>(null)
+
+  const rowVirtualizer = useVirtualizer({
+    count: flatList.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 28, // Height of each row (h-7 is 28px)
+    overscan: 10,
+  })
+
   const fileTreeColumn = (
     <div className={cn("flex h-full min-h-0 flex-col gap-3", selectedFilePath ? "w-[240px] shrink-0" : "flex-1")}>
       <div className="rounded-lg border border-border/60 bg-card px-3 py-2 text-[11px] text-muted-foreground flex justify-between items-center min-w-0">
@@ -656,7 +796,10 @@ const FilesSection = memo(function FilesSection({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border/60 bg-card p-1">
+      <div 
+        ref={parentRef}
+        className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border/60 bg-card p-1 relative animate-none"
+      >
         {!canBrowseDirectories ? (
           <div className="flex min-h-[220px] items-center justify-center px-4 text-center text-sm text-muted-foreground">
             File browsing is available in the desktop app.
@@ -674,14 +817,98 @@ const FilesSection = memo(function FilesSection({
           </div>
         ) : error ? (
           <div className="p-3 text-sm text-destructive">{error}</div>
-        ) : entries.length ? (
-          entries.map((entry) => (
-            <DirectoryTreeNode
-              key={entry.path}
-              entry={entry}
-              onFileClick={handleFileClick}
-            />
-          ))
+        ) : flatList.length ? (
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: '100%',
+              position: 'relative',
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const item = flatList[virtualRow.index]
+              if (!item) return null
+              const entry = item.entry
+
+              if ('isEmptyPlaceholder' in entry) {
+                return (
+                  <div
+                    key={entry.path}
+                    ref={rowVirtualizer.measureElement}
+                    data-index={virtualRow.index}
+                    className="px-1.5 py-1 text-xs text-muted-foreground absolute top-0 left-0 w-full"
+                    style={{
+                      transform: `translateY(${virtualRow.start}px)`,
+                      paddingLeft: `${item.depth * 0.75 + 0.375}rem`,
+                      height: '28px',
+                    }}
+                  >
+                    Empty
+                  </div>
+                )
+              }
+
+              if ('isLoadingPlaceholder' in entry) {
+                return (
+                  <div
+                    key={entry.path}
+                    ref={rowVirtualizer.measureElement}
+                    data-index={virtualRow.index}
+                    className="flex h-7 items-center gap-2 px-1.5 text-xs text-muted-foreground absolute top-0 left-0 w-full"
+                    style={{
+                      transform: `translateY(${virtualRow.start}px)`,
+                      paddingLeft: `${item.depth * 0.75 + 0.375}rem`,
+                      height: '28px',
+                    }}
+                  >
+                    <Loader2 className="size-3 animate-spin text-muted-foreground" />
+                    <span>Loading</span>
+                  </div>
+                )
+              }
+
+              if ('isErrorPlaceholder' in entry) {
+                return (
+                  <div
+                    key={entry.path}
+                    ref={rowVirtualizer.measureElement}
+                    data-index={virtualRow.index}
+                    className="truncate px-1.5 py-1 text-xs text-destructive absolute top-0 left-0 w-full"
+                    style={{
+                      transform: `translateY(${virtualRow.start}px)`,
+                      paddingLeft: `${item.depth * 0.75 + 0.375}rem`,
+                      height: '28px',
+                    }}
+                    title={entry.error}
+                  >
+                    {entry.error}
+                  </div>
+                )
+              }
+
+              return (
+                <div
+                  key={entry.path}
+                  ref={rowVirtualizer.measureElement}
+                  data-index={virtualRow.index}
+                  className="absolute top-0 left-0 w-full"
+                  style={{
+                    transform: `translateY(${virtualRow.start}px)`,
+                    height: '28px',
+                  }}
+                >
+                  <DirectoryTreeNode
+                    entry={entry}
+                    depth={item.depth}
+                    expanded={expandedPaths.has(entry.path)}
+                    loading={loadingPaths.has(entry.path)}
+                    onToggleExpand={handleToggleExpand}
+                    onFileClick={stableHandleFileClick}
+                  />
+                </div>
+              )
+            })}
+          </div>
         ) : (
           <div className="p-3 text-sm text-muted-foreground">
             Empty directory.

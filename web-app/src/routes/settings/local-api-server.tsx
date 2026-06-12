@@ -74,7 +74,7 @@ function LocalAPIServerContent() {
     setEnableOnStartup,
     serverHost,
     serverPort,
-    setServerPort,
+    setServerPort: _setServerPort,
     apiPrefix,
     apiKey,
     trustedHosts,
@@ -280,7 +280,7 @@ function LocalAPIServerContent() {
             enableServerToolExecution,
           })
         })
-        .then((actualPort: number) => {
+        .then((_actualPort: number) => {
           setServerStatus('running')
         })
         .catch((error: unknown) => {

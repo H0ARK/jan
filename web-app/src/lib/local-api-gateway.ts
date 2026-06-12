@@ -1,10 +1,6 @@
 import { providerHasConfiguredRemoteAuth } from '@/lib/provider-api-keys'
 import { DEFAULT_LOCAL_API_SERVER_API_KEY } from '@/hooks/useLocalApiServer'
-import {
-  GATEWAY_SKIP_PROVIDERS,
-  gatewayWireApiForProvider,
-  resolveGatewayProviderBaseUrl,
-} from '@/lib/provider-gateway'
+import { GATEWAY_SKIP_PROVIDERS } from '@/lib/provider-gateway'
 
 /** Providers handled inside Jan — not registered as HTTP upstreams for the local API server. */
 export const LOCAL_API_GATEWAY_SKIP_PROVIDERS = GATEWAY_SKIP_PROVIDERS
