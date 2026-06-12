@@ -8,7 +8,7 @@ import {
   stringifyCodexJson,
 } from '../shared/codex-helpers'
 
-type ConfigAdminPanelProps = {
+type ConfigAdminPanelState = {
   adminBusy: boolean
   currentThreadIdForCaps: string | null | undefined
   codexConfigKeyPath: string
@@ -18,6 +18,9 @@ type ConfigAdminPanelProps = {
   codexExternalAgentImportJson: string
   codexAdminSnapshot: unknown
   cwd: string
+}
+
+type ConfigAdminPanelActions = {
   onSetCodexConfigKeyPath: (value: string) => void
   onSetCodexConfigValueJson: (value: string) => void
   onSetCodexConfigBatchJson: (value: string) => void
@@ -27,40 +30,53 @@ type ConfigAdminPanelProps = {
   onSetAdminBusy: (busy: boolean) => void
   onRefreshCodexAdminSnapshot: () => Promise<void> | void
   onWriteCodexConfigValue: (janThreadId: string, keyPath: string[], value: unknown) => Promise<unknown>
-  onWriteCodexConfigBatch: (janThreadId: string, params: any) => Promise<unknown>
-  onUploadCodexFeedback: (janThreadId: string, params: any) => Promise<unknown>
-  onStartCodexWindowsSandbox: (janThreadId: string, params: any) => Promise<unknown>
-  onImportCodexExternalAgentConfig: (janThreadId: string, params: any) => Promise<unknown>
-  onSetCodexAdminSnapshot: (updater: (prev: any) => any) => void
+  onWriteCodexConfigBatch: (janThreadId: string, params: Record<string, unknown>) => Promise<unknown>
+  onUploadCodexFeedback: (janThreadId: string, params: Record<string, unknown>) => Promise<unknown>
+  onStartCodexWindowsSandbox: (janThreadId: string, params: Record<string, unknown>) => Promise<unknown>
+  onImportCodexExternalAgentConfig: (janThreadId: string, params: Record<string, unknown>) => Promise<unknown>
+  onSetCodexAdminSnapshot: (updater: (prev: unknown) => unknown) => void
+}
+
+type ConfigAdminPanelProps = {
+  state: ConfigAdminPanelState
+  actions: ConfigAdminPanelActions
   isCodexProtoTransport?: boolean
 }
 
 export function ConfigAdminPanel({
-  adminBusy,
-  currentThreadIdForCaps,
-  codexConfigKeyPath,
-  codexConfigValueJson,
-  codexConfigBatchJson,
-  codexWindowsSandboxJson,
-  codexExternalAgentImportJson,
-  codexAdminSnapshot,
-  cwd,
-  onSetCodexConfigKeyPath,
-  onSetCodexConfigValueJson,
-  onSetCodexConfigBatchJson,
-  onSetCodexWindowsSandboxJson,
-  onSetCodexExternalAgentImportJson,
-  onSetCapError,
-  onSetAdminBusy,
-  onRefreshCodexAdminSnapshot,
-  onWriteCodexConfigValue,
-  onWriteCodexConfigBatch,
-  onUploadCodexFeedback,
-  onStartCodexWindowsSandbox,
-  onImportCodexExternalAgentConfig,
-  onSetCodexAdminSnapshot,
+  state,
+  actions,
   isCodexProtoTransport,
 }: ConfigAdminPanelProps) {
+  const {
+    adminBusy,
+    currentThreadIdForCaps,
+    codexConfigKeyPath,
+    codexConfigValueJson,
+    codexConfigBatchJson,
+    codexWindowsSandboxJson,
+    codexExternalAgentImportJson,
+    codexAdminSnapshot,
+    cwd,
+  } = state
+
+  const {
+    onSetCodexConfigKeyPath,
+    onSetCodexConfigValueJson,
+    onSetCodexConfigBatchJson,
+    onSetCodexWindowsSandboxJson,
+    onSetCodexExternalAgentImportJson,
+    onSetCapError,
+    onSetAdminBusy,
+    onRefreshCodexAdminSnapshot,
+    onWriteCodexConfigValue,
+    onWriteCodexConfigBatch,
+    onUploadCodexFeedback,
+    onStartCodexWindowsSandbox,
+    onImportCodexExternalAgentConfig,
+    onSetCodexAdminSnapshot,
+  } = actions
+
   const [showAdvancedConfigValueJson, setShowAdvancedConfigValueJson] =
     useState(false)
   const [showAdvancedConfigBatchJson, setShowAdvancedConfigBatchJson] =
@@ -99,6 +115,14 @@ export function ConfigAdminPanel({
         .filter((item) => typeof item === 'string')
         .join('\n')
     : ''
+  const externalImportSource = typeof parsedExternalAgentImport.source === 'string'
+    ? parsedExternalAgentImport.source
+    : ''
+  const externalImportAgent = typeof parsedExternalAgentImport.agent === 'string'
+    ? parsedExternalAgentImport.agent
+    : ''
+  const externalImportDryRun = parsedExternalAgentImport.dryRun === true
+  const externalImportOverwrite = parsedExternalAgentImport.overwrite === true
 
   const onSetWindowsSandboxField = (next: {
     mode?: string
@@ -129,15 +153,46 @@ export function ConfigAdminPanel({
     )
   }
 
+  const onSetExternalAgentImportField = (
+    key: 'source' | 'agent',
+    value: string
+  ) => {
+    const trimmed = value.trim()
+    const nextPayload = {
+      ...parsedExternalAgentImport,
+      [key]: trimmed || undefined,
+    }
+    if (!trimmed) delete nextPayload[key]
+    onSetCodexExternalAgentImportJson(
+      stringifyCodexJson(nextPayload, codexExternalAgentImportJson)
+    )
+  }
+
+  const onSetExternalAgentImportFlag = (
+    key: 'dryRun' | 'overwrite',
+    checked: boolean
+  ) => {
+    const nextPayload = {
+      ...parsedExternalAgentImport,
+      [key]: checked || undefined,
+    }
+    if (!checked) delete nextPayload[key]
+    onSetCodexExternalAgentImportJson(
+      stringifyCodexJson(nextPayload, codexExternalAgentImportJson)
+    )
+  }
+
   const singleConfigValue = typeof parsedConfigValue === 'string'
     ? parsedConfigValue
     : parsedConfigValue === true
       ? 'true'
       : parsedConfigValue === false
         ? 'false'
-        : parsedConfigValue === 0
-          ? '0'
-          : ''
+        : typeof parsedConfigValue === 'number'
+          ? String(parsedConfigValue)
+          : parsedConfigValue === null
+            ? 'null'
+            : ''
 
   const onSetConfigValue = (value: string) => {
     onSetCodexConfigValueJson(stringifyCodexJson(value, codexConfigValueJson))
@@ -193,7 +248,9 @@ export function ConfigAdminPanel({
       <div className="mb-1 text-[10px] text-muted-foreground">
         Reads live app-server config, config requirements, permission
         profiles, collaboration modes, and external-agent import candidates
-        for the current workspace.
+        for the current workspace. High-use config paths use structured fields
+        with advanced JSON escape; raw RPC escape hatch is in the Raw app-server
+        RPC panel for uncommon methods.
       </div>
       <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
         <Input
@@ -363,12 +420,57 @@ export function ConfigAdminPanel({
               }
             />
           ) : (
-            <textarea
-              className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 text-[10px]"
-              placeholder="External migration items (one per line)"
-              value={externalMigrationItems}
-              onChange={(event) => onSetMigrationItems(event.target.value)}
-            />
+            <div className="grid grid-cols-1 gap-1">
+              <div className="grid grid-cols-2 gap-1">
+                <Input
+                  className="h-6 px-2 text-[10px]"
+                  placeholder="Import source"
+                  value={externalImportSource}
+                  onChange={(event) =>
+                    onSetExternalAgentImportField('source', event.target.value)
+                  }
+                />
+                <Input
+                  className="h-6 px-2 text-[10px]"
+                  placeholder="Agent/profile"
+                  value={externalImportAgent}
+                  onChange={(event) =>
+                    onSetExternalAgentImportField('agent', event.target.value)
+                  }
+                />
+              </div>
+              <div className="flex flex-wrap gap-3 text-[9px] text-muted-foreground">
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={externalImportDryRun}
+                    onChange={(event) =>
+                      onSetExternalAgentImportFlag('dryRun', event.target.checked)
+                    }
+                  />
+                  dry run
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={externalImportOverwrite}
+                    onChange={(event) =>
+                      onSetExternalAgentImportFlag(
+                        'overwrite',
+                        event.target.checked
+                      )
+                    }
+                  />
+                  overwrite
+                </label>
+              </div>
+              <textarea
+                className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 text-[10px]"
+                placeholder="External migration items (one per line)"
+                value={externalMigrationItems}
+                onChange={(event) => onSetMigrationItems(event.target.value)}
+              />
+            </div>
           )}
         </div>
       </div>
@@ -422,7 +524,7 @@ export function ConfigAdminPanel({
                 currentThreadIdForCaps,
                 params
               )
-              onSetCodexAdminSnapshot((previous: any) => ({
+              onSetCodexAdminSnapshot((previous: unknown) => ({
                 ...(previous ?? {}),
                 batchWrite: result,
               }))
@@ -450,7 +552,7 @@ export function ConfigAdminPanel({
                 currentThreadIdForCaps,
                 { cwd }
               )
-              onSetCodexAdminSnapshot((previous: any) => ({
+              onSetCodexAdminSnapshot((previous: unknown) => ({
                 ...(previous ?? {}),
                 feedbackUpload: result,
               }))
@@ -478,7 +580,7 @@ export function ConfigAdminPanel({
                 throw new Error('Windows sandbox setup payload must be a JSON object.')
               }
               const result = await onStartCodexWindowsSandbox(currentThreadIdForCaps, params)
-              onSetCodexAdminSnapshot((previous: any) => ({
+              onSetCodexAdminSnapshot((previous: unknown) => ({
                 ...(previous ?? {}),
                 windowsSandboxSetup: result,
               }))
@@ -512,7 +614,7 @@ export function ConfigAdminPanel({
                 currentThreadIdForCaps,
                 { cwd, ...parsedParams }
               )
-              onSetCodexAdminSnapshot((previous: any) => ({
+              onSetCodexAdminSnapshot((previous: unknown) => ({
                 ...(previous ?? {}),
                 externalAgentImport: result,
               }))

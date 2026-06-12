@@ -61,6 +61,8 @@ function parseMethodSurfaceReport(output) {
 
 const packageJson = readJson(join(root, 'package.json'))
 const scripts = packageJson.scripts ?? {}
+const requireSmokeReportValidation = process.env.REQUIRE_SMOKE_REPORT === '1'
+const smokeReportPath = process.env.SMOKE_REPORT_PATH?.trim()
 
 const requiredScripts = [
   'dev:tauri',
@@ -70,6 +72,9 @@ const requiredScripts = [
   'codex:parity:cli',
   'codex:parity:cli:commands',
   'codex:parity:appserver:methods',
+  'codex:desktop:smoke:report',
+  'codex:desktop:smoke:validate',
+  'codex:desktop:ready',
 ]
 
 const codexVersion = run(codexBinary, ['-V'])
@@ -83,6 +88,11 @@ const methodSurfaceCheck = run(
   20_000
 )
 const methodSurfaceReport = parseMethodSurfaceReport(methodSurfaceCheck.stdout)
+const smokeReportValidatorSelfTest = run(
+  execPath,
+  [join(root, 'scripts/codex/desktop/validate-smoke-report.mjs'), '--self-test'],
+  20_000
+)
 const threadsPanelSource = existsSync(
   join(root, 'web-app/src/containers/model-tools-panel/tools/ThreadsPanel.tsx')
 )
@@ -125,9 +135,29 @@ const checks = [
   checkFile('scripts/codex/cli/parity-check.mjs'),
   checkFile('scripts/codex/cli/commands-check.mjs'),
   checkFile('scripts/codex/cli/method-surface-check.mjs'),
+  checkFile('scripts/codex/desktop/smoke-report.mjs'),
+  checkFile('scripts/codex/desktop/validate-smoke-report.mjs'),
+  checkFile('scripts/codex/desktop/ready.mjs'),
   checkFile('src-tauri/tauri.conf.json'),
   checkFile('src-tauri/capabilities/default.json'),
   checkFile('src-tauri/capabilities/desktop.json'),
+  {
+    label: 'Desktop checklist references smoke report workflow',
+    ok: /codex:desktop:smoke:report|reports\/codex-desktop-smoke/.test(
+      checklistText
+    ),
+    detail: 'DESKTOP_SMOKE_CHECKLIST.md',
+  },
+  {
+    label: 'Desktop checklist references smoke report validation',
+    ok: /codex:desktop:smoke:validate|validate-smoke-report/.test(checklistText),
+    detail: 'DESKTOP_SMOKE_CHECKLIST.md',
+  },
+  {
+    label: 'Desktop checklist references final ready gate',
+    ok: /codex:desktop:ready/.test(checklistText),
+    detail: 'DESKTOP_SMOKE_CHECKLIST.md',
+  },
   {
     label: 'Desktop checklist covers approval flow',
     ok: /Approval dialog|Approve for session|Deny/.test(checklistText),
@@ -139,13 +169,43 @@ const checks = [
     detail: 'DESKTOP_SMOKE_CHECKLIST.md',
   },
   {
+    label: 'Desktop smoke report validates when enforced',
+    ok: !requireSmokeReportValidation
+      ? true
+      : (() => {
+          const validateArgs = [join(root, 'scripts/codex/desktop/validate-smoke-report.mjs')]
+          validateArgs.push(smokeReportPath || '--latest')
+          const validate = run(
+            execPath,
+            validateArgs,
+            20_000
+          )
+          if (validate.ok) return true
+          return false
+        })(),
+    detail: requireSmokeReportValidation
+      ? smokeReportPath
+        ? `Desktop smoke report must pass validation: ${smokeReportPath}. Run yarn codex:desktop:smoke:validate ${smokeReportPath}.`
+        : `Desktop smoke report must pass validation. Run yarn codex:desktop:smoke:validate --latest or pass a report path to yarn codex:desktop:ready.`
+      : 'Optional validation gate (set REQUIRE_SMOKE_REPORT=1)',
+  },
+  {
+    label: 'Desktop smoke report validator self-test passes',
+    ok: smokeReportValidatorSelfTest.ok,
+    detail: smokeReportValidatorSelfTest.ok
+      ? smokeReportValidatorSelfTest.stdout.trim() || 'self-test passed'
+      : smokeReportValidatorSelfTest.stderr ||
+        smokeReportValidatorSelfTest.stdout.trim() ||
+        'validator self-test failed',
+  },
+  {
     label: 'Thread panel exposes Clean terminals action',
     ok: /Clean terminals/.test(threadsPanelSource),
     detail: 'web-app/src/containers/model-tools-panel/tools/ThreadsPanel.tsx',
   },
   {
     label: 'ModelToolsPanel wires clean terminals handler',
-    ok: /onCleanTerminals\s*=\s*\{\s*\(\)\s*=>[\s\S]*cleanCodexBackgroundTerminals/.test(
+    ok: /onCleanTerminals\s*[:=]\s*\(?\s*[\n\r ]*\)?\s*=>[\s\S]*cleanCodexBackgroundTerminals/.test(
       modelToolsPanelSource
     ),
     detail: 'web-app/src/containers/ModelToolsPanel.tsx',

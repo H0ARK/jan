@@ -60,17 +60,39 @@ export function MarketplaceSelectionDetails({
               <span className="text-muted-foreground">description:</span>{' '}
               {selectedCodexPluginDescriptor.description ?? '—'}
             </div>
-            <div className="truncate">
-              <span className="text-muted-foreground">metadata keys:</span>{' '}
-              {selectedCodexPluginMetadataKeys.length
-                ? selectedCodexPluginMetadataKeys.join(', ')
-                : '—'}
+            <div>
+              <span className="text-muted-foreground">metadata keys:</span>
+              {selectedCodexPluginMetadataKeys.length ? (
+                <div className="mt-0.5 flex flex-wrap gap-1">
+                  {selectedCodexPluginMetadataKeys.slice(0, 12).map((key) => (
+                    <span
+                      key={key}
+                      className="max-w-full truncate rounded border bg-background/60 px-1 py-0.5 font-mono"
+                      title={key}
+                    >
+                      {key}
+                    </span>
+                  ))}
+                  {selectedCodexPluginMetadataKeys.length > 12 ? (
+                    <span className="rounded border bg-background/60 px-1 py-0.5 text-muted-foreground">
+                      +{selectedCodexPluginMetadataKeys.length - 12}
+                    </span>
+                  ) : null}
+                </div>
+              ) : (
+                <span> —</span>
+              )}
             </div>
           </div>
           {selectedCodexPluginDescriptor.raw ? (
-            <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded border bg-background/60 p-1 font-mono text-[9px]">
-              {JSON.stringify(selectedCodexPluginDescriptor.raw, null, 2)}
-            </pre>
+            <details className="mt-1 rounded border bg-background/60 p-1">
+              <summary className="cursor-pointer text-[9px] text-muted-foreground">
+                Raw plugin metadata JSON
+              </summary>
+              <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[9px]">
+                {JSON.stringify(selectedCodexPluginDescriptor.raw, null, 2)}
+              </pre>
+            </details>
           ) : null}
           <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1">
             <button

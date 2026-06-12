@@ -1,13 +1,17 @@
 # Jan Codex Runtime — Desktop Smoke Checklist
 
 **Date anchor**: 2026-06-12  
-**Branch**: `feature/codex-runtime-preview` (commit a0e270dab)  
+**Branch**: `feature/codex-runtime-preview` (commit 98b02f3d4)  
 **Purpose**: Verify real end-to-end Codex app-server behavior in the built Tauri desktop app (things browser preview and unit tests cannot cover).
 
 ## Prerequisites (run once)
 - `git checkout feature/codex-runtime-preview && git pull origin feature/codex-runtime-preview`
 - Ensure Codex desktop binary is at `/Applications/Codex.app/Contents/Resources/codex` (or update your profile)
 - Run `yarn install` and any `download:bin` / `build:cli` / `build:mlx-server` if needed for the Tauri side
+- Run `yarn codex:desktop:preflight`
+- Start a structured report with `yarn codex:desktop:smoke:report`; fill the generated file in `reports/codex-desktop-smoke/` as this checklist is executed
+- After filling the report, run `yarn codex:desktop:smoke:validate`; the goal is not v1-complete until this validator passes on the filled report. If multiple report templates exist, pass the specific report path directly to the validator.
+- Final v1 readiness gate: run `yarn codex:desktop:ready`; this enforces preflight plus a validated filled desktop-smoke report. To avoid validating the wrong latest template, run `yarn codex:desktop:ready reports/codex-desktop-smoke/<filled-report>.md`.
 - Build or launch the desktop app:
   - Dev: `yarn tauri dev` (or via Makefile)
   - Or full build: `yarn build:tauri:darwin` (universal) then run the .app
@@ -98,6 +102,8 @@ When done, reply with:
 - Any new bugs found
 - Then we will:
   - Update `CODEX_CLONE_PARITY.md` with the real desktop evidence
+  - Run `yarn codex:desktop:smoke:validate` against the filled report
+  - Run `yarn codex:desktop:ready reports/codex-desktop-smoke/<filled-report>.md` as the final v1 gate
   - Advance to product polish (Milestone 2 + 4+)
 
 ## Notes for this pass

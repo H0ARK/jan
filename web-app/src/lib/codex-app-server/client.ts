@@ -579,7 +579,7 @@ export class CodexAppServerSession {
   }
 
   async listMcpServerStatus(params: Record<string, unknown> = {}) {
-    return this.requestAppServer('mcpServer/status/list', params)
+    return this.requestAppServer('mcpServerStatus/list', params)
   }
 
   async readMcpResource(params: Record<string, unknown>) {

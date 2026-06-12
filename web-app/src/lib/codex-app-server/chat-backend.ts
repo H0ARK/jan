@@ -910,7 +910,7 @@ export async function startCodexMcpOauthLogin(janThreadId: string, server: strin
 export async function listCodexMcpServerStatus(janThreadId: string, params: Record<string, unknown> = {}) {
   return requestCodexAppServerMethodWithFallback(
     janThreadId,
-    'mcpServer/status/list',
+    'mcpServerStatus/list',
     params
   )
 }

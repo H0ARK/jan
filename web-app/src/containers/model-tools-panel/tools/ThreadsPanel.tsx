@@ -4,7 +4,6 @@ import { cn } from '@/lib/utils'
 import type { CodexReviewTarget } from '@/lib/codex-app-server/api'
 
 import {
-  parseCodexJson,
   stringifyCodexJson,
   type CodexThreadDescriptor,
 } from '../shared/codex-helpers'
@@ -147,6 +146,30 @@ function parseThreadInjectItemValue(value: string): unknown {
   return value
 }
 
+function parseThreadMetadataJson(value: string): JsonObject | null {
+  const trimmed = value.trim()
+  if (!trimmed) return {}
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!isPlainObject(parsed)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function parseThreadSettingsJson(value: string): JsonObject | null {
+  const trimmed = value.trim()
+  if (!trimmed) return {}
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!isPlainObject(parsed)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
 type CodexThreadSummary = {
   id: string
   name?: string
@@ -156,10 +179,9 @@ type CodexThreadSummary = {
   turns?: number | null
   turnItems?: number | null
   goal?: string
-  snapshot?: string
 }
 
-type ThreadsPanelProps = {
+type ThreadsPanelState = {
   codexInjectItemsJson: string
   codexLoadedThreads: unknown
   codexRealtimeAudioBase64: string
@@ -191,6 +213,15 @@ type ThreadsPanelProps = {
   currentThreadIdForCaps: string | null | undefined
   cwd?: string
   filteredCodexThreadDescriptors: CodexThreadDescriptor[]
+  selectedCodexThreadSummary: CodexThreadSummary | null
+  selectableCodexItemIds: string[]
+  selectableCodexThreadIds: string[]
+  selectableCodexTurnIds: string[]
+  targetCodexThreadId: string
+  threadBusy: boolean
+}
+
+type ThreadsPanelActions = {
   onArchive: () => void
   onClearGoal: () => void
   onCompact: () => void
@@ -252,115 +283,126 @@ type ThreadsPanelProps = {
   onTemplateSettings: () => void
   onUnarchive: () => void
   onUnsubscribe: () => void
-  selectableCodexItemIds: string[]
-  selectableCodexThreadIds: string[]
-  selectableCodexTurnIds: string[]
-  selectedCodexThreadSummary: CodexThreadSummary | null
-  targetCodexThreadId: string
-  threadBusy: boolean
 }
 
-export function ThreadsPanel({
-  codexInjectItemsJson,
-  codexLoadedThreads,
-  codexRealtimeAudioBase64,
-  codexRealtimeText,
-  codexStoredThreads,
-  codexTargetItemId,
-  codexTargetTurnId,
-  codexThreadDescriptors,
-  codexThreadFilter,
-  codexThreadGoal,
-  codexThreadGoalObjective,
-  codexThreadId,
-  codexThreadMetadataJson,
-  codexThreadName,
-  codexThreadSettingsJson,
-  codexThreadSnapshot,
-  codexConversationSummary,
-  codexGitDiffToRemote,
-  codexAuthStatus,
-  codexThreadSort,
-  codexThreadSourceFilter,
-  codexThreadTurnItems,
-  codexThreadTurns,
-  codexThreadActionParamsJson,
-  codexThreadReviewBranch,
-  codexThreadReviewDelivery,
-  codexThreadReviewType,
-  codexTurnItemsLimit,
-  currentThreadIdForCaps,
-  filteredCodexThreadDescriptors,
-  onArchive,
-  onClearGoal,
-  onCompact,
-  onCleanTerminals,
-  onFork,
-  onGetGoal,
-  onInjectItems,
-  onInterrupt,
-  onMemoryOff,
-  onMemoryOn,
-  onMetadata,
-  onName,
-  onRead,
-  onReadTurnItems,
-  onRealtimeAudio,
-  onRealtimeStart,
-  onRealtimeStop,
-  onRealtimeText,
-  onRefresh,
-  onReload,
-  onResetMemory,
-  onReview,
-  onRollback,
-  onSearchThreads,
-  onStartThread,
-  onResumeThread,
-  onStartTurn,
-  onListRealtimeVoices,
-  onApproveGuardianDeniedAction,
-  onIncrementElicitation,
-  onDecrementElicitation,
-  onReadConversationSummary,
-  onReadGitDiffToRemote,
-  onReadAuthStatus,
-  onSetCodexInjectItemsJson,
-  onSetCodexRealtimeAudioBase64,
-  onSetCodexRealtimeText,
-  onSetCodexTargetItemId,
-  onSetCodexTargetTurnId,
-  onSetCodexThreadFilter,
-  onSetCodexThreadGoalObjective,
-  onSetCodexThreadId,
-  onSetCodexThreadMetadataJson,
-  onSetCodexThreadName,
-  onSetCodexThreadSettingsJson,
-  onSetCodexThreadSort,
-  onSetCodexThreadSourceFilter,
-  onSetCodexTurnItemsLimit,
-  onSetCodexThreadActionParamsJson,
-  onSetCodexThreadReviewBranch,
-  onSetCodexThreadReviewDelivery,
-  onSetCodexThreadReviewType,
-  onSettings,
-  onSetGoal,
-  onTemplateInjectText,
-  onTemplateMetadata,
-  onTemplateReviewBranch,
-  onTemplateReviewUncommitted,
-  onTemplateSettings,
-  onUnarchive,
-  onUnsubscribe,
-  selectableCodexItemIds,
-  selectableCodexThreadIds,
-  selectableCodexTurnIds,
-  selectedCodexThreadSummary,
-  targetCodexThreadId,
-  threadBusy,
-}: ThreadsPanelProps) {
-  const metadata = parseCodexJson<JsonObject>(codexThreadMetadataJson, {})
-  const settings = parseCodexJson<JsonObject>(codexThreadSettingsJson, {})
+type ThreadsPanelProps = {
+  state: ThreadsPanelState
+  actions: ThreadsPanelActions
+  isCodexProtoTransport?: boolean
+}
+
+export function ThreadsPanel({ state, actions }: ThreadsPanelProps) {
+  const {
+    codexInjectItemsJson,
+    codexLoadedThreads,
+    codexRealtimeAudioBase64,
+    codexRealtimeText,
+    codexStoredThreads,
+    codexTargetItemId,
+    codexTargetTurnId,
+    codexThreadDescriptors,
+    codexThreadFilter,
+    codexThreadGoal,
+    codexThreadGoalObjective,
+    codexThreadId,
+    codexThreadMetadataJson,
+    codexThreadName,
+    codexThreadSettingsJson,
+    codexThreadSnapshot,
+    codexConversationSummary,
+    codexGitDiffToRemote,
+    codexAuthStatus,
+    codexThreadSort,
+    codexThreadSourceFilter,
+    codexThreadTurnItems,
+    codexThreadTurns,
+    codexThreadActionParamsJson,
+    codexThreadReviewBranch,
+    codexThreadReviewDelivery,
+    codexThreadReviewType,
+    codexTurnItemsLimit,
+    currentThreadIdForCaps,
+    filteredCodexThreadDescriptors,
+    selectableCodexItemIds,
+    selectableCodexThreadIds,
+    selectableCodexTurnIds,
+    selectedCodexThreadSummary,
+    targetCodexThreadId,
+    threadBusy,
+  } = state
+  const {
+    onArchive,
+    onClearGoal,
+    onCompact,
+    onCleanTerminals,
+    onFork,
+    onGetGoal,
+    onInjectItems,
+    onInterrupt,
+    onMemoryOff,
+    onMemoryOn,
+    onMetadata,
+    onName,
+    onRead,
+    onReadTurnItems,
+    onRealtimeAudio,
+    onRealtimeStart,
+    onRealtimeStop,
+    onRealtimeText,
+    onRefresh,
+    onReload,
+    onResetMemory,
+    onReview,
+    onRollback,
+    onSearchThreads,
+    onStartThread,
+    onResumeThread,
+    onStartTurn,
+    onListRealtimeVoices,
+    onApproveGuardianDeniedAction,
+    onIncrementElicitation,
+    onDecrementElicitation,
+    onReadConversationSummary,
+    onReadGitDiffToRemote,
+    onReadAuthStatus,
+    onSetCodexInjectItemsJson,
+    onSetCodexRealtimeAudioBase64,
+    onSetCodexRealtimeText,
+    onSetCodexTargetItemId,
+    onSetCodexTargetTurnId,
+    onSetCodexThreadFilter,
+    onSetCodexThreadGoalObjective,
+    onSetCodexThreadId,
+    onSetCodexThreadMetadataJson,
+    onSetCodexThreadName,
+    onSetCodexThreadSettingsJson,
+    onSetCodexThreadSort,
+    onSetCodexThreadSourceFilter,
+    onSetCodexTurnItemsLimit,
+    onSetCodexThreadActionParamsJson,
+    onSetCodexThreadReviewBranch,
+    onSetCodexThreadReviewDelivery,
+    onSetCodexThreadReviewType,
+    onSettings,
+    onSetGoal,
+    onTemplateInjectText,
+    onTemplateMetadata,
+    onTemplateReviewBranch,
+    onTemplateReviewUncommitted,
+    onTemplateSettings,
+    onUnarchive,
+    onUnsubscribe,
+  } = actions
+  const parsedMetadata = parseThreadMetadataJson(codexThreadMetadataJson)
+  const parsedSettings = parseThreadSettingsJson(codexThreadSettingsJson)
+  const metadata = parsedMetadata ?? {}
+  const settings = parsedSettings ?? {}
+  const threadMetadataMessage = parsedMetadata === null
+    ? 'Thread metadata JSON must be a valid JSON object.'
+    : null
+  const threadSettingsMessage = parsedSettings === null
+    ? 'Thread settings JSON must be a valid JSON object.'
+    : null
 
   const metadataSource = typeof metadata.source === 'string' ? metadata.source : ''
   const metadataWorkspace = typeof metadata.workspace === 'string' ? metadata.workspace : ''
@@ -370,14 +412,14 @@ export function ThreadsPanel({
   const updateThreadMetadataField = (field: 'source' | 'workspace', value: string) => {
     if (field === 'source') {
       onSetCodexThreadMetadataJson(
-        buildMetadataJson(parseCodexJson<JsonObject>(codexThreadMetadataJson, {}), value, metadataWorkspace)
+        buildMetadataJson(parseThreadMetadataJson(codexThreadMetadataJson) ?? {}, value, metadataWorkspace)
       )
       return
     }
 
     onSetCodexThreadMetadataJson(
       buildMetadataJson(
-        parseCodexJson<JsonObject>(codexThreadMetadataJson, {}),
+        parseThreadMetadataJson(codexThreadMetadataJson) ?? {},
         metadataSource,
         value
       )
@@ -390,14 +432,14 @@ export function ThreadsPanel({
   ) => {
     if (field === 'approvalPolicy') {
       onSetCodexThreadSettingsJson(
-        buildSettingsJson(parseCodexJson<JsonObject>(codexThreadSettingsJson, {}), value, settingsSandbox)
+        buildSettingsJson(parseThreadSettingsJson(codexThreadSettingsJson) ?? {}, value, settingsSandbox)
       )
       return
     }
 
     onSetCodexThreadSettingsJson(
       buildSettingsJson(
-        parseCodexJson<JsonObject>(codexThreadSettingsJson, {}),
+        parseThreadSettingsJson(codexThreadSettingsJson) ?? {},
         settingsApprovalPolicy,
         value
       )
@@ -467,6 +509,12 @@ export function ThreadsPanel({
   )
   const threadActionParamsMessage = parsedThreadActionParams === null
     ? 'Thread action params JSON must be a valid JSON object.'
+    : null
+  const parsedThreadInjectItems = parseThreadInjectItems(
+    codexInjectItemsJson || '[]'
+  )
+  const threadInjectItemsMessage = parsedThreadInjectItems === null
+    ? 'Thread inject items JSON must be a valid JSON array.'
     : null
 
   const setThreadActionParamFieldsFromValue = (
@@ -648,10 +696,10 @@ export function ThreadsPanel({
               updateThreadMetadataField('workspace', event.target.value)
             }
           />
-          <details className="rounded border border-border/60 px-2 py-1">
-            <summary className="cursor-pointer text-[9px] text-muted-foreground">
-              Advanced metadata JSON
-            </summary>
+        <details className="rounded border border-border/60 px-2 py-1">
+          <summary className="cursor-pointer text-[9px] text-muted-foreground">
+            Advanced metadata JSON
+          </summary>
             <textarea
               className="mt-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
               placeholder="Thread metadata JSON"
@@ -659,6 +707,9 @@ export function ThreadsPanel({
               onChange={(event) => onSetCodexThreadMetadataJson(event.target.value)}
             />
           </details>
+          {threadMetadataMessage ? (
+            <div className="text-destructive">{threadMetadataMessage}</div>
+          ) : null}
         </div>
         <div className="min-h-12 grid grid-cols-1 gap-1">
           <Input
@@ -688,6 +739,9 @@ export function ThreadsPanel({
               onChange={(event) => onSetCodexThreadSettingsJson(event.target.value)}
             />
           </details>
+          {threadSettingsMessage ? (
+            <div className="text-destructive">{threadSettingsMessage}</div>
+          ) : null}
         </div>
         <div className="min-h-12 grid grid-cols-1 gap-1">
           <div className="flex gap-2">
@@ -750,6 +804,9 @@ export function ThreadsPanel({
               </div>
             </div>
           )}
+          {threadInjectItemsMessage ? (
+            <div className="text-destructive">{threadInjectItemsMessage}</div>
+          ) : null}
         </div>
       </div>
       <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
@@ -896,23 +953,23 @@ export function ThreadsPanel({
           <div className="mb-1 text-destructive">{threadActionParamsMessage}</div>
         ) : null}
         <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1">
-          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onSearchThreads()}>Search</button>
-          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onStartThread()}>Start</button>
-          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onResumeThread()}>Resume</button>
-          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onStartTurn()}>Start turn</button>
+          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !!threadActionParamsMessage} onClick={() => onSearchThreads()}>Search</button>
+          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !!threadActionParamsMessage} onClick={() => onStartThread()}>Start</button>
+          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !!threadActionParamsMessage} onClick={() => onResumeThread()}>Resume</button>
+          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !!threadActionParamsMessage} onClick={() => onStartTurn()}>Start turn</button>
           <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !codexThreadId.trim()} onClick={() => onListRealtimeVoices()}>Realtime voices</button>
-          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onApproveGuardianDeniedAction()}>Approve guardian</button>
-          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onIncrementElicitation()}>Increment elicitation</button>
-          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onDecrementElicitation()}>Decrement elicitation</button>
+          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !!threadActionParamsMessage} onClick={() => onApproveGuardianDeniedAction()}>Approve guardian</button>
+          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !!threadActionParamsMessage} onClick={() => onIncrementElicitation()}>Increment elicitation</button>
+          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !!threadActionParamsMessage} onClick={() => onDecrementElicitation()}>Decrement elicitation</button>
         </div>
       </div>
       <div className="mb-1 rounded border bg-background/40 p-1">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-[9px]">
           <span className="text-muted-foreground">Thread diagnostics</span>
           <div className="flex flex-wrap gap-x-2 gap-y-1">
-            <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onReadConversationSummary()}>Conversation summary</button>
-            <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onReadGitDiffToRemote()}>Git diff to remote</button>
-            <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onReadAuthStatus()}>Auth status</button>
+          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !!threadActionParamsMessage} onClick={() => onReadConversationSummary()}>Conversation summary</button>
+          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !!threadActionParamsMessage} onClick={() => onReadGitDiffToRemote()}>Git diff to remote</button>
+          <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy || !!threadActionParamsMessage} onClick={() => onReadAuthStatus()}>Auth status</button>
           </div>
         </div>
         <div className="grid grid-cols-1 gap-1 md:grid-cols-3">
@@ -946,8 +1003,8 @@ export function ThreadsPanel({
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onUnarchive()}>Unarchive</button>
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onUnsubscribe()}>Unsubscribe</button>
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy || !codexThreadName.trim()} onClick={() => onName()}>Name</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onMetadata()}>Metadata</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onSettings()}>Settings</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy || !!threadMetadataMessage} onClick={() => onMetadata()}>Metadata</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy || !!threadSettingsMessage} onClick={() => onSettings()}>Settings</button>
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onSetGoal()}>Set goal</button>
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onGetGoal()}>Get goal</button>
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onClearGoal()}>Clear goal</button>
@@ -1001,7 +1058,7 @@ export function ThreadsPanel({
         >
           Review with typed params
         </button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onInjectItems()}>Inject items</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy || !!threadInjectItemsMessage} onClick={() => onInjectItems()}>Inject items</button>
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onCleanTerminals()}>Clean terminals</button>
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onRealtimeStart()}>Realtime start</button>
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onRealtimeText()}>Realtime text</button>
@@ -1082,9 +1139,9 @@ export function ThreadsPanel({
                       <span className={cn('rounded px-0.5 text-[6px] font-sans', sourceClass)}>{thread.source}</span>
                     </td>
                     <td className="px-0.5 py-px truncate text-muted-foreground">{thread.updatedAt ?? '—'}</td>
-                    <td className="px-0.5 py-px">{(thread as any).turns ?? '—'}</td>
-                    <td className="px-0.5 py-px">{(thread as any).turnItems ?? '—'}</td>
-                    <td className="px-0.5 py-px truncate max-w-[10em] text-muted-foreground">{(thread as any).goal ?? '—'}</td>
+                    <td className="px-0.5 py-px">{thread.turns ?? '—'}</td>
+                    <td className="px-0.5 py-px">{thread.turnItems ?? '—'}</td>
+                    <td className="px-0.5 py-px truncate max-w-[10em] text-muted-foreground">{thread.goal ?? '—'}</td>
                   </tr>
                 )
               })}

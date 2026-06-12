@@ -529,7 +529,7 @@ export class CodexProtoSession {
   }
 
   listMcpServerStatus(_params: Record<string, unknown> = {}) {
-    return unsupportedAppServerMethod('mcpServer/status/list')
+    return unsupportedAppServerMethod('mcpServerStatus/list')
   }
 
   readMcpResource(_params: Record<string, unknown>) {

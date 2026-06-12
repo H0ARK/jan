@@ -71,7 +71,10 @@ import { useServiceHub } from '@/hooks/useServiceHub'
 
 import { useThreads } from '@/hooks/useThreads'
 import { mergeButtonRefs } from '@/lib/merge-button-refs'
-import type { CodexReviewTarget } from '@/lib/codex-app-server/api'
+import type {
+  CodexMcpToolCallParams,
+  CodexReviewTarget,
+} from '@/lib/codex-app-server/api'
 import { rafThrottle, throttle } from '@/lib/throttle'
 import { cn } from '@/lib/utils'
 import {
@@ -1125,6 +1128,54 @@ type CodexProcessTerminalSession = {
   lines: string[]
 }
 
+const readRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+
+const readStringField = (value: unknown, key: string): string | undefined => {
+  const record = readRecord(value)
+  const field = record?.[key]
+  return typeof field === 'string' ? field : undefined
+}
+
+const toCodexMcpToolCallParams = (
+  params: Record<string, unknown>
+): CodexMcpToolCallParams => {
+  const server = typeof params.server === 'string' ? params.server : ''
+  const tool =
+    typeof params.tool === 'string'
+      ? params.tool
+      : typeof params.toolName === 'string'
+        ? params.toolName
+        : ''
+  const toolArguments =
+    params.arguments &&
+    typeof params.arguments === 'object' &&
+    !Array.isArray(params.arguments)
+      ? (params.arguments as Record<string, unknown>)
+      : undefined
+  const meta =
+    params._meta && typeof params._meta === 'object' && !Array.isArray(params._meta)
+      ? (params._meta as Record<string, unknown>)
+      : undefined
+
+  if (!server) {
+    throw new Error('server is required for mcpServer/tool/call.')
+  }
+  if (!tool) {
+    throw new Error('tool or toolName is required for mcpServer/tool/call.')
+  }
+
+  return {
+    ...(typeof params.threadId === 'string' ? { threadId: params.threadId } : {}),
+    server,
+    tool,
+    ...(toolArguments ? { arguments: toolArguments } : {}),
+    ...(meta ? { _meta: meta } : {}),
+  }
+}
+
 function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const serviceHub = useServiceHub()
   // Use the provided scope (e.g. the current agent/chat workspace) for the git review in this panel slot.
@@ -1370,12 +1421,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       turns: countCodexCollectionItems(codexThreadTurns),
       turnItems: countCodexCollectionItems(codexThreadTurnItems),
       goal: summarizeCodexValue(codexThreadGoal),
-      snapshot: summarizeCodexValue(codexThreadSnapshot),
     }
   }, [
     codexThreadDescriptors,
     codexThreadGoal,
-    codexThreadSnapshot,
     codexThreadTurnItems,
     codexThreadTurns,
     targetCodexThreadId,
@@ -1596,28 +1645,14 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const codexRawRpcCatalog = useMemo(
     () =>
       buildCodexRawRpcCatalog({
-        targetCodexThreadId,
-        codexPluginId,
-        codexProcessHandle,
-        codexConfigKeyPath,
         codexMcpResourceUri,
         codexMcpServerName,
         codexMcpToolName,
-        codexRuntimePath,
-        codexTurnItemsLimit,
-        cwd,
       }),
     [
-      codexConfigKeyPath,
-      codexPluginId,
       codexMcpResourceUri,
       codexMcpServerName,
       codexMcpToolName,
-      codexProcessHandle,
-      codexRuntimePath,
-      codexTurnItemsLimit,
-      targetCodexThreadId,
-      cwd,
     ]
   )
   const filteredCodexRawRpcCatalog = useMemo(() => {
@@ -2369,10 +2404,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       { path },
       'Codex file read'
     )
-    const dataBase64 =
-      typeof (result as any)?.dataBase64 === 'string'
-        ? (result as any).dataBase64
-        : ''
+    const dataBase64 = readStringField(result, 'dataBase64') ?? ''
     if (dataBase64) setCodexRuntimeFileText(decodeUtf8Base64(dataBase64))
   }
 
@@ -2400,11 +2432,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       'Codex process spawned'
     )
     const handle =
-      typeof (result as any)?.processHandle === 'string'
-        ? (result as any).processHandle
-        : typeof (result as any)?.handle === 'string'
-          ? (result as any).handle
-          : ''
+      readStringField(result, 'processHandle') ??
+      readStringField(result, 'handle') ??
+      ''
     if (handle) setCodexProcessHandle(handle)
   }
 
@@ -2421,7 +2451,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       if (method === 'mcpServer/resource/read') {
         result = await readCodexMcpResource(currentThreadIdForCaps, params)
       } else if (method === 'mcpServer/tool/call') {
-        result = await callCodexMcpTool(currentThreadIdForCaps, params as any)
+        result = await callCodexMcpTool(
+          currentThreadIdForCaps,
+          toCodexMcpToolCallParams(params)
+        )
       } else if (method === 'config/mcpServer/reload') {
         result = await reloadCodexMcpConfig(currentThreadIdForCaps, params)
       } else {
@@ -2723,10 +2756,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           threadId,
           readThreadParams(params)
         )
-      } else if (
-        method === 'thread/compact/start' ||
-        method === 'thread/compact'
-      ) {
+      } else if (method === 'thread/compact/start') {
         const threadId = readThreadId(params)
         if (!threadId) {
           throw new Error('threadId is required for thread/compact.')
@@ -2752,10 +2782,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           threadId,
           readThreadParams(params)
         )
-      } else if (method === 'review/start' || method === 'thread/review') {
+      } else if (method === 'review/start') {
         const threadId = readThreadId(params)
         if (!threadId) {
-          throw new Error('threadId is required for thread/review.')
+          throw new Error('threadId is required for review/start.')
         }
         result = await startCodexThreadReview(
           currentThreadIdForCaps,
@@ -2904,16 +2934,11 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       } else if (method === 'mcpServer/resource/read') {
         result = await readCodexMcpResource(currentThreadIdForCaps, params)
       } else if (method === 'mcpServer/tool/call') {
-        const server =
-          typeof params.server === 'string' ? params.server : ''
-        if (!server) {
-          throw new Error('server is required for mcpServer/tool/call.')
-        }
-        result = await callCodexMcpTool(currentThreadIdForCaps, params as any)
-      } else if (
-        method === 'mcpServer/status/list' ||
-        method === 'mcpServerStatus/list'
-      ) {
+        result = await callCodexMcpTool(
+          currentThreadIdForCaps,
+          toCodexMcpToolCallParams(params)
+        )
+      } else if (method === 'mcpServerStatus/list') {
         result = await listCodexMcpServerStatus(currentThreadIdForCaps, params)
       } else if (method === 'mcpServer/oauth/login') {
         const server =
@@ -3064,14 +3089,6 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     }
   }
 
-  const setCodexRawRpcPreset = (
-    method: string,
-    params: Record<string, unknown>
-  ) => {
-    setCodexRawRpcMethod(method)
-    setCodexRawRpcParams(JSON.stringify(params, null, 2))
-  }
-
   const parseCodexRawRpcPresetJson = (value: string, fallback: unknown) => {
     const parseFailed = { marker: 'raw-rpc-preset-parse-failed' }
     const parsed = parseCodexJson<unknown>(value, parseFailed)
@@ -3147,6 +3164,25 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       setCapError('Thread action params JSON parse failed: must be an object.')
+      return null
+    }
+    return parsed as Record<string, unknown>
+  }
+
+  const parseCodexThreadObjectParams = (
+    payloadText: string,
+    fieldLabel: string
+  ): Record<string, unknown> | null => {
+    const normalized = payloadText.trim() || '{}'
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(normalized)
+    } catch {
+      setCapError(`${fieldLabel} JSON parse failed: invalid JSON.`)
+      return null
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      setCapError(`${fieldLabel} JSON parse failed: must be an object.`)
       return null
     }
     return parsed as Record<string, unknown>
@@ -3364,425 +3400,410 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           disabled={isCodexProtoTransport}
         >
         <ThreadsPanel
-          codexInjectItemsJson={codexInjectItemsJson}
-          codexLoadedThreads={codexLoadedThreads}
-          codexRealtimeAudioBase64={codexRealtimeAudioBase64}
-          codexRealtimeText={codexRealtimeText}
-          codexStoredThreads={codexStoredThreads}
-          codexTargetItemId={codexTargetItemId}
-          codexTargetTurnId={codexTargetTurnId}
-          codexThreadDescriptors={codexThreadDescriptors}
-          codexThreadFilter={codexThreadFilter}
-          codexThreadGoal={codexThreadGoal}
-          codexThreadGoalObjective={codexThreadGoalObjective}
-          codexThreadId={codexThreadId}
-          codexThreadMetadataJson={codexThreadMetadataJson}
-          codexThreadName={codexThreadName}
-          codexThreadSettingsJson={codexThreadSettingsJson}
-          codexThreadSnapshot={codexThreadSnapshot}
-          codexConversationSummary={codexConversationSummary}
-          codexGitDiffToRemote={codexGitDiffToRemote}
-          codexAuthStatus={codexAuthStatus}
-          codexThreadSort={codexThreadSort}
-          codexThreadSourceFilter={codexThreadSourceFilter}
-          codexThreadTurnItems={codexThreadTurnItems}
-          codexThreadTurns={codexThreadTurns}
-          codexThreadActionParamsJson={codexThreadActionParamsJson}
-          codexTurnItemsLimit={codexTurnItemsLimit}
-          currentThreadIdForCaps={currentThreadIdForCaps}
-          filteredCodexThreadDescriptors={filteredCodexThreadDescriptors}
-          onArchive={() =>
-            void withTargetCodexThread(
-              (threadId) => archiveCodexThread(currentThreadIdForCaps!, threadId),
-              'Codex thread archived'
-            )
-          }
-          onClearGoal={() =>
-            void withTargetCodexThread(
-              (threadId) => clearCodexThreadGoal(currentThreadIdForCaps!, threadId),
-              'Codex goal cleared'
-            )
-          }
-          onCompact={() =>
-            void withTargetCodexThread(
-              (threadId) => compactCodexThreadById(currentThreadIdForCaps!, threadId),
-              'Codex thread compact requested'
-            )
-          }
-          onFork={() =>
-            void withTargetCodexThread(
-              (threadId) => forkCodexThread(currentThreadIdForCaps!, threadId, { ephemeral: false }),
-              'Codex thread forked'
-            )
-          }
-          onGetGoal={() =>
-            void withTargetCodexThread(
-              (threadId) => getCodexThreadGoal(currentThreadIdForCaps!, threadId),
-              'Codex goal loaded'
-            )
-          }
-          onInjectItems={() => {
-            const items = parseCodexThreadInjectItems()
-            if (!items) return
-            void withTargetCodexThread(
-              (threadId) => injectCodexThreadItems(currentThreadIdForCaps!, threadId, items),
-              'Codex thread items injected'
-            )
+          state={{
+            codexInjectItemsJson,
+            codexLoadedThreads,
+            codexRealtimeAudioBase64,
+            codexRealtimeText,
+            codexStoredThreads,
+            codexTargetItemId,
+            codexTargetTurnId,
+            codexThreadDescriptors,
+            codexThreadFilter,
+            codexThreadGoal,
+            codexThreadGoalObjective,
+            codexThreadId,
+            codexThreadMetadataJson,
+            codexThreadName,
+            codexThreadSettingsJson,
+            codexThreadSnapshot,
+            codexConversationSummary,
+            codexGitDiffToRemote,
+            codexAuthStatus,
+            codexThreadSort,
+            codexThreadSourceFilter,
+            codexThreadTurnItems,
+            codexThreadTurns,
+            codexThreadActionParamsJson,
+            codexTurnItemsLimit,
+            currentThreadIdForCaps,
+            filteredCodexThreadDescriptors,
+            codexThreadReviewBranch,
+            codexThreadReviewDelivery,
+            codexThreadReviewType,
+            selectedCodexThreadSummary,
+            selectableCodexItemIds,
+            selectableCodexThreadIds,
+            selectableCodexTurnIds,
+            targetCodexThreadId,
+            threadBusy,
           }}
-          onCleanTerminals={() =>
-            void withTargetCodexThread(
-              (threadId) => cleanCodexBackgroundTerminals(currentThreadIdForCaps!, threadId),
-              'Codex background terminals cleaned'
-            )
-          }
-          onSearchThreads={() => {
-            const params = parseCodexThreadActionParams()
-            if (!params) return
-            void runCodexThreadAction(
-              () => searchCodexThreads(currentThreadIdForCaps!, params),
-              'Codex thread search requested'
-            )
-          }}
-          onStartThread={() => {
-            const params = parseCodexThreadActionParams()
-            if (!params) return
-            void runCodexThreadAction(
-              () => startCodexThread(currentThreadIdForCaps!, params),
-              'Codex thread started'
-            )
-          }}
-          onResumeThread={() => {
-            const params = parseCodexThreadActionParams()
-            if (!params) return
-            void runCodexThreadAction(
-              () => resumeCodexThread(currentThreadIdForCaps!, params),
-              'Codex thread resume requested'
-            )
-          }}
-          onStartTurn={() => {
-            const params = parseCodexThreadActionParams()
-            if (!params) return
-            const nextParams = {
-              ...params,
-              ...(targetCodexThreadId ? { threadId: targetCodexThreadId } : {}),
-            }
-            if (!targetCodexThreadId && typeof params.threadId !== 'string') {
-              setCapError('Set a Codex thread id first or include threadId in action params.')
-              return
-            }
-            void runCodexThreadAction(
-              () => startCodexTurn(currentThreadIdForCaps!, nextParams),
-              'Codex turn started'
-            )
-          }}
-          onListRealtimeVoices={() => {
-            if (!targetCodexThreadId) {
-              setCapError('Set a Codex thread id first.')
-              return
-            }
-            void runCodexThreadAction(
-              () =>
-                listCodexThreadRealtimeVoices(
-                  currentThreadIdForCaps!,
-                  targetCodexThreadId
-                ),
-              'Codex thread realtime voices loaded'
-            )
-          }}
-          onApproveGuardianDeniedAction={() => {
-            const params = parseCodexThreadActionParams()
-            if (!params) return
-            void runCodexThreadAction(
-              () => approveCodexGuardianDeniedAction(currentThreadIdForCaps!, params),
-              'Guardian denied action approved'
-            )
-          }}
-          onIncrementElicitation={() => {
-            const params = parseCodexThreadActionParams()
-            if (!params) return
-            void runCodexThreadAction(
-              () => incrementCodexThreadElicitation(currentThreadIdForCaps!, params),
-              'Thread elicitation incremented'
-            )
-          }}
-          onDecrementElicitation={() => {
-            const params = parseCodexThreadActionParams()
-            if (!params) return
-            void runCodexThreadAction(
-              () => decrementCodexThreadElicitation(currentThreadIdForCaps!, params),
-              'Thread elicitation decremented'
-            )
-          }}
-          onReadConversationSummary={() => {
-            const params = parseCodexThreadActionParams()
-            if (!params) return
-            void runCodexThreadAction(
-              () => readCodexConversationSummary(currentThreadIdForCaps!, params),
-              'Codex conversation summary loaded',
-              setCodexConversationSummary
-            )
-          }}
-          onReadGitDiffToRemote={() => {
-            const params = parseCodexThreadActionParams()
-            if (!params) return
-            void runCodexThreadAction(
-              () => readCodexGitDiffToRemote(currentThreadIdForCaps!, params),
-              'Codex git diff to remote loaded',
-              setCodexGitDiffToRemote
-            )
-          }}
-          onReadAuthStatus={() => {
-            const params = parseCodexThreadActionParams()
-            if (!params) return
-            void runCodexThreadAction(
-              () => readCodexAuthStatus(currentThreadIdForCaps!, params),
-              'Codex auth status loaded',
-              setCodexAuthStatus
-            )
-          }}
-          onInterrupt={() =>
-            void withTargetCodexThread(
-              (threadId) => interruptCodexThreadTurn(currentThreadIdForCaps!, threadId),
-              'Codex turn interrupt requested'
-            )
-          }
-          onMemoryOff={() =>
-            void withTargetCodexThread(
-              (threadId) => setCodexThreadMemoryMode(currentThreadIdForCaps!, threadId, 'disabled'),
-              'Codex memory disabled'
-            )
-          }
-          onMemoryOn={() =>
-            void withTargetCodexThread(
-              (threadId) => setCodexThreadMemoryMode(currentThreadIdForCaps!, threadId, 'enabled'),
-              'Codex memory enabled'
-            )
-          }
-          onMetadata={() => {
-            const metadata = parseCodexJson<Record<string, unknown>>(
-              codexThreadMetadataJson || '{}',
-              {}
-            )
-            if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
-              setCapError('Thread metadata JSON parse failed: must be an object.')
-              return
-            }
-            void withTargetCodexThread(
-              (threadId) =>
-                updateCodexThreadMetadata(
-                  currentThreadIdForCaps!,
-                  threadId,
-                  metadata
-                ),
-              'Codex thread metadata updated'
-            )
-          }}
-          onName={() => {
-            const name = codexThreadName.trim()
-            void withTargetCodexThread(
-              (threadId) => setCodexThreadName(currentThreadIdForCaps!, threadId, name),
-              'Codex thread renamed'
-            )
-          }}
-          onRead={() => void readTargetCodexThread()}
-          onReadTurnItems={() =>
-            void withTargetCodexThread(async (threadId) => {
-              const parsedLimit = Number.parseInt(codexTurnItemsLimit, 10)
-              const params: Record<string, unknown> = { threadId }
+          actions={{
+            onArchive: () =>
+              void withTargetCodexThread(
+                (threadId) => archiveCodexThread(currentThreadIdForCaps!, threadId),
+                'Codex thread archived'
+              ),
+            onClearGoal: () =>
+              void withTargetCodexThread(
+                (threadId) => clearCodexThreadGoal(currentThreadIdForCaps!, threadId),
+                'Codex goal cleared'
+              ),
+            onCompact: () =>
+              void withTargetCodexThread(
+                (threadId) => compactCodexThreadById(currentThreadIdForCaps!, threadId),
+                'Codex thread compact requested'
+              ),
+            onCleanTerminals: () =>
+              void withTargetCodexThread(
+                async (threadId) => {
+                  const result = await cleanCodexBackgroundTerminals(
+                    currentThreadIdForCaps!,
+                    threadId
+                  )
+                  setCodexProcessTerminals([])
+                  clearCodexProcessEvents()
+                  lastCodexProcessEventTimestampRef.current = Date.now()
+                  setCodexProcessHandle('')
+                  setCodexProcessTerminalFilter('')
+                  return result
+                },
+                'Codex background terminals cleaned'
+              ),
+            onFork: () =>
+              void withTargetCodexThread(
+                (threadId) => forkCodexThread(currentThreadIdForCaps!, threadId, { ephemeral: false }),
+                'Codex thread forked'
+              ),
+            onGetGoal: () =>
+              void withTargetCodexThread(
+                (threadId) => getCodexThreadGoal(currentThreadIdForCaps!, threadId),
+                'Codex goal loaded'
+              ),
+            onInjectItems: () => {
+              const items = parseCodexThreadInjectItems()
+              if (!items) return
+              void withTargetCodexThread(
+                (threadId) => injectCodexThreadItems(currentThreadIdForCaps!, threadId, items),
+                'Codex thread items injected'
+              )
+            },
+            onSearchThreads: () => {
+              const params = parseCodexThreadActionParams()
+              if (!params) return
+              void runCodexThreadAction(
+                () => searchCodexThreads(currentThreadIdForCaps!, params),
+                'Codex thread search requested'
+              )
+            },
+            onStartThread: () => {
+              const params = parseCodexThreadActionParams()
+              if (!params) return
+              void runCodexThreadAction(
+                () => startCodexThread(currentThreadIdForCaps!, params),
+                'Codex thread started'
+              )
+            },
+            onResumeThread: () => {
+              const params = parseCodexThreadActionParams()
+              if (!params) return
+              void runCodexThreadAction(
+                () => resumeCodexThread(currentThreadIdForCaps!, params),
+                'Codex thread resume requested'
+              )
+            },
+            onStartTurn: () => {
+              const params = parseCodexThreadActionParams()
+              if (!params) return
+              const nextParams = {
+                ...params,
+                ...(targetCodexThreadId ? { threadId: targetCodexThreadId } : {}),
+              }
+              if (!targetCodexThreadId && typeof params.threadId !== 'string') {
+                setCapError('Set a Codex thread id first or include threadId in action params.')
+                return
+              }
+              void runCodexThreadAction(
+                () => startCodexTurn(currentThreadIdForCaps!, nextParams),
+                'Codex turn started'
+              )
+            },
+            onListRealtimeVoices: () => {
+              if (!targetCodexThreadId) {
+                setCapError('Set a Codex thread id first.')
+                return
+              }
+              void runCodexThreadAction(
+                () =>
+                  listCodexThreadRealtimeVoices(
+                    currentThreadIdForCaps!,
+                    targetCodexThreadId
+                  ),
+                'Codex thread realtime voices loaded'
+              )
+            },
+            onApproveGuardianDeniedAction: () => {
+              const params = parseCodexThreadActionParams()
+              if (!params) return
+              void runCodexThreadAction(
+                () => approveCodexGuardianDeniedAction(currentThreadIdForCaps!, params),
+                'Guardian denied action approved'
+              )
+            },
+            onIncrementElicitation: () => {
+              const params = parseCodexThreadActionParams()
+              if (!params) return
+              void runCodexThreadAction(
+                () => incrementCodexThreadElicitation(currentThreadIdForCaps!, params),
+                'Thread elicitation incremented'
+              )
+            },
+            onDecrementElicitation: () => {
+              const params = parseCodexThreadActionParams()
+              if (!params) return
+              void runCodexThreadAction(
+                () => decrementCodexThreadElicitation(currentThreadIdForCaps!, params),
+                'Thread elicitation decremented'
+              )
+            },
+            onReadConversationSummary: () => {
+              const params = parseCodexThreadActionParams()
+              if (!params) return
+              void runCodexThreadAction(
+                () => readCodexConversationSummary(currentThreadIdForCaps!, params),
+                'Codex conversation summary loaded',
+                setCodexConversationSummary
+              )
+            },
+            onReadGitDiffToRemote: () => {
+              const params = parseCodexThreadActionParams()
+              if (!params) return
+              void runCodexThreadAction(
+                () => readCodexGitDiffToRemote(currentThreadIdForCaps!, params),
+                'Codex git diff to remote loaded',
+                setCodexGitDiffToRemote
+              )
+            },
+            onReadAuthStatus: () => {
+              const params = parseCodexThreadActionParams()
+              if (!params) return
+              void runCodexThreadAction(
+                () => readCodexAuthStatus(currentThreadIdForCaps!, params),
+                'Codex auth status loaded',
+                setCodexAuthStatus
+              )
+            },
+            onInterrupt: () =>
+              void withTargetCodexThread(
+                (threadId) => interruptCodexThreadTurn(currentThreadIdForCaps!, threadId),
+                'Codex turn interrupt requested'
+              ),
+            onMemoryOff: () =>
+              void withTargetCodexThread(
+                (threadId) => setCodexThreadMemoryMode(currentThreadIdForCaps!, threadId, 'disabled'),
+                'Codex memory disabled'
+              ),
+            onMemoryOn: () =>
+              void withTargetCodexThread(
+                (threadId) => setCodexThreadMemoryMode(currentThreadIdForCaps!, threadId, 'enabled'),
+                'Codex memory enabled'
+              ),
+            onMetadata: () => {
+              const metadata = parseCodexThreadObjectParams(
+                codexThreadMetadataJson,
+                'Thread metadata'
+              )
+              if (!metadata) return
+              void withTargetCodexThread(
+                (threadId) =>
+                  updateCodexThreadMetadata(
+                    currentThreadIdForCaps!,
+                    threadId,
+                    metadata
+                  ),
+                'Codex thread metadata updated'
+              )
+            },
+            onName: () => {
+              const name = codexThreadName.trim()
+              void withTargetCodexThread(
+                (threadId) => setCodexThreadName(currentThreadIdForCaps!, threadId, name),
+                'Codex thread renamed'
+              )
+            },
+            onRead: () => void readTargetCodexThread(),
+            onReadTurnItems: () =>
+              void withTargetCodexThread(async (threadId) => {
+                const parsedLimit = Number.parseInt(codexTurnItemsLimit, 10)
+                const params: Record<string, unknown> = { threadId }
+                if (codexTargetTurnId.trim()) params.turnId = codexTargetTurnId.trim()
+                if (Number.isFinite(parsedLimit) && parsedLimit > 0) params.limit = parsedLimit
+                const result = await listCodexThreadTurnItems(currentThreadIdForCaps!, threadId, params)
+                setCodexThreadTurnItems(result)
+                return result
+              }, 'Codex turn items loaded'),
+            onRealtimeAudio: () => {
+              const audioBase64 = codexRealtimeAudioBase64.trim()
+              if (!audioBase64) return
+              void withTargetCodexThread(
+                (threadId) => appendCodexThreadRealtimeAudio(currentThreadIdForCaps!, threadId, audioBase64),
+                'Codex realtime audio appended'
+              )
+            },
+            onRealtimeStart: () =>
+              void withTargetCodexThread(
+                (threadId) => startCodexThreadRealtime(currentThreadIdForCaps!, threadId),
+                'Codex realtime started'
+              ),
+            onRealtimeStop: () =>
+              void withTargetCodexThread(
+                (threadId) => stopCodexThreadRealtime(currentThreadIdForCaps!, threadId),
+                'Codex realtime stopped'
+              ),
+            onRealtimeText: () =>
+              void withTargetCodexThread(
+                (threadId) => appendCodexThreadRealtimeText(currentThreadIdForCaps!, threadId, codexRealtimeText),
+                'Codex realtime text appended'
+              ),
+            onRefresh: () => void refreshCodexThreads(),
+            onReload: () =>
+              void withTargetCodexThread(
+                (threadId) => reloadCodexThread(currentThreadIdForCaps!, threadId),
+                'Codex thread reload requested'
+              ),
+            onResetMemory: () =>
+              void withTargetCodexThread(
+                () => resetCodexMemory(currentThreadIdForCaps!),
+                'Codex memory reset'
+              ),
+            onReview: (params: Record<string, unknown> | undefined) => {
+              const mergedParams =
+                params ??
+                parseCodexThreadObjectParams(
+                  codexAdvancedReviewJson,
+                  'Review params'
+                )
+              if (!mergedParams) return
+
+              const normalizedParams = normalizeLegacyCodexReviewParams(
+                mergedParams
+              )
+
+              void withTargetCodexThread(
+                (threadId) =>
+                  startCodexThreadReview(currentThreadIdForCaps!, threadId, normalizedParams),
+                'Codex review requested'
+              )
+            },
+            onRollback: () => {
+              const params: Record<string, unknown> = {}
               if (codexTargetTurnId.trim()) params.turnId = codexTargetTurnId.trim()
-              if (Number.isFinite(parsedLimit) && parsedLimit > 0) params.limit = parsedLimit
-              const result = await listCodexThreadTurnItems(currentThreadIdForCaps!, threadId, params)
-              setCodexThreadTurnItems(result)
-              return result
-            }, 'Codex turn items loaded')
-          }
-          onRealtimeAudio={() => {
-            const audioBase64 = codexRealtimeAudioBase64.trim()
-            if (!audioBase64) return
-            void withTargetCodexThread(
-              (threadId) => appendCodexThreadRealtimeAudio(currentThreadIdForCaps!, threadId, audioBase64),
-              'Codex realtime audio appended'
-            )
-          }}
-          onRealtimeStart={() =>
-            void withTargetCodexThread(
-              (threadId) => startCodexThreadRealtime(currentThreadIdForCaps!, threadId),
-              'Codex realtime started'
-            )
-          }
-          onRealtimeStop={() =>
-            void withTargetCodexThread(
-              (threadId) => stopCodexThreadRealtime(currentThreadIdForCaps!, threadId),
-              'Codex realtime stopped'
-            )
-          }
-          onRealtimeText={() =>
-            void withTargetCodexThread(
-              (threadId) => appendCodexThreadRealtimeText(currentThreadIdForCaps!, threadId, codexRealtimeText),
-              'Codex realtime text appended'
-            )
-          }
-          onRefresh={() => void refreshCodexThreads()}
-          onReload={() =>
-            void withTargetCodexThread(
-              (threadId) => reloadCodexThread(currentThreadIdForCaps!, threadId),
-              'Codex thread reload requested'
-            )
-          }
-          onResetMemory={() =>
-            void withTargetCodexThread(
-              () => resetCodexMemory(currentThreadIdForCaps!),
-              'Codex memory reset'
-            )
-          }
-          onReview={(params) => {
-            const mergedParams =
-              params ??
-              parseCodexJson<Record<string, unknown>>(
-                codexAdvancedReviewJson || '{}',
-                {}
+              if (codexTargetItemId.trim()) params.itemId = codexTargetItemId.trim()
+              void withTargetCodexThread(
+                (threadId) => rollbackCodexThreadById(currentThreadIdForCaps!, threadId, params),
+                'Codex rollback requested'
               )
-            if (
-              typeof mergedParams !== 'object' ||
-              mergedParams === null ||
-              Array.isArray(mergedParams)
-            ) {
-              setCapError('Review params JSON parse failed: must be an object.')
-              return
-            }
-
-            const normalizedParams = normalizeLegacyCodexReviewParams(
-              mergedParams
-            )
-
-            void withTargetCodexThread(
-              (threadId) =>
-                startCodexThreadReview(currentThreadIdForCaps!, threadId, normalizedParams),
-              'Codex review requested'
-            )
-          }}
-          onSetCodexThreadReviewBranch={setCodexThreadReviewBranch}
-          onSetCodexThreadReviewDelivery={setCodexThreadReviewDelivery}
-          onSetCodexThreadReviewType={setCodexThreadReviewType}
-          onRollback={() => {
-            const params: Record<string, unknown> = {}
-            if (codexTargetTurnId.trim()) params.turnId = codexTargetTurnId.trim()
-            if (codexTargetItemId.trim()) params.itemId = codexTargetItemId.trim()
-            void withTargetCodexThread(
-              (threadId) => rollbackCodexThreadById(currentThreadIdForCaps!, threadId, params),
-              'Codex rollback requested'
-            )
-          }}
-          onSetCodexInjectItemsJson={setCodexInjectItemsJson}
-          onSetCodexRealtimeAudioBase64={setCodexRealtimeAudioBase64}
-          onSetCodexRealtimeText={setCodexRealtimeText}
-          onSetCodexTargetItemId={setCodexTargetItemId}
-          onSetCodexTargetTurnId={setCodexTargetTurnId}
-          onSetCodexThreadFilter={setCodexThreadFilter}
-          onSetCodexThreadGoalObjective={setCodexThreadGoalObjective}
-          onSetCodexThreadId={setCodexThreadId}
-          onSetCodexThreadMetadataJson={setCodexThreadMetadataJson}
-          onSetCodexThreadName={setCodexThreadNameInput}
-          onSetCodexThreadSettingsJson={setCodexThreadSettingsJson}
-          onSetCodexThreadSort={setCodexThreadSort}
-          onSetCodexThreadSourceFilter={setCodexThreadSourceFilter}
-          onSetCodexTurnItemsLimit={setCodexTurnItemsLimit}
-          codexThreadReviewBranch={codexThreadReviewBranch}
-          codexThreadReviewDelivery={codexThreadReviewDelivery}
-          codexThreadReviewType={codexThreadReviewType}
-          onSetCodexThreadActionParamsJson={setCodexThreadActionParamsJson}
-          onSettings={() => {
-            const settings = parseCodexJson<Record<string, unknown>>(
-              codexThreadSettingsJson || '{}',
-              {}
-            )
-            if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) {
-              setCapError('Thread settings JSON parse failed: must be an object.')
-              return
-            }
-            void withTargetCodexThread(
-              (threadId) =>
-                updateCodexThreadSettings(
-                  currentThreadIdForCaps!,
-                  threadId,
-                  settings
-                ),
-              'Codex thread settings updated'
-            )
-          }}
-          onSetGoal={() => {
-            const objective = codexThreadGoalObjective.trim()
-            if (!objective) return
-            void withTargetCodexThread(
-              (threadId) => setCodexThreadGoal(currentThreadIdForCaps!, threadId, { objective }),
-              'Codex goal set'
-            )
-          }}
-          onTemplateInjectText={() =>
-            setCodexInjectItemsJson(
-              JSON.stringify(
-                [{ type: 'message', role: 'user', content: [{ type: 'text', text: codexRealtimeText }] }],
-                null,
-                2
+            },
+            onSetCodexThreadReviewBranch: setCodexThreadReviewBranch,
+            onSetCodexThreadReviewDelivery: setCodexThreadReviewDelivery,
+            onSetCodexThreadReviewType: setCodexThreadReviewType,
+            onSetCodexInjectItemsJson: setCodexInjectItemsJson,
+            onSetCodexRealtimeAudioBase64: setCodexRealtimeAudioBase64,
+            onSetCodexRealtimeText: setCodexRealtimeText,
+            onSetCodexTargetItemId: setCodexTargetItemId,
+            onSetCodexTargetTurnId: setCodexTargetTurnId,
+            onSetCodexThreadFilter: setCodexThreadFilter,
+            onSetCodexThreadGoalObjective: setCodexThreadGoalObjective,
+            onSetCodexThreadId: setCodexThreadId,
+            onSetCodexThreadMetadataJson: setCodexThreadMetadataJson,
+            onSetCodexThreadName: setCodexThreadNameInput,
+            onSetCodexThreadSettingsJson: setCodexThreadSettingsJson,
+            onSetCodexThreadSort: setCodexThreadSort,
+            onSetCodexThreadSourceFilter: setCodexThreadSourceFilter,
+            onSetCodexTurnItemsLimit: setCodexTurnItemsLimit,
+            onSetCodexThreadActionParamsJson: setCodexThreadActionParamsJson,
+            onSettings: () => {
+              const settings = parseCodexThreadObjectParams(
+                codexThreadSettingsJson,
+                'Thread settings'
               )
-            )
-          }
-          onTemplateMetadata={() =>
-            setCodexThreadMetadataJson(
-              JSON.stringify(
-                { source: 'jan', workspace: cwd, updatedAt: new Date().toISOString() },
-                null,
-                2
+              if (!settings) return
+              void withTargetCodexThread(
+                (threadId) =>
+                  updateCodexThreadSettings(
+                    currentThreadIdForCaps!,
+                    threadId,
+                    settings
+                  ),
+                'Codex thread settings updated'
               )
-            )
-          }
-          onTemplateReviewBranch={() =>
-            setCodexAdvancedReviewJson(
-              JSON.stringify(
-                {
-                  target: { type: 'baseBranch', branch: 'main' },
-                  delivery: 'detached',
-                },
-                null,
-                2
+            },
+            onSetGoal: () => {
+              const objective = codexThreadGoalObjective.trim()
+              if (!objective) return
+              void withTargetCodexThread(
+                (threadId) => setCodexThreadGoal(currentThreadIdForCaps!, threadId, { objective }),
+                'Codex goal set'
               )
-            )
-          }
-          onTemplateReviewUncommitted={() =>
-            setCodexAdvancedReviewJson(
-              JSON.stringify(
-                {
-                  target: { type: 'uncommittedChanges' },
-                  delivery: 'detached',
-                },
-                null,
-                2
-              )
-            )
-          }
-          onTemplateSettings={() =>
-            setCodexThreadSettingsJson(
-              JSON.stringify({ approvalPolicy: 'on-request', sandbox: 'workspace-write' }, null, 2)
-            )
-          }
-          onUnarchive={() =>
-            void withTargetCodexThread(
-              (threadId) => unarchiveCodexThread(currentThreadIdForCaps!, threadId),
-              'Codex thread unarchived'
-            )
-          }
-          onUnsubscribe={() =>
-            void withTargetCodexThread(
-              (threadId) => unsubscribeCodexThread(currentThreadIdForCaps!, threadId),
-              'Codex thread unsubscribed'
-            )
-          }
-          selectableCodexItemIds={selectableCodexItemIds}
-          selectableCodexThreadIds={selectableCodexThreadIds}
-          selectableCodexTurnIds={selectableCodexTurnIds}
-          selectedCodexThreadSummary={selectedCodexThreadSummary}
-          targetCodexThreadId={targetCodexThreadId}
-          threadBusy={threadBusy}
+            },
+            onTemplateInjectText: () =>
+              setCodexInjectItemsJson(
+                JSON.stringify(
+                  [{ type: 'message', role: 'user', content: [{ type: 'text', text: codexRealtimeText }] }],
+                  null,
+                  2
+                )
+              ),
+            onTemplateMetadata: () =>
+              setCodexThreadMetadataJson(
+                JSON.stringify(
+                  { source: 'jan', workspace: cwd, updatedAt: new Date().toISOString() },
+                  null,
+                  2
+                )
+              ),
+            onTemplateReviewBranch: () =>
+              setCodexAdvancedReviewJson(
+                JSON.stringify(
+                  {
+                    target: { type: 'baseBranch', branch: 'main' },
+                    delivery: 'detached',
+                  },
+                  null,
+                  2
+                )
+              ),
+            onTemplateReviewUncommitted: () =>
+              setCodexAdvancedReviewJson(
+                JSON.stringify(
+                  {
+                    target: { type: 'uncommittedChanges' },
+                    delivery: 'detached',
+                  },
+                  null,
+                  2
+                )
+              ),
+            onTemplateSettings: () =>
+              setCodexThreadSettingsJson(
+                JSON.stringify(
+                  { approvalPolicy: 'on-request', sandbox: 'workspace-write' },
+                  null,
+                  2
+                )
+              ),
+            onUnarchive: () =>
+              void withTargetCodexThread(
+                (threadId) => unarchiveCodexThread(currentThreadIdForCaps!, threadId),
+                'Codex thread unarchived'
+              ),
+            onUnsubscribe: () =>
+              void withTargetCodexThread(
+                (threadId) => unsubscribeCodexThread(currentThreadIdForCaps!, threadId),
+                'Codex thread unsubscribed'
+              ),
+          }}
+          isCodexProtoTransport={isCodexProtoTransport}
         />
         <AccountPanel
           accountBusy={accountBusy}
@@ -3812,6 +3833,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           onSendCodexAddCreditsNudgeEmail={sendCodexAddCreditsNudgeEmail}
           onSetAccountRateLimits={setAccountRateLimits}
           onSetAccountUsage={setAccountUsage}
+          isCodexProtoTransport={isCodexProtoTransport}
         />
         <RemoteControlPanel
           remoteBusy={remoteBusy}
@@ -3832,31 +3854,37 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           onDisableCodexRemoteControl={disableCodexRemoteControl}
           onListCodexRemoteControlClients={listCodexRemoteControlClients}
           onRevokeCodexRemoteControlClient={revokeCodexRemoteControlClient}
+          isCodexProtoTransport={isCodexProtoTransport}
         />
         <ConfigAdminPanel
-          adminBusy={adminBusy}
-          currentThreadIdForCaps={currentThreadIdForCaps}
-          codexConfigKeyPath={codexConfigKeyPath}
-          codexConfigValueJson={codexConfigValueJson}
-          codexConfigBatchJson={codexConfigBatchJson}
-          codexWindowsSandboxJson={codexWindowsSandboxJson}
-          codexExternalAgentImportJson={codexExternalAgentImportJson}
-          codexAdminSnapshot={codexAdminSnapshot}
-          cwd={cwd}
-          onSetCodexConfigKeyPath={setCodexConfigKeyPath}
-          onSetCodexConfigValueJson={setCodexConfigValueJson}
-          onSetCodexConfigBatchJson={setCodexConfigBatchJson}
-          onSetCodexWindowsSandboxJson={setCodexWindowsSandboxJson}
-          onSetCodexExternalAgentImportJson={setCodexExternalAgentImportJson}
-          onSetCapError={setCapError}
-          onSetAdminBusy={setAdminBusy}
-          onRefreshCodexAdminSnapshot={refreshCodexAdminSnapshot}
-          onWriteCodexConfigValue={writeCodexConfigValue}
-          onWriteCodexConfigBatch={writeCodexConfigBatch}
-          onUploadCodexFeedback={uploadCodexFeedback}
-          onStartCodexWindowsSandbox={startCodexWindowsSandbox}
-          onImportCodexExternalAgentConfig={importCodexExternalAgentConfig}
-          onSetCodexAdminSnapshot={setCodexAdminSnapshot}
+          state={{
+            adminBusy,
+            currentThreadIdForCaps,
+            codexConfigKeyPath,
+            codexConfigValueJson,
+            codexConfigBatchJson,
+            codexWindowsSandboxJson,
+            codexExternalAgentImportJson,
+            codexAdminSnapshot,
+            cwd,
+          }}
+          actions={{
+            onSetCodexConfigKeyPath: setCodexConfigKeyPath,
+            onSetCodexConfigValueJson: setCodexConfigValueJson,
+            onSetCodexConfigBatchJson: setCodexConfigBatchJson,
+            onSetCodexWindowsSandboxJson: setCodexWindowsSandboxJson,
+            onSetCodexExternalAgentImportJson: setCodexExternalAgentImportJson,
+            onSetCapError: setCapError,
+            onSetAdminBusy: setAdminBusy,
+            onRefreshCodexAdminSnapshot: refreshCodexAdminSnapshot,
+            onWriteCodexConfigValue: writeCodexConfigValue,
+            onWriteCodexConfigBatch: writeCodexConfigBatch,
+            onUploadCodexFeedback: uploadCodexFeedback,
+            onStartCodexWindowsSandbox: startCodexWindowsSandbox,
+            onImportCodexExternalAgentConfig: importCodexExternalAgentConfig,
+            onSetCodexAdminSnapshot: setCodexAdminSnapshot,
+          }}
+          isCodexProtoTransport={isCodexProtoTransport}
         />
         <ModelsProvidersFeaturesPanel
           modelAdminBusy={modelAdminBusy}
@@ -3871,32 +3899,30 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           onSetCapError={setCapError}
           onRefreshCodexModelSnapshot={refreshCodexModelSnapshot}
           onRunCodexModelAction={runCodexModelAction}
+          isCodexProtoTransport={isCodexProtoTransport}
         />
         <RawRpcTool
-          codexConfigKeyPath={codexConfigKeyPath}
-          codexConfigValueJson={codexConfigValueJson}
-          codexMcpServerName={codexMcpServerName}
-          codexMcpToolArguments={codexMcpToolArguments}
-          codexMcpToolName={codexMcpToolName}
-          codexPluginId={codexPluginId}
-          codexProcessHandle={codexProcessHandle}
-          codexRawRpcCatalog={codexRawRpcCatalog}
-          codexRawRpcCatalogFilter={codexRawRpcCatalogFilter}
-          codexRawRpcMethod={codexRawRpcMethod}
-          codexRawRpcParams={codexRawRpcParams}
-          codexRawRpcSnapshot={codexRawRpcSnapshot}
-          codexTurnItemsLimit={codexTurnItemsLimit}
-          filteredCodexRawRpcCatalog={filteredCodexRawRpcCatalog}
-          parseCodexRawRpcPresetJson={parseCodexRawRpcPresetJson}
-          rawRpcBusy={rawRpcBusy}
-          runCodexRawRpc={runCodexRawRpc}
-          setCodexRawRpcCatalogFilter={setCodexRawRpcCatalogFilter}
-          setCodexRawRpcMethod={setCodexRawRpcMethod}
-          setCodexRawRpcParams={setCodexRawRpcParams}
-          setCodexRawRpcPreset={setCodexRawRpcPreset}
-          targetCodexThreadId={targetCodexThreadId}
+          state={{
+            codexMcpServerName,
+            codexMcpToolArguments,
+            codexMcpToolName,
+            codexRawRpcCatalog,
+            codexRawRpcCatalogFilter,
+            codexRawRpcMethod,
+            codexRawRpcParams,
+            codexRawRpcSnapshot,
+            filteredCodexRawRpcCatalog,
+            rawRpcBusy,
+          }}
+          actions={{
+            parseCodexRawRpcPresetJson,
+            runCodexRawRpc,
+            setCodexRawRpcCatalogFilter,
+            setCodexRawRpcMethod,
+            setCodexRawRpcParams,
+          }}
         />
-        <CodexCliPanel cwd={cwd} />
+        <CodexCliPanel cwd={cwd} isCodexProtoTransport={isCodexProtoTransport} />
         <PluginsMarketplaceTool
           codexMarketplaceDescriptors={codexMarketplaceDescriptors}
           codexMarketplaceFilter={codexMarketplaceFilter}
@@ -4133,6 +4159,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           onSetCodexRuntimeStdin={setCodexRuntimeStdin}
           onSetCodexRuntimeWatchId={setCodexRuntimeWatchId}
           onSpawnCodexRuntimeProcess={spawnCodexRuntimeProcess}
+          isCodexProtoTransport={isCodexProtoTransport}
           onWriteCodexRuntimeFile={writeCodexRuntimeFile}
           runtimeBusy={runtimeBusy}
           selectableCodexProcessHandles={selectableCodexProcessHandles}
@@ -4167,6 +4194,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           onSetCapError={setCapError}
           onRunCodexMcpAction={runCodexMcpAction}
           onMcpOauthLogin={runCodexMcpOauthLogin}
+          isCodexProtoTransport={isCodexProtoTransport}
         />
         <CodexSummaryCards
           skills={skills}
@@ -4174,13 +4202,17 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           hooks={hooks}
           currentThreadIdForCaps={currentThreadIdForCaps}
           onSetSkillExtraRoots={handleSetSkillExtraRoots}
+          onSelectPluginId={setCodexPluginId}
+          onSelectSkillId={setCodexPluginSkillId}
+          isCodexProtoTransport={isCodexProtoTransport}
         />
         <AppServerRuntimeLogs
           codexRuntimeLogsLength={codexRuntimeLogs.length}
           runtimeLogsText={getCodexAppServerRuntimeLogs()}
           onClearCodexRuntimeLogs={clearCodexRuntimeLogs}
+          isCodexProtoTransport={isCodexProtoTransport}
         />
-        <CodexCapabilitiesFooter />
+        <CodexCapabilitiesFooter isCodexProtoTransport={isCodexProtoTransport} />
         </fieldset>
       </div>
     </section>

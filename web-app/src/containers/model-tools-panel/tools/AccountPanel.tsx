@@ -39,6 +39,14 @@ type AccountPanelProps = {
   isCodexProtoTransport?: boolean
 }
 
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+
+const getString = (value: unknown): string | undefined =>
+  typeof value === 'string' ? value : undefined
+
 export function AccountPanel({
   accountBusy,
   currentThreadIdForCaps,
@@ -115,11 +123,24 @@ export function AccountPanel({
     onSetAccountUsageParamsJson(stringifyCodexJson(nextParams, accountUsageParamsJson))
   }
 
-  const account = (accountInfo as any)?.account
-  const resolvedAccountType = account?.type ?? (accountInfo as any)?.authMode ?? 'none'
-  const resolvedAccountEmail = account?.email ?? (accountInfo as any)?.email
-  const resolvedAccountPlan = account?.planType ?? (accountInfo as any)?.planType
-  const resolvedRequiresAuth = (accountInfo as any)?.requiresOpenaiAuth ?? accountRequiresAuth
+  const accountInfoRecord = asRecord(accountInfo)
+  const accountRecord = asRecord(accountInfoRecord?.account)
+  const accountLoginRecord = asRecord(accountLogin)
+  const resolvedAccountType =
+    getString(accountRecord?.type) ??
+    getString(accountInfoRecord?.authMode) ??
+    'none'
+  const resolvedAccountEmail =
+    getString(accountRecord?.email) ?? getString(accountInfoRecord?.email)
+  const resolvedAccountPlan =
+    getString(accountRecord?.planType) ?? getString(accountInfoRecord?.planType)
+  const resolvedRequiresAuth =
+    accountInfoRecord && 'requiresOpenaiAuth' in accountInfoRecord
+      ? accountInfoRecord.requiresOpenaiAuth
+      : accountRequiresAuth
+  const loginId = getString(accountLoginRecord?.loginId)
+  const verificationUrl = getString(accountLoginRecord?.verificationUrl)
+  const userCode = getString(accountLoginRecord?.userCode)
 
   return (
     <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
@@ -145,7 +166,7 @@ export function AccountPanel({
           <button
             type="button"
             className="text-[9px] underline disabled:opacity-50"
-            disabled={!currentThreadIdForCaps || accountBusy || ! (accountLogin as any)?.loginId || !!isCodexProtoTransport}
+            disabled={!currentThreadIdForCaps || accountBusy || !loginId || !!isCodexProtoTransport}
             onClick={() => void onCancelDeviceCodeLogin()}
           >
             Cancel
@@ -218,12 +239,19 @@ export function AccountPanel({
           {showAdvancedUsageParams ? 'Use structured usage' : 'Advanced usage JSON'}
         </button>
       </div>
-      <Input
-        className="mb-1 h-6 px-2 text-[10px]"
-        placeholder="Credits nudge type"
-        value={accountCreditsNudgeType}
+      <select
+        className="mb-1 h-6 rounded border border-border bg-background px-2 text-[10px] text-foreground"
+        value={
+          accountCreditsNudgeType === 'credits' ||
+          accountCreditsNudgeType === 'usage_limit'
+            ? accountCreditsNudgeType
+            : 'usage_limit'
+        }
         onChange={(event) => onSetAccountCreditsNudgeType(event.target.value)}
-      />
+      >
+        <option value="usage_limit">usage limit nudge</option>
+        <option value="credits">credits nudge</option>
+      </select>
       <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px]">
         <span className="text-muted-foreground">Required</span>
         <span>{String(resolvedRequiresAuth ?? 'unknown')}</span>
@@ -234,12 +262,12 @@ export function AccountPanel({
         <span className="text-muted-foreground">Plan</span>
         <span>{resolvedAccountPlan ?? '—'}</span>
       </div>
-      {(accountLogin as any)?.verificationUrl || (accountLogin as any)?.userCode ? (
+      {verificationUrl || userCode ? (
         <div className="mt-1 rounded border border-border/60 p-1">
-          <div className="truncate" title={(accountLogin as any).verificationUrl}>
-            {(accountLogin as any).verificationUrl}
+          <div className="truncate" title={verificationUrl}>
+            {verificationUrl}
           </div>
-          <div className="font-mono">{(accountLogin as any).userCode ?? '—'}</div>
+          <div className="font-mono">{userCode ?? '—'}</div>
         </div>
       ) : null}
       <div className="mt-1 flex gap-2">
@@ -286,10 +314,9 @@ export function AccountPanel({
           onClick={async () => {
             if (!currentThreadIdForCaps) return
             try {
-              const normalizedCreditType =
-                accountCreditsNudgeType.trim() === 'credits' ||
-                accountCreditsNudgeType.trim() === 'usage_limit'
-                  ? (accountCreditsNudgeType.trim() as 'credits' | 'usage_limit')
+              const normalizedCreditType: 'credits' | 'usage_limit' =
+                accountCreditsNudgeType === 'credits'
+                  ? 'credits'
                   : 'usage_limit'
               await onSendCodexAddCreditsNudgeEmail(
                 currentThreadIdForCaps,

@@ -15,6 +15,77 @@ function isPlainObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function summarizeRuntimeSnapshot(value: unknown) {
+  if (!value) {
+    return {
+      title: 'Runtime action results',
+      rows: ['No runtime action result yet.'],
+    }
+  }
+
+  if (Array.isArray(value)) {
+    return {
+      title: `Runtime action returned ${value.length} item${value.length === 1 ? '' : 's'}`,
+      rows: value.slice(0, 4).map((item, index) => {
+        if (isPlainObject(item)) {
+          const label =
+            typeof item.name === 'string'
+              ? item.name
+              : typeof item.path === 'string'
+                ? item.path
+                : `item ${index + 1}`
+          return `${label} (${Object.keys(item).join(', ') || 'object'})`
+        }
+        return `${index + 1}: ${String(item)}`
+      }),
+    }
+  }
+
+  if (!isPlainObject(value)) {
+    return {
+      title: 'Runtime action result',
+      rows: [String(value)],
+    }
+  }
+
+  const rows: string[] = []
+  const addValue = (label: string, entry: unknown) => {
+    if (typeof entry === 'undefined' || entry === null || entry === '') return
+    if (typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean') {
+      rows.push(`${label}: ${entry}`)
+      return
+    }
+    if (Array.isArray(entry)) {
+      rows.push(`${label}: ${entry.length} item${entry.length === 1 ? '' : 's'}`)
+      return
+    }
+    if (isPlainObject(entry)) {
+      rows.push(`${label}: ${Object.keys(entry).length} keys`)
+    }
+  }
+
+  addValue('status', value.status)
+  addValue('exitCode', value.exitCode)
+  addValue('handle', value.processHandle ?? value.processId ?? value.handle)
+  addValue('path', value.path ?? value.uri ?? value.watchId)
+  addValue('cwd', value.cwd)
+  addValue('stdout', typeof value.stdout === 'string' ? `${value.stdout.length} chars` : value.stdout)
+  addValue('stderr', typeof value.stderr === 'string' ? `${value.stderr.length} chars` : value.stderr)
+  addValue('error', value.error)
+
+  const keys = Object.keys(value)
+  if (!rows.length) {
+    rows.push(`keys: ${keys.join(', ') || 'none'}`)
+  } else {
+    rows.push(`top-level keys: ${keys.join(', ') || 'none'}`)
+  }
+
+  return {
+    title: 'Runtime action result summary',
+    rows,
+  }
+}
+
 function parseStringArray(value: string): string[] | null {
   const parsed = parseCodexJson<unknown>(value, undefined)
   if (
@@ -166,9 +237,9 @@ function parseTerminalSize(rowsValue: string, colsValue: string, onInvalid?: (me
 
 type CodexProcessTerminalSession = {
   handle: string
-  kind: string
+  kind: 'process' | 'command'
   label: string
-  status: string
+  status: 'running' | 'exited' | 'unknown'
   lines: string[]
 }
 
@@ -188,6 +259,7 @@ type RuntimeFsProcessPanelProps = {
   codexRuntimeCopyDestination: string
   codexRuntimeFileText: string
   codexRuntimePath: string
+  codexRuntimePtySize: string
   codexRuntimeSnapshot: unknown
   codexRuntimeSpawnCommand: string
   codexRuntimeStdin: string
@@ -195,6 +267,7 @@ type RuntimeFsProcessPanelProps = {
   currentThreadIdForCaps: string | null | undefined
   cwd: string
   filteredCodexProcessTerminalLines: string[]
+  isCodexProtoTransport?: boolean
   onAppendCodexTerminalLines: (
     handle: string,
     lines: string[],
@@ -219,7 +292,7 @@ type RuntimeFsProcessPanelProps = {
   onSetCodexRuntimeFileText: (value: string) => void
   onSetCodexRuntimePath: (value: string) => void
   onSetCodexRuntimePtySize: (value: string) => void
-  onSetCodexRuntimeSnapshot: (value: any) => void
+  onSetCodexRuntimeSnapshot: (value: unknown) => void
   onSetCodexRuntimeSpawnCommand: (value: string) => void
   onSetCodexRuntimeStdin: (value: string) => void
   onSetCodexRuntimeWatchId: (value: string) => void
@@ -265,6 +338,7 @@ export function RuntimeFsProcessPanel({
   onSetCodexRuntimeFileText,
   onSetCodexRuntimePath,
   onSetCodexRuntimePtySize,
+  isCodexProtoTransport,
   onSetCodexRuntimeSnapshot,
   onSetCodexRuntimeSpawnCommand,
   onSetCodexRuntimeStdin,
@@ -288,6 +362,7 @@ export function RuntimeFsProcessPanel({
   const [showSpawnJson, setShowSpawnJson] = useState(false)
   const [showCommandExecJson, setShowCommandExecJson] = useState(false)
   const [showPtyJson, setShowPtyJson] = useState(false)
+  const runtimeSnapshotSummary = summarizeRuntimeSnapshot(codexRuntimeSnapshot)
 
   useEffect(() => {
     const parsed = parseCommandArray(codexRuntimeSpawnCommand)
@@ -533,9 +608,9 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || runtimeBusy}
+          disabled={!currentThreadIdForCaps || runtimeBusy || !!isCodexProtoTransport}
           onClick={() =>
-            onSetCodexRuntimeSnapshot((previous) => ({
+            onSetCodexRuntimeSnapshot((previous: unknown) => ({
               ...((previous as Record<string, unknown> | null) ?? {}),
               cwd,
             }))
@@ -559,7 +634,7 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!codexRuntimePath.trim() || runtimeBusy}
+          disabled={!codexRuntimePath.trim() || runtimeBusy || !!isCodexProtoTransport}
           onClick={() => void onReadCodexRuntimeFile()}
         >
           Read
@@ -567,7 +642,7 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!codexRuntimePath.trim() || runtimeBusy}
+          disabled={!codexRuntimePath.trim() || runtimeBusy || !!isCodexProtoTransport}
           onClick={() => void onWriteCodexRuntimeFile()}
         >
           Write
@@ -605,7 +680,7 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          onClick={() => setShowSpawnJson((previous) => !previous)}
+          onClick={() => setShowSpawnJson((previous: boolean) => !previous)}
         >
           {showSpawnJson ? 'Hide' : 'Advanced'} spawn JSON
         </button>
@@ -647,7 +722,9 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          onClick={() => setShowCommandExecJson((previous) => !previous)}
+          onClick={() =>
+            setShowCommandExecJson((previous: boolean) => !previous)
+          }
         >
           {showCommandExecJson ? 'Hide' : 'Advanced'} command/exec JSON
         </button>
@@ -718,7 +795,7 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!codexRuntimePath.trim() || runtimeBusy}
+          disabled={!codexRuntimePath.trim() || runtimeBusy || !!isCodexProtoTransport}
           onClick={() =>
             void onRunCodexRuntimeAction(
               'fs/readDirectory',
@@ -732,7 +809,7 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!codexRuntimePath.trim() || runtimeBusy}
+          disabled={!codexRuntimePath.trim() || runtimeBusy || !!isCodexProtoTransport}
           onClick={() =>
             void onRunCodexRuntimeAction(
               'fs/getMetadata',
@@ -746,7 +823,7 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!codexRuntimePath.trim() || runtimeBusy}
+          disabled={!codexRuntimePath.trim() || runtimeBusy || !!isCodexProtoTransport}
           onClick={() =>
             void onRunCodexRuntimeAction(
               'fs/createDirectory',
@@ -760,7 +837,7 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!codexRuntimePath.trim() || runtimeBusy}
+          disabled={!codexRuntimePath.trim() || runtimeBusy || !!isCodexProtoTransport}
           onClick={() => {
             const confirmed = window.confirm(
               `Remove ${codexRuntimePath.trim()} through Codex app-server?`
@@ -838,7 +915,7 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={runtimeBusy || !spawnCommand.trim()}
+          disabled={runtimeBusy || !spawnCommand.trim() || !!isCodexProtoTransport}
           onClick={() => {
             const payload = composeSpawnPayload()
             if (!payload) return
@@ -851,7 +928,7 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={runtimeBusy || !commandExecCommand.trim()}
+          disabled={runtimeBusy || !commandExecCommand.trim() || !!isCodexProtoTransport}
           onClick={() => {
             const payload = composeCommandExecPayload()
             if (!payload) return
@@ -894,7 +971,7 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          onClick={() => setShowPtyJson((previous) => !previous)}
+          onClick={() => setShowPtyJson((previous: boolean) => !previous)}
         >
           {showPtyJson ? 'Hide' : 'Advanced'} PTY JSON
         </button>
@@ -1060,7 +1137,7 @@ export function RuntimeFsProcessPanel({
             <button
               type="button"
               className="text-[9px] underline disabled:opacity-50"
-              disabled={!selectedCodexProcessTerminal || runtimeBusy}
+              disabled={!selectedCodexProcessTerminal || runtimeBusy || !!isCodexProtoTransport}
               onClick={runSelectedTerminalResize}
             >
               Apply size
@@ -1069,7 +1146,9 @@ export function RuntimeFsProcessPanel({
               type="button"
               className="text-[9px] underline"
               onClick={() =>
-                onSetCodexProcessTerminalExpanded((expanded) => !expanded)
+                onSetCodexProcessTerminalExpanded(
+                  (expanded: boolean) => !expanded
+                )
               }
             >
               {codexProcessTerminalExpanded ? 'Collapse' : 'Expand'}
@@ -1120,7 +1199,7 @@ export function RuntimeFsProcessPanel({
             <button
               type="button"
               className="text-[9px] underline disabled:opacity-50"
-              disabled={!selectedCodexProcessTerminal || runtimeBusy}
+              disabled={!selectedCodexProcessTerminal || runtimeBusy || !!isCodexProtoTransport}
               onClick={runSelectedTerminalStdin}
             >
               Send stdin to selected
@@ -1128,7 +1207,7 @@ export function RuntimeFsProcessPanel({
             <button
               type="button"
               className="text-[9px] underline disabled:opacity-50"
-              disabled={!selectedCodexProcessTerminal || runtimeBusy}
+              disabled={!selectedCodexProcessTerminal || runtimeBusy || !!isCodexProtoTransport}
               onClick={runSelectedTerminalResize}
             >
               Resize selected
@@ -1136,7 +1215,7 @@ export function RuntimeFsProcessPanel({
             <button
               type="button"
               className="text-[9px] underline disabled:opacity-50"
-              disabled={!selectedCodexProcessTerminal || runtimeBusy}
+              disabled={!selectedCodexProcessTerminal || runtimeBusy || !!isCodexProtoTransport}
               onClick={runSelectedTerminalStop}
             >
               Stop selected
@@ -1211,11 +1290,33 @@ export function RuntimeFsProcessPanel({
           </div>
         )}
       </div>
-      <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
-        {codexRuntimeSnapshot
-          ? stringifyCodexJson(codexRuntimeSnapshot, '{}')
-          : '— (runtime action results)'}
-      </pre>
+      <div className="rounded border bg-background/40 p-1 text-[10px]">
+        <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
+          <span>{runtimeSnapshotSummary.title}</span>
+          {codexRuntimeSnapshot ? (
+            <span className="text-muted-foreground">
+              diagnostics available
+            </span>
+          ) : null}
+        </div>
+        <div className="space-y-0.5 text-[9px] text-muted-foreground">
+          {runtimeSnapshotSummary.rows.slice(0, 6).map((row) => (
+            <div key={row} className="truncate" title={row}>
+              {row}
+            </div>
+          ))}
+        </div>
+        {codexRuntimeSnapshot ? (
+          <details className="mt-1">
+            <summary className="cursor-pointer text-[9px] text-muted-foreground">
+              Raw runtime result JSON
+            </summary>
+            <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded border bg-background/60 p-1 font-mono text-[9px]">
+              {stringifyCodexJson(codexRuntimeSnapshot, '{}')}
+            </pre>
+          </details>
+        ) : null}
+      </div>
       {selectableCodexProcessHandles.length ? (
         <div className="mt-1 flex flex-wrap gap-1">
           {selectableCodexProcessHandles.map((processHandle) => (

@@ -155,11 +155,14 @@ export const TokenCounter = memo(function TokenCounter({
     modelProps?.isSleeping ||
     (modelProps?.totalSlots !== undefined && modelProps.totalSlots > 1)
 
+  if (!tokenData.maxTokens) return null
+
   return (
     <TooltipProvider delayDuration={isUpdating ? 1200 : 400}>
       <Popover>
         <PopoverTrigger asChild>
           <div
+            data-testid="token-counter-trigger"
             className={cn('relative cursor-pointer min-w-0', className)}
             onClick={handleCalculateTokens}
           >
@@ -245,6 +248,7 @@ export const TokenCounter = memo(function TokenCounter({
           align="center"
           sideOffset={6}
           className="min-w-72 max-w-80 bg-background border p-0 overflow-hidden"
+          data-testid="popover-content"
         >
           {/* Header */}
           <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border">

@@ -44,6 +44,7 @@ vi.mock('@/hooks/useTools', () => ({
 vi.mock('@/containers/ChatInput', () => ({
   default: ({ model, initialMessage }: any) => (
     <div data-testid="chat-input" data-initial={String(initialMessage)}>
+      <div data-testid="dropdown">{model ? model.id : 'none'}</div>
       {model ? model.id : 'no-model'}
     </div>
   ),

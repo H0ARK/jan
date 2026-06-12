@@ -10,6 +10,8 @@ type CodexSummaryCardsProps = {
   hooks: unknown
   currentThreadIdForCaps: string | null | undefined
   onSetSkillExtraRoots: () => Promise<void> | void
+  onSelectPluginId?: (value: string) => void
+  onSelectSkillId?: (value: string) => void
   isCodexProtoTransport?: boolean
 }
 
@@ -68,6 +70,8 @@ export function CodexSummaryCards({
   hooks,
   currentThreadIdForCaps,
   onSetSkillExtraRoots,
+  onSelectPluginId,
+  onSelectSkillId,
   isCodexProtoTransport,
 }: CodexSummaryCardsProps) {
   const skillDescriptors = collectCodexSkillDescriptors(skills)
@@ -114,15 +118,36 @@ export function CodexSummaryCards({
             : 'No skills in payload'}
         </div>
         <div className="mb-1 max-h-24 overflow-auto space-y-1">
-          {normalizedSkillDescriptors.length ? (
-            normalizedSkillDescriptors.map((skillLine) => (
-              <div
-                key={skillLine}
-                className="rounded border px-1 py-0.5 text-[9px] truncate"
-              >
-                {skillLine}
-              </div>
-            ))
+          {skillDescriptors.length ? (
+            skillDescriptors
+              .slice()
+              .sort((left, right) => left.id.localeCompare(right.id))
+              .map((skill) => {
+                const state =
+                  skill.enabled === true
+                    ? 'enabled'
+                    : skill.enabled === false
+                      ? 'disabled'
+                      : 'unknown'
+                return (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    className="block w-full rounded border px-1 py-0.5 text-left text-[9px] hover:bg-accent"
+                    title="Select this skill in the Plugins / Marketplace / Skills panel"
+                    onClick={() => {
+                      onSelectSkillId?.(skill.id)
+                      if (skill.pluginId) onSelectPluginId?.(skill.pluginId)
+                    }}
+                  >
+                    <div className="truncate font-mono">{skill.id}</div>
+                    <div className="truncate text-muted-foreground">
+                      {skill.pluginId ? `${skill.pluginId} • ` : ''}
+                      {state}
+                    </div>
+                  </button>
+                )
+              })
           ) : (
             <pre className="whitespace-pre-wrap break-words">{typeof skills === 'undefined' ? '— (refresh to load)' : JSON.stringify(skills, null, 2)}</pre>
           )}
@@ -144,14 +169,19 @@ export function CodexSummaryCards({
         <div className="mb-1 max-h-24 overflow-auto space-y-1">
           {allPlugins.length ? (
             allPlugins.slice(0, 10).map((plugin) => (
-              <div
+              <button
                 key={plugin.id}
-                className="rounded border px-1 py-0.5 text-[9px] truncate"
+                type="button"
+                className="block w-full rounded border px-1 py-0.5 text-left text-[9px] hover:bg-accent"
+                title="Select this plugin in the Plugins / Marketplace / Skills panel"
+                onClick={() => onSelectPluginId?.(plugin.id)}
               >
-                {plugin.id}
-                {plugin.version ? ` • ${plugin.version}` : ''}
-                {plugin.installed ? ' • installed' : ''}
-              </div>
+                <div className="truncate font-mono">{plugin.id}</div>
+                <div className="truncate text-muted-foreground">
+                  {plugin.version ? `v${plugin.version} • ` : ''}
+                  {plugin.installed ? 'installed' : 'available'}
+                </div>
+              </button>
             ))
           ) : (
             <pre className="whitespace-pre-wrap break-words">{typeof plugins === 'undefined' ? '— (refresh to load)' : JSON.stringify(plugins, null, 2)}</pre>

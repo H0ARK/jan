@@ -54,7 +54,6 @@ export function CodexReviewPanel({
   codexAdvancedReviewJson,
   onSetCodexAdvancedReviewJson,
   onStartReview,
-  isCodexProtoTransport,
 }: CodexReviewPanelProps) {
   const [reviewTargetMode, setReviewTargetMode] =
     useState<ReviewTargetMode>('uncommittedChanges')

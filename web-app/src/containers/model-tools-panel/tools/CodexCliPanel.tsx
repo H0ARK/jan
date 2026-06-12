@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { Input } from '@/components/ui/input'
 import {
   parseCodexArgTokens,
+  parseCodexJson,
 } from '@/containers/model-tools-panel/shared/codex-helpers'
 import {
   runCodexApply,
@@ -49,15 +50,41 @@ function parseCodexCliArgs(value: string, fallback: string[] | null) {
     return fallback ?? []
   }
 
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (!Array.isArray(parsed)) {
+  const parsed = parseCodexJson<unknown>(trimmed, null)
+  if (Array.isArray(parsed)) {
+    if (!parsed.every((arg) => typeof arg === 'string')) {
       return null
     }
-    return parsed.map((arg) => String(arg))
-  } catch {
-    return parseCodexArgTokens(trimmed)
+    return parsed
   }
+
+  if (parsed !== null) {
+    return null
+  }
+
+  const tokenized = parseCodexArgTokens(trimmed)
+  if (tokenized === null) {
+    return null
+  }
+  return tokenized
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function getCliExitCode(value: unknown): string {
+  const record = asRecord(value)
+  const exitCode = record?.exit_code ?? record?.exitCode ?? record?.status
+  return typeof exitCode === 'number' || typeof exitCode === 'string'
+    ? String(exitCode)
+    : '—'
 }
 
 export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
@@ -99,6 +126,10 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
   const [rawArgs, setRawArgs] = useState('["--version"]')
   const [helpSubcommand, setHelpSubcommand] = useState('')
   const [helpArgs, setHelpArgs] = useState('[]')
+  const cliResultRecord = asRecord(snapshot?.result)
+  const cliStdout = getString(cliResultRecord?.stdout)
+  const cliStderr = getString(cliResultRecord?.stderr)
+  const cliExitCode = getCliExitCode(snapshot?.result)
 
   const runCodexCliAction = async (
     label: string,
@@ -913,20 +944,20 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
       />
             {snapshot ? (
         <div className="mt-1 border rounded bg-background/60 p-1 text-[9px] font-mono">
-          <div className="font-semibold mb-0.5">{snapshot.label} — exit: {(snapshot.result as any)?.exit_code ?? "—"}</div>
-          {(snapshot.result as any)?.stdout ? (
+          <div className="font-semibold mb-0.5">{snapshot.label} — exit: {cliExitCode}</div>
+          {cliStdout ? (
             <div>
               <div className="text-green-600">stdout:</div>
-              <pre className="whitespace-pre-wrap break-words max-h-28 overflow-auto bg-black/5 p-1">{(snapshot.result as any).stdout}</pre>
+              <pre className="whitespace-pre-wrap break-words max-h-28 overflow-auto bg-black/5 p-1">{cliStdout}</pre>
             </div>
           ) : null}
-          {(snapshot.result as any)?.stderr ? (
+          {cliStderr ? (
             <div>
               <div className="text-red-600 mt-1">stderr:</div>
-              <pre className="whitespace-pre-wrap break-words max-h-20 overflow-auto bg-black/5 p-1 text-red-500">{(snapshot.result as any).stderr}</pre>
+              <pre className="whitespace-pre-wrap break-words max-h-20 overflow-auto bg-black/5 p-1 text-red-500">{cliStderr}</pre>
             </div>
           ) : null}
-          {!((snapshot.result as any)?.stdout || (snapshot.result as any)?.stderr) && (
+          {!(cliStdout || cliStderr) && (
             <pre className="whitespace-pre-wrap break-words max-h-28 overflow-auto">{JSON.stringify(snapshot.result, null, 2)}</pre>
           )}
         </div>

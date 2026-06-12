@@ -19,7 +19,11 @@ type ModelsProvidersFeaturesPanelProps = {
   onSetCodexEnvironmentExecUrl: (value: string) => void
   onSetCapError: (message: string | null) => void
   onRefreshCodexModelSnapshot: () => Promise<void> | void
-  onRunCodexModelAction: (method: string, params: any, success?: any) => Promise<unknown | null> | void
+  onRunCodexModelAction: (
+    method: string,
+    params: Record<string, unknown>,
+    success: string
+  ) => Promise<unknown | null> | void
   isCodexProtoTransport?: boolean
 }
 
@@ -40,7 +44,7 @@ export function ModelsProvidersFeaturesPanel({
 }: ModelsProvidersFeaturesPanelProps) {
   const [showAdvancedFeatureJson, setShowAdvancedFeatureJson] = useState(false)
   const [featureName, setFeatureName] = useState('remoteControl')
-  const [featureEnabled, setFeatureEnabled] = useState('true')
+  const [featureEnabled, setFeatureEnabled] = useState(true)
 
   const parsedFeaturePayload = parseCodexJson<Record<string, unknown>>(
     codexFeatureEnablementJson,
@@ -123,16 +127,18 @@ export function ModelsProvidersFeaturesPanel({
             value={featureName}
             onChange={(event) => setFeatureName(event.target.value)}
           />
-          <Input
-            className="h-6 px-2 text-[10px]"
-            placeholder="Enabled (true/false)"
-            value={featureEnabled}
+          <select
+            className="h-6 rounded border border-border bg-background px-2 text-[10px] text-foreground"
+            value={String(featureEnabled)}
             onChange={(event) => {
-              const enabled = event.target.value.trim().toLowerCase()
+              const enabled = event.target.value === 'true'
               setFeatureEnabled(enabled)
-              onSetFeatureField(enabled === 'true')
+              onSetFeatureField(enabled)
             }}
-          />
+          >
+            <option value="true">enabled</option>
+            <option value="false">disabled</option>
+          </select>
           <span className="col-span-2 text-[9px] text-muted-foreground">
             Current selected feature value:{' '}
             {String(parsedFeatureEnabled)}

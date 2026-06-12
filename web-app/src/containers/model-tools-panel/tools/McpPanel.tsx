@@ -41,10 +41,12 @@ type McpPanelProps = {
     success?: string
   ) => Promise<unknown | null>
   onMcpOauthLogin: () => Promise<void>
+  isCodexProtoTransport?: boolean
 }
 
 type McpArgumentField = {
   key: string
+  keyPath: string[]
   label: string
   type: 'string' | 'number' | 'integer' | 'boolean'
   required: boolean
@@ -63,6 +65,17 @@ const normalizeSchemaType = (
   if (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === 'string')) {
     return 'string'
   }
+  // Support complex unions/optionals for v1 by normalizing first variant (template + validation already handle full unions)
+  for (const key of ['oneOf', 'anyOf', 'allOf'] as const) {
+    const variants = schema[key]
+    if (Array.isArray(variants) && variants.length > 0) {
+      const first = getRecord(variants[0])
+      if (first) {
+        const t = normalizeSchemaType(first)
+        if (t) return t
+      }
+    }
+  }
   if (schema.type === 'string') return 'string'
   if (schema.type === 'number') return 'number'
   if (schema.type === 'integer') return 'integer'
@@ -70,8 +83,27 @@ const normalizeSchemaType = (
   return null
 }
 
-const getSimpleArgumentFields = (schema: unknown): McpArgumentField[] => {
+const getSimpleArgumentFields = (
+  schema: unknown,
+  keyPath: string[] = []
+): McpArgumentField[] => {
   const record = getRecord(schema)
+
+  for (const variantKey of ['oneOf', 'anyOf', 'allOf'] as const) {
+    const variants = record?.[variantKey]
+    if (Array.isArray(variants) && variants.length > 0) {
+      const fields = variants.flatMap((variant) =>
+        getSimpleArgumentFields(variant, keyPath)
+      )
+      const seen = new Set<string>()
+      return fields.filter((field) => {
+        if (seen.has(field.key)) return false
+        seen.add(field.key)
+        return true
+      })
+    }
+  }
+
   const properties = getRecord(record?.properties)
   if (!properties) return []
 
@@ -82,12 +114,14 @@ const getSimpleArgumentFields = (schema: unknown): McpArgumentField[] => {
   return Object.entries(properties).flatMap(([key, value]) => {
     const property = getRecord(value)
     if (!property) return []
+    const nextKeyPath = [...keyPath, key]
     const type = normalizeSchemaType(property)
-    if (!type) return []
+    if (!type) return getSimpleArgumentFields(property, nextKeyPath)
     return [
       {
-        key,
-        label: key,
+        key: nextKeyPath.join('.'),
+        keyPath: nextKeyPath,
+        label: nextKeyPath.join('.'),
         type,
         required: required.has(key),
         description:
@@ -111,6 +145,43 @@ const parseArgumentObject = (value: string): Record<string, unknown> => {
 
 const stringifyArgumentObject = (value: Record<string, unknown>) =>
   JSON.stringify(value, null, 2)
+
+const getNestedArgumentValue = (
+  value: Record<string, unknown>,
+  keyPath: string[]
+): unknown => {
+  let current: unknown = value
+  for (const key of keyPath) {
+    const record = getRecord(current)
+    if (!record) return undefined
+    current = record[key]
+  }
+  return current
+}
+
+const setNestedArgumentValue = (
+  value: Record<string, unknown>,
+  keyPath: string[],
+  nextValue: unknown,
+  deleteValue = false
+): Record<string, unknown> => {
+  if (!keyPath.length) return value
+  const [key, ...rest] = keyPath
+  if (!rest.length) {
+    const next = { ...value }
+    if (deleteValue) {
+      delete next[key]
+    } else {
+      next[key] = nextValue
+    }
+    return next
+  }
+  const child = getRecord(value[key]) ?? {}
+  return {
+    ...value,
+    [key]: setNestedArgumentValue(child, rest, nextValue, deleteValue),
+  }
+}
 
 export function McpPanel({
   codexMcpServerName,
@@ -139,6 +210,7 @@ export function McpPanel({
   onSetCapError,
   onRunCodexMcpAction,
   onMcpOauthLogin,
+  isCodexProtoTransport,
 }: McpPanelProps) {
   const [showAdvancedToolArguments, setShowAdvancedToolArguments] =
     useState(false)
@@ -156,20 +228,37 @@ export function McpPanel({
   )
 
   const updateArgumentField = (field: McpArgumentField, rawValue: string) => {
-    const nextArguments = { ...currentArgumentObject }
+    let nextArguments = { ...currentArgumentObject }
     if (rawValue === '' && !field.required) {
-      delete nextArguments[field.key]
+      nextArguments = setNestedArgumentValue(
+        nextArguments,
+        field.keyPath,
+        undefined,
+        true
+      )
     } else if (field.type === 'boolean') {
-      nextArguments[field.key] = rawValue === 'true'
+      nextArguments = setNestedArgumentValue(
+        nextArguments,
+        field.keyPath,
+        rawValue === 'true'
+      )
     } else if (field.type === 'number' || field.type === 'integer') {
       const parsedNumber = Number(rawValue)
-      nextArguments[field.key] = Number.isFinite(parsedNumber)
-        ? field.type === 'integer'
-          ? Math.trunc(parsedNumber)
-          : parsedNumber
-        : rawValue
+      nextArguments = setNestedArgumentValue(
+        nextArguments,
+        field.keyPath,
+        Number.isFinite(parsedNumber)
+          ? field.type === 'integer'
+            ? Math.trunc(parsedNumber)
+            : parsedNumber
+          : rawValue
+      )
     } else {
-      nextArguments[field.key] = rawValue
+      nextArguments = setNestedArgumentValue(
+        nextArguments,
+        field.keyPath,
+        rawValue
+      )
     }
     onSetCodexMcpToolArguments(stringifyArgumentObject(nextArguments))
   }
@@ -270,7 +359,10 @@ export function McpPanel({
           </div>
           <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
             {simpleArgumentFields.map((field) => {
-              const value = currentArgumentObject[field.key]
+              const value = getNestedArgumentValue(
+                currentArgumentObject,
+                field.keyPath
+              )
               const stringValue =
                 typeof value === 'boolean'
                   ? String(value)
@@ -371,7 +463,7 @@ export function McpPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || mcpBusy}
+          disabled={!currentThreadIdForCaps || mcpBusy || !!isCodexProtoTransport}
           onClick={handleReloadConfig}
         >
           Reload config

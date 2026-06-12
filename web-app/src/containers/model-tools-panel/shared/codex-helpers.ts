@@ -298,17 +298,28 @@ export function countCodexCollectionItems(value: unknown): number | null {
 }
 
 export function summarizeCodexValue(value: unknown): string {
-  if (!value) return ''
-  if (typeof value === 'string') return value
-  if (typeof value !== 'object') return String(value)
+  if (!value) return ""
+  if (typeof value === "string") return value
+  if (typeof value !== "object") return String(value)
   const record = value as Record<string, unknown>
-  for (const key of ['objective', 'name', 'title', 'status', 'state', 'id']) {
-    if (typeof record[key] === 'string') return record[key]
+  for (const key of ["objective", "name", "title", "status", "state", "id"]) {
+    if (typeof record[key] === "string") return record[key] as string
+  }
+  // thread-like readable short form before json dump
+  if (typeof record.id === "string") {
+    const nm = typeof record.name === "string" ? record.name : (typeof record.title === "string" ? record.title : "")
+    const st = typeof record.status === "string" ? record.status : ""
+    const short = nm ? `${nm} [${record.id.slice(0, 8)}]` : record.id
+    return st ? `${short} (${st})` : short
+  }
+  if (Array.isArray(record.data) || Array.isArray(record.items) || Array.isArray(record.turns)) {
+    const len = (record.data as any[])?.length ?? (record.items as any[])?.length ?? (record.turns as any[])?.length ?? 0
+    return `items:${len}`
   }
   try {
-    return JSON.stringify(value).slice(0, 160)
+    return JSON.stringify(value).slice(0, 120)
   } catch {
-    return ''
+    return ""
   }
 }
 

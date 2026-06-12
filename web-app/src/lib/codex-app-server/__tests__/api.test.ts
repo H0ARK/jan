@@ -135,7 +135,7 @@ class ScriptedCodexProcess implements CodexProcess {
       })
     }
 
-    if (message.method === 'review/start' || message.method === 'thread/review') {
+    if (message.method === 'review/start') {
       this.emit({
         id: message.id,
         result: {
@@ -317,10 +317,6 @@ class ScriptedCodexProcess implements CodexProcess {
       'thread/name/set': {},
       'thread/unarchive': { thread: { id: 'codex-thread-1' } },
       'review/start': {
-        turn: { id: 'review-turn-1', status: 'running' },
-        reviewThreadId: 'codex-thread-1',
-      },
-      'thread/review': {
         turn: { id: 'review-turn-1', status: 'running' },
         reviewThreadId: 'codex-thread-1',
       },
@@ -857,7 +853,7 @@ describe('Codex app-server integration API', () => {
           params: { server: 'fetch' },
         }),
         expect.objectContaining({
-          method: 'mcpServer/status/list',
+          method: 'mcpServerStatus/list',
           params: { detail: 'full' },
         }),
         expect.objectContaining({

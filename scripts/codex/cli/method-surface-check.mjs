@@ -3,11 +3,10 @@
  * Check Jan's codex app-server method surface against the active runtime's method surface.
  */
 
-import { createInterface } from 'node:readline'
-import { readFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { createInterface } from 'node:readline'
 
 const DEFAULT_CODEX_BINARY =
   process.platform === 'darwin'
@@ -33,7 +32,26 @@ function stripComments(text) {
     .replace(/(^|[^:])\/\/.*$/gm, '$1')
 }
 
-function collectCalledMethodsFromSource(sourceFile) {
+function normalizeMethods(methods) {
+  return Array.from(new Set(methods.filter(Boolean).map((value) => value.trim()))).sort()
+}
+
+function collectMethodsFromMethodAliases(sourceFile) {
+  const rawText = readFileSync(resolve(process.cwd(), sourceFile), 'utf8')
+  const aliasEntries = new Map()
+  const aliasRegex = /['"]([^'"]+)['"]\s*:\s*['"]([^'"]+)['"]/g
+  let match
+  while ((match = aliasRegex.exec(rawText)) !== null) {
+    const sourceMethod = match[1].trim()
+    const fallbackMethod = match[2].trim()
+    if (sourceMethod.includes('/') || fallbackMethod.includes('/')) {
+      aliasEntries.set(sourceMethod, fallbackMethod)
+    }
+  }
+  return aliasEntries
+}
+
+function collectCalledMethodsFromSource(sourceFile, methodAliasMap) {
   const rawText = readFileSync(resolve(process.cwd(), sourceFile), 'utf8')
   const text = stripComments(rawText)
   const methods = new Set()
@@ -48,177 +66,73 @@ function collectCalledMethodsFromSource(sourceFile) {
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
       const method = match[1].trim()
-      if (method.includes('/')) {
-        methods.add(method)
-      }
+      const resolvedMethod = methodAliasMap.get(method) ?? method
+      if (method.includes('/')) methods.add(resolvedMethod)
     }
   }
 
   return methods
 }
 
-function collectMethodsFromMethodAliases(sourceFile) {
-  const rawText = readFileSync(resolve(process.cwd(), sourceFile), 'utf8')
-  const aliasEntries = new Map()
-
-  const aliasRegex = /['"]([^'"]+)['"]\s*:\s*['"]([^'"]+)['"]/g
-  let match
-  while ((match = aliasRegex.exec(rawText)) !== null) {
-    const sourceMethod = match[1].trim()
-    const fallbackMethod = match[2].trim()
-    if (sourceMethod.includes('/') || fallbackMethod.includes('/')) {
-      aliasEntries.set(sourceMethod, fallbackMethod)
-    }
-  }
-
-  return aliasEntries
-}
-
 function collectMethodsFromRawRpcCatalog(sourceFile) {
   const rawText = readFileSync(resolve(process.cwd(), sourceFile), 'utf8')
   const methods = new Set()
   const methodRegex = /method:\s*['"]([^'"]+)['"]/g
-
   let match
   while ((match = methodRegex.exec(rawText)) !== null) {
     const method = match[1].trim()
-    if (method.includes('/')) {
-      methods.add(method)
-    }
+    if (method.includes('/')) methods.add(method)
   }
-
-  return Array.from(methods).sort()
+  return normalizeMethods(Array.from(methods))
 }
 
 function collectJanMethodSurface() {
-  const methodSet = new Set()
-  const aliases = collectMethodsFromMethodAliases(
+  const methodAliasMap = collectMethodsFromMethodAliases(
     'web-app/src/lib/codex-app-server/method-aliases.ts'
   )
+  const methodSet = new Set()
   for (const source of CLIENT_METHOD_SOURCES) {
-    for (const method of collectCalledMethodsFromSource(source)) {
+    for (const method of collectCalledMethodsFromSource(source, methodAliasMap)) {
       methodSet.add(method)
     }
   }
-  for (const [method, fallback] of aliases.entries()) {
-    methodSet.add(method)
-    methodSet.add(fallback)
-  }
-
+  for (const fallback of methodAliasMap.values()) methodSet.add(fallback)
   return {
-    methods: Array.from(methodSet).sort(),
-    aliases: Object.fromEntries(Array.from(aliases.entries())),
+    methods: normalizeMethods(Array.from(methodSet)),
+    aliases: Object.fromEntries(Array.from(methodAliasMap.entries())),
+    methodAliasMap,
   }
 }
 
-function compareRawRpcCatalogMethods(catalogMethods, upstream, methodAliasMap) {
-  const upstreamSet = new Set(upstream.map((method) => method.trim()))
-  const missing = []
-  const fallbackCovered = []
-
-  for (const method of catalogMethods) {
-    if (upstreamSet.has(method)) {
-      continue
-    }
-
-    const fallback = methodAliasMap.get(method)
-    if (fallback && upstreamSet.has(fallback)) {
-      fallbackCovered.push({ method, fallback })
-      continue
-    }
-
-    missing.push(method)
+function collectMethodStrings(value, candidates) {
+  if (!value) return
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectMethodStrings(item, candidates))
+    return
   }
-
-  return {
-    missing,
-    fallbackCovered,
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(/["'`]?([a-z][A-Za-z0-9_]*\/[A-Za-z0-9_\/]*)["'`]?/g)) {
+      candidates.push(match[1])
+    }
+    for (const match of value.matchAll(/\[[^\]]*\]/g)) {
+      try {
+        collectMethodStrings(JSON.parse(match[0]), candidates)
+      } catch {
+        // Ignore non-JSON list fragments.
+      }
+    }
+    return
   }
-}
-
-function normalizeCode(methods) {
-  return methods.filter(Boolean).map((value) => value.trim())
+  if (typeof value === 'object') {
+    for (const nested of Object.values(value)) collectMethodStrings(nested, candidates)
+  }
 }
 
 function parseMethodsFromResponsePayload(payload) {
   const candidates = []
-  if (!payload) return []
-
-  const collectFromValue = (value) => {
-    if (!value) return
-    if (Array.isArray(value)) {
-      value.forEach((method) => {
-        if (typeof method === 'string' && method.includes('/')) {
-          candidates.push(method)
-        }
-      })
-      return
-    }
-    if (typeof value === 'string') {
-      for (const match of value.matchAll(
-        /[\"'`]?([a-z][A-Za-z0-9_]*\/[A-Za-z0-9_\/]*)[\"'`]?/g
-      )) {
-        candidates.push(match[1])
-      }
-      return
-    }
-    if (typeof value === 'object') {
-      for (const method of Object.values(value)) {
-        if (typeof method === 'string' && method.includes('/')) {
-          candidates.push(method)
-        }
-      }
-      return
-    }
-  }
-
-  const collectFromText = (text) => {
-    if (!text) return
-    for (const match of text.matchAll(
-      /[\"'`]?([a-z][A-Za-z0-9_]*\/[A-Za-z0-9_\/]*)[\"'`]?/g
-    )) {
-      candidates.push(match[1])
-    }
-    for (const match of text.matchAll(/\[[^\]]*\]/g)) {
-      const maybeList = match[0]
-      try {
-        const parsed = JSON.parse(maybeList)
-        if (Array.isArray(parsed)) {
-          parsed.forEach((method) => {
-            if (typeof method === 'string' && method.includes('/')) {
-              candidates.push(method)
-            }
-          })
-        }
-      } catch {
-        // ignore list fragments that are not parseable JSON
-      }
-    }
-  }
-
-  const result = payload.result
-  collectFromValue(result)
-
-  const error = payload.error
-  if (!error) return normalizeCode(Array.from(new Set(candidates)))
-
-  collectFromText(typeof error === 'string' ? error : JSON.stringify(error))
-  collectFromText(typeof error.data === 'string' ? error.data : '')
-  collectFromText(typeof error.message === 'string' ? error.message : '')
-  if (error.data && Array.isArray(error.data)) {
-    for (const method of error.data) {
-      if (typeof method === 'string' && method.includes('/')) {
-        candidates.push(method)
-      }
-    }
-  }
-
-  if (!candidates.length && error.data && typeof error.data === 'object') {
-    const dataText = JSON.stringify(error.data)
-    collectFromText(dataText)
-  }
-
-  return normalizeCode(Array.from(new Set(candidates)))
+  collectMethodStrings(payload?.result, candidates)
+  collectMethodStrings(payload?.error, candidates)
+  return normalizeMethods(candidates)
 }
 
 async function queryAppServerMethods(binary) {
@@ -226,9 +140,9 @@ async function queryAppServerMethods(binary) {
     env: process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   })
-
   const stdout = createInterface({ input: child.stdout })
   const pending = new Map()
+  const pendingTimeouts = new Map()
   const rawOutput = []
   const stderr = []
   let nextId = 1
@@ -245,17 +159,9 @@ async function queryAppServerMethods(binary) {
     pending.clear()
   }
 
-  const pendingTimeouts = new Map()
   child.on('close', close)
-  child.on('error', (error) => {
-    close(error instanceof Error ? error.message : 'error', null)
-  })
-
-  child.stderr.on('data', (chunk) => {
-    const data = chunk.toString()
-    stderr.push(data)
-  })
-
+  child.on('error', (error) => close(error instanceof Error ? error.message : 'error', null))
+  child.stderr.on('data', (chunk) => stderr.push(chunk.toString()))
   stdout.on('line', (line) => {
     rawOutput.push(line)
     try {
@@ -264,10 +170,8 @@ async function queryAppServerMethods(binary) {
       const callback = pending.get(message.id)
       if (!callback) return
       const timeout = pendingTimeouts.get(message.id)
-      if (timeout) {
-        clearTimeout(timeout)
-        pendingTimeouts.delete(message.id)
-      }
+      if (timeout) clearTimeout(timeout)
+      pendingTimeouts.delete(message.id)
       pending.delete(message.id)
       callback(message)
     } catch {
@@ -276,21 +180,16 @@ async function queryAppServerMethods(binary) {
   })
 
   const request = (method, params = {}) =>
-    new Promise((resolve) => {
+    new Promise((resolveRequest) => {
       const id = nextId++
-      const payload = { id, jsonrpc: '2.0', method, params }
       const timeout = setTimeout(() => {
         pending.delete(id)
         pendingTimeouts.delete(id)
-        resolve({
-          id,
-          error: { message: `Timeout waiting for response to method '${method}'.` },
-        })
+        resolveRequest({ id, error: { message: `Timeout waiting for response to method '${method}'.` } })
       }, REQUEST_TIMEOUT_MS)
-
-      pending.set(id, resolve)
+      pending.set(id, resolveRequest)
       pendingTimeouts.set(id, timeout)
-      child.stdin.write(`${JSON.stringify(payload)}\n`)
+      child.stdin.write(`${JSON.stringify({ id, jsonrpc: '2.0', method, params })}\n`)
     })
 
   const notify = (method, params = {}) => {
@@ -308,137 +207,76 @@ async function queryAppServerMethods(binary) {
     probeResponse = await request(FALLBACK_PROBE_METHOD)
   }
 
-  const upstream = new Set(
-    parseMethodsFromResponsePayload(probeResponse).filter((method) => method.includes('/'))
-  )
-
+  const upstreamMethods = parseMethodsFromResponsePayload(probeResponse).filter((method) => method.includes('/'))
   child.stdin.end()
   child.kill()
-
-  return {
-    initialize,
-    probe: probeResponse,
-    upstreamMethods: Array.from(upstream).sort(),
-    rawOutput,
-    stderr: stderr.join(''),
-  }
+  return { initialize, probe: probeResponse, upstreamMethods, rawOutput, stderr: stderr.join('') }
 }
 
-function compareMethodSurfaces(jan, upstream) {
-  const upstreamSet = new Set(upstream.map((method) => method.trim()))
+function compareMethodSurfaces(janMethods, upstreamMethods, methodAliasMap) {
+  const upstreamSet = new Set(upstreamMethods.map((method) => method.trim()))
+  const reverseAliasMap = new Map(Array.from(methodAliasMap.entries()).map(([source, fallback]) => [fallback, source]))
   const missing = []
   const fallbackCovered = []
-
-  for (const method of jan) {
-    if (upstreamSet.has(method)) {
-      continue
-    }
-
+  for (const method of janMethods) {
+    if (upstreamSet.has(method)) continue
     const fallback = methodAliasMap.get(method)
     if (fallback && upstreamSet.has(fallback)) {
-      fallbackCovered.push({ method, fallback: fallback })
+      fallbackCovered.push({ method, fallback })
       continue
     }
-
+    const reverseFallback = reverseAliasMap.get(method)
+    if (reverseFallback && upstreamSet.has(reverseFallback)) {
+      fallbackCovered.push({ method, fallback: reverseFallback })
+      continue
+    }
     missing.push(method)
   }
-
-  const extras = upstream.filter((method) => !jan.has(method))
-
-  return {
-    missing,
-    fallbackCovered,
-    extras,
-  }
+  const janSet = new Set(janMethods)
+  return { missing, fallbackCovered, extras: upstreamMethods.filter((method) => !janSet.has(method)) }
 }
 
-const { methods: methodsFromJan, aliases: methodAliases } = collectJanMethodSurface()
-const methodAliasMap = new Map(Object.entries(methodAliases))
-const janMethodSurface = new Set(methodsFromJan)
-
-export async function runCodexMethodSurfaceCheck(binary = CODEX_BINARY) {
-  const result = {
-    timestamp: new Date().toISOString(),
-    binary,
-    initialize: null,
-    probe: null,
-    upstreamMethods: [],
-    janMethods: methodsFromJan,
-    aliasMap: methodAliases,
-    comparison: null,
-    overall: 'failed',
+function compareRawRpcCatalogMethods(catalogMethods, upstreamMethods, methodAliasMap) {
+  const upstreamSet = new Set(upstreamMethods.map((method) => method.trim()))
+  const missing = []
+  const fallbackCovered = []
+  for (const method of catalogMethods) {
+    if (upstreamSet.has(method)) continue
+    const fallback = methodAliasMap.get(method)
+    if (fallback && upstreamSet.has(fallback)) {
+      fallbackCovered.push({ method, fallback })
+      continue
+    }
+    missing.push(method)
   }
-
-  const appServerResult = await queryAppServerMethods(binary)
-  result.initialize = appServerResult.initialize
-  result.probe = appServerResult.probe
-  result.upstreamMethods = appServerResult.upstreamMethods
-  result.rawRpcCatalogMethods = collectMethodsFromRawRpcCatalog(
-    RAW_RPC_CATALOG_SOURCE
-  )
-
-  result.comparison = compareMethodSurfaces(janMethodSurface, result.upstreamMethods)
-  result.rawRpcCatalogComparison = compareRawRpcCatalogMethods(
-    result.rawRpcCatalogMethods,
-    result.upstreamMethods,
-    methodAliasMap
-  )
-
-  const missing = result.comparison.missing.length
-  const catalogMissing = result.rawRpcCatalogComparison.missing.length
-  const hasProbeMethodSurface =
-    result.probe &&
-    typeof result.probe === 'object' &&
-    ((result.upstreamMethods && result.upstreamMethods.length > 0) ||
-      (result.probe.result !== undefined || result.probe.error))
-  const initializeSucceeded =
-    result.initialize &&
-    typeof result.initialize === 'object' &&
-    result.initialize.result !== undefined &&
-    !result.initialize.error
-  result.overall =
-    missing === 0 &&
-    catalogMissing === 0 &&
-    hasProbeMethodSurface &&
-    initializeSucceeded
-      ? 'passed'
-      : 'failed'
-
-  return { result, exitCode: result.overall === 'passed' ? 0 : 1 }
+  return { missing, fallbackCovered }
 }
 
-export async function runCodexMethodSurfaceCheckCli() {
-  const { result, exitCode } = await runCodexMethodSurfaceCheck(CODEX_BINARY)
-  console.log(JSON.stringify(result, null, 2))
-
-  for (const method of result.comparison.missing) {
-    console.error(`[missing] ${method} not supported by upstream`)
-  }
-  for (const fallback of result.comparison.fallbackCovered) {
-    console.error(
-      `[alias] ${fallback.method} now falls back to ${fallback.fallback}`
-    )
-  }
-  for (const catalogMissing of result.rawRpcCatalogComparison.missing) {
-    console.error(
-      `[catalog] raw-RPC catalog method not supported upstream: ${catalogMissing}`
-    )
-  }
-  for (const catalogFallback of result.rawRpcCatalogComparison.fallbackCovered) {
-    console.error(
-      `[catalog alias] ${catalogFallback.method} now falls back to ${catalogFallback.fallback}`
-    )
-  }
-  if (result.comparison.extras.length) {
-    console.log(
-      `[info] Upstream exposes ${result.comparison.extras.length} additional methods not used by Jan.`
-    )
-  }
-
-  return exitCode
+const janSurface = collectJanMethodSurface()
+const runtimeSurface = await queryAppServerMethods(CODEX_BINARY)
+const comparison = compareMethodSurfaces(janSurface.methods, runtimeSurface.upstreamMethods, janSurface.methodAliasMap)
+const rawRpcCatalogMethods = collectMethodsFromRawRpcCatalog(RAW_RPC_CATALOG_SOURCE)
+const rawRpcCatalogComparison = compareRawRpcCatalogMethods(rawRpcCatalogMethods, runtimeSurface.upstreamMethods, janSurface.methodAliasMap)
+const overall = comparison.missing.length || rawRpcCatalogComparison.missing.length ? 'failed' : 'passed'
+const report = {
+  timestamp: new Date().toISOString(),
+  binary: CODEX_BINARY,
+  initialize: runtimeSurface.initialize,
+  probe: runtimeSurface.probe,
+  upstreamMethods: runtimeSurface.upstreamMethods,
+  janMethods: janSurface.methods,
+  aliasMap: janSurface.aliases,
+  comparison,
+  overall,
+  rawRpcCatalogMethods,
+  rawRpcCatalogComparison,
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const exitCode = await runCodexMethodSurfaceCheckCli()
-  process.exit(exitCode)
+console.log(JSON.stringify(report, null, 2))
+for (const { method, fallback } of comparison.fallbackCovered) {
+  console.error(`[alias] ${method} now falls back to ${fallback}`)
 }
+for (const { method, fallback } of rawRpcCatalogComparison.fallbackCovered) {
+  console.error(`[raw-rpc-alias] ${method} now falls back to ${fallback}`)
+}
+if (overall !== 'passed') process.exitCode = 1
