@@ -1,9 +1,12 @@
 import { getModelToStart } from './getModelToStart'
 import { useModelProvider } from '@/hooks/useModelProvider'
+import { hasGatewayUpstreamProviders } from '@/lib/local-api-gateway'
+import { isLocalProvider } from '@/lib/utils'
 
 export type EnsureModelResult =
   | { status: 'already_loaded'; modelId: string; providerName: string }
   | { status: 'loaded'; modelId: string; providerName: string }
+  | { status: 'gateway_only' }
   | { status: 'no_model_available' }
 
 export interface EnsureModelDeps {
@@ -74,6 +77,16 @@ export async function ensureModelForServer(
   }
 
   if (!modelToStart) {
+    if (hasGatewayUpstreamProviders(useModelProvider.getState().providers)) {
+      return { status: 'gateway_only' }
+    }
+    return { status: 'no_model_available' }
+  }
+
+  if (!isLocalProvider(modelToStart.provider.provider)) {
+    if (hasGatewayUpstreamProviders(useModelProvider.getState().providers)) {
+      return { status: 'gateway_only' }
+    }
     return { status: 'no_model_available' }
   }
 

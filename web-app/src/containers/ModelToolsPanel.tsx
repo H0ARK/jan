@@ -134,10 +134,21 @@ import {
   listCodexRemoteControlClients,
   revokeCodexRemoteControlClient,
   listCodexThreads,
+  searchCodexThreads,
   listLoadedCodexThreads,
   readCodexThread,
   listCodexThreadTurns,
   listCodexThreadTurnItems,
+  startCodexTurn,
+  startCodexThread,
+  resumeCodexThread,
+  listCodexThreadRealtimeVoices,
+  approveCodexGuardianDeniedAction,
+  incrementCodexThreadElicitation,
+  decrementCodexThreadElicitation,
+  readCodexConversationSummary,
+  readCodexGitDiffToRemote,
+  readCodexAuthStatus,
   updateCodexThreadMetadata,
   updateCodexThreadSettings,
   unsubscribeCodexThread,
@@ -163,7 +174,6 @@ import {
   uploadCodexFeedback,
   setCodexExperimentalFeatureEnablement,
   addCodexEnvironment,
-  requestCodexToolUserInput,
   execCodexCommand,
   writeCodexCommandInput,
   resizeCodexCommandTerminal,
@@ -222,22 +232,26 @@ import {
   countCodexCollectionItems,
   decodeUtf8Base64,
   encodeUtf8Base64,
+  parseCodexJson,
   summarizeCodexValue,
   validateJsonAgainstSchema,
-  type CodexMarketplaceDescriptor,
-  type CodexMcpResourceDescriptor,
-  type CodexMcpToolDescriptor,
-  type CodexPluginDescriptor,
-  type CodexSkillDescriptor,
-  type CodexThreadDescriptor,
 } from './model-tools-panel/shared/codex-helpers'
+
 import { CodexCliPanel } from './model-tools-panel/tools/CodexCliPanel'
 import { McpPanel } from './model-tools-panel/tools/McpPanel'
 import { PluginsMarketplaceTool } from './model-tools-panel/tools/PluginsMarketplaceTool'
 import { ProtoFallbackNotice } from './model-tools-panel/tools/ProtoFallbackNotice'
 import { RawRpcTool } from './model-tools-panel/tools/RawRpcTool'
 import { RuntimeFsProcessPanel } from './model-tools-panel/tools/RuntimeFsProcessPanel'
+import { ThreadsPanel } from './model-tools-panel/tools/ThreadsPanel'
 import { AccountPanel } from './model-tools-panel/tools/AccountPanel'
+import { RemoteControlPanel } from './model-tools-panel/tools/RemoteControlPanel'
+import { ConfigAdminPanel } from './model-tools-panel/tools/ConfigAdminPanel'
+import { ModelsProvidersFeaturesPanel } from './model-tools-panel/tools/ModelsProvidersFeaturesPanel'
+import { CodexReviewPanel } from './model-tools-panel/tools/CodexReviewPanel'
+import { CodexSummaryCards } from './model-tools-panel/tools/CodexSummaryCards'
+import { AppServerRuntimeLogs } from './model-tools-panel/tools/AppServerRuntimeLogs'
+import { CodexCapabilitiesFooter } from './model-tools-panel/tools/CodexCapabilitiesFooter'
 import {
   buildCodexRawRpcCatalog,
   resolveCodexRawRpcMethod,
@@ -903,12 +917,15 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     useState('{"remoteControl":true}')
   const [codexEnvironmentId, setCodexEnvironmentId] = useState('')
   const [codexEnvironmentExecUrl, setCodexEnvironmentExecUrl] = useState('')
-  const [codexUserInputRequestJson, setCodexUserInputRequestJson] = useState(
-    '{"prompt":"Codex app-server user input request from Jan UI"}'
-  )
   const [codexAdvancedReviewJson, setCodexAdvancedReviewJson] = useState(
     '{"type":"uncommittedChanges","delivery":"detached"}'
   )
+  const [codexThreadReviewType, setCodexThreadReviewType] =
+    useState('uncommittedChanges')
+  const [codexThreadReviewDelivery, setCodexThreadReviewDelivery] =
+    useState('detached')
+  const [codexThreadReviewBranch, setCodexThreadReviewBranch] =
+    useState('main')
   const [codexThreadMetadataJson, setCodexThreadMetadataJson] =
     useState('{"source":"jan"}')
   const [codexThreadSettingsJson, setCodexThreadSettingsJson] = useState(
@@ -918,6 +935,8 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const [codexThreadGoalObjective, setCodexThreadGoalObjective] = useState('')
   const [codexTargetTurnId, setCodexTargetTurnId] = useState('')
   const [codexTargetItemId, setCodexTargetItemId] = useState('')
+  const [codexThreadActionParamsJson, setCodexThreadActionParamsJson] =
+    useState('{}')
   const [codexTurnItemsLimit, setCodexTurnItemsLimit] = useState('50')
   const [codexInjectItemsJson, setCodexInjectItemsJson] = useState('[]')
   const [codexRealtimeText, setCodexRealtimeText] = useState('')
@@ -964,6 +983,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const [codexLoadedThreads, setCodexLoadedThreads] = useState<any>(null)
   const [codexStoredThreads, setCodexStoredThreads] = useState<any>(null)
   const [codexThreadSnapshot, setCodexThreadSnapshot] = useState<any>(null)
+  const [codexConversationSummary, setCodexConversationSummary] = useState<any>(null)
+  const [codexGitDiffToRemote, setCodexGitDiffToRemote] = useState<any>(null)
+  const [codexAuthStatus, setCodexAuthStatus] = useState<any>(null)
   const [codexThreadTurns, setCodexThreadTurns] = useState<any>(null)
   const [codexThreadTurnItems, setCodexThreadTurnItems] = useState<any>(null)
   const [codexThreadGoal, setCodexThreadGoalState] = useState<any>(null)
@@ -1191,8 +1213,18 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   )
   const codexMcpToolArgumentValidation = useMemo(() => {
     if (!selectedCodexMcpToolDescriptor?.inputSchema) return []
+    const parsed = parseCodexJson<Record<string, unknown>>(
+      codexMcpToolArguments || '{}',
+      {}
+    )
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return ['Tool arguments JSON must be an object.']
+    }
     try {
-      const parsed = JSON.parse(codexMcpToolArguments || '{}')
       return validateJsonAgainstSchema(
         selectedCodexMcpToolDescriptor.inputSchema,
         parsed
@@ -1470,10 +1502,14 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     setAccountBusy(true)
     setCapError(null)
     try {
-      const result = await startCodexAccountLogin(
-        currentThreadIdForCaps,
-        JSON.parse(accountLoginParamsJson || '{}')
+      const params = parseCodexJson<Record<string, unknown> | null>(
+        accountLoginParamsJson,
+        null
       )
+      if (!params || Array.isArray(params)) {
+        throw new Error('Account login params must be a JSON object.')
+      }
+      const result = await startCodexAccountLogin(currentThreadIdForCaps, params)
       setAccountLogin(result)
       toast.success('Codex login started')
     } catch (e) {
@@ -1544,9 +1580,20 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     setRemoteBusy(true)
     setCapError(null)
     try {
+      const pairingParams = parseCodexJson<Record<string, unknown>>(
+        remotePairingStartParamsJson || '{}',
+        {}
+      )
+      if (
+        typeof pairingParams !== 'object' ||
+        pairingParams === null ||
+        Array.isArray(pairingParams)
+      ) {
+        throw new Error('Remote pairing start params must be an object.')
+      }
       const result = await startCodexRemoteControlPairing(
         currentThreadIdForCaps,
-        JSON.parse(remotePairingStartParamsJson || '{}')
+        pairingParams
       )
       setRemotePairing(result)
       const pairingCode =
@@ -1564,15 +1611,28 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     }
   }
 
-  const readRemoteControlPairing = async () => {
-    const pairingCode = remotePairingCode.trim()
-    if (!currentThreadIdForCaps || !pairingCode) return
+  const readRemoteControlPairing = async (params?: {
+    pairingCode?: string
+    manualPairingCode?: string
+  }) => {
+    const pairingCode =
+      typeof params?.pairingCode === 'string'
+        ? params.pairingCode.trim()
+        : remotePairingCode.trim()
+    const manualPairingCode =
+      typeof params?.manualPairingCode === 'string'
+        ? params.manualPairingCode.trim()
+        : ''
+    if (!currentThreadIdForCaps || (!pairingCode && !manualPairingCode)) return
     setRemoteBusy(true)
     setCapError(null)
     try {
       const result = await readCodexRemoteControlPairingStatus(
         currentThreadIdForCaps,
-        { pairingCode, manualPairingCode: pairingCode }
+        {
+          ...(pairingCode ? { pairingCode } : {}),
+          ...(manualPairingCode ? { manualPairingCode } : {}),
+        }
       )
       setRemotePairing(result)
     } catch (e) {
@@ -1740,9 +1800,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           typeof params.recursive === 'boolean' ? params.recursive : undefined
         result = await createCodexDirectory(currentThreadIdForCaps, path, recursive)
       } else if (method === 'fs/remove') {
-        result = await removeCodexFileSystemPath(currentThreadIdForCaps, params)
+        result = await removeCodexFileSystemPath(currentThreadIdForCaps, params as any)
       } else if (method === 'fs/copy') {
-        result = await copyCodexFileSystemPath(currentThreadIdForCaps, params)
+        result = await copyCodexFileSystemPath(currentThreadIdForCaps, params as any)
       } else if (method === 'fs/readFile') {
         const path = typeof params.path === 'string' ? params.path : ''
         if (!path) throw new Error('path is required.')
@@ -1764,7 +1824,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
         if (!watchId) throw new Error('watchId is required.')
         result = await unwatchCodexFileSystem(currentThreadIdForCaps, watchId)
       } else if (method === 'command/exec') {
-        result = await execCodexCommand(currentThreadIdForCaps, params)
+        result = await execCodexCommand(currentThreadIdForCaps, params as any)
       } else if (method === 'process/spawn') {
         result = await spawnCodexProcess(currentThreadIdForCaps, params)
       } else if (method === 'process/writeStdin') {
@@ -2039,13 +2099,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     )
   }
 
-  const spawnCodexRuntimeProcess = async () => {
-    const command = codexRuntimeSpawnCommand.trim()
+  const spawnCodexRuntimeProcess = async (commandPayload?: string) => {
+    const command = (commandPayload ?? codexRuntimeSpawnCommand).trim()
     if (!command) return
-    let commandValue: unknown = command
-    try {
-      commandValue = JSON.parse(command)
-    } catch {}
+    const commandValue: unknown = parseCodexJson<unknown>(command, command)
     const result = await runCodexRuntimeAction(
       'process/spawn',
       {
@@ -2077,7 +2134,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       if (method === 'mcpServer/resource/read') {
         result = await readCodexMcpResource(currentThreadIdForCaps, params)
       } else if (method === 'mcpServer/tool/call') {
-        result = await callCodexMcpTool(currentThreadIdForCaps, params)
+        result = await callCodexMcpTool(currentThreadIdForCaps, params as any)
       } else if (method === 'config/mcpServer/reload') {
         result = await reloadCodexMcpConfig(currentThreadIdForCaps, params)
       } else {
@@ -2160,8 +2217,6 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
         )
       } else if (method === 'environment/add') {
         result = await addCodexEnvironment(currentThreadIdForCaps, params)
-      } else if (method === 'tool/requestUserInput') {
-        result = await requestCodexToolUserInput(currentThreadIdForCaps, params)
       } else {
         result = await callCodexAppServer(
           currentThreadIdForCaps,
@@ -2188,7 +2243,13 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     setRawRpcBusy(true)
     setCapError(null)
     try {
-      const params = JSON.parse(codexRawRpcParams || '{}')
+      const params = parseCodexJson<Record<string, unknown>>(
+        codexRawRpcParams || '{}',
+        {}
+      )
+      if (typeof params !== 'object' || params === null || Array.isArray(params)) {
+        throw new Error('Raw RPC params must be an object.')
+      }
       const readThreadId = (from: unknown) => {
         if (
           from &&
@@ -2519,7 +2580,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 .filter(Boolean)
             : Array.isArray(params.keyPath)
               ? params.keyPath
-                  .map((pathPart) =>
+                  .map((pathPart: unknown) =>
                     typeof pathPart === 'string'
                       ? pathPart.trim()
                       : String(pathPart ?? '').trim()
@@ -2561,7 +2622,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
         if (!server) {
           throw new Error('server is required for mcpServer/tool/call.')
         }
-        result = await callCodexMcpTool(currentThreadIdForCaps, params)
+        result = await callCodexMcpTool(currentThreadIdForCaps, params as any)
       } else if (
         method === 'mcpServer/status/list' ||
         method === 'mcpServerStatus/list'
@@ -2725,12 +2786,13 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   }
 
   const parseCodexRawRpcPresetJson = (value: string, fallback: unknown) => {
-    try {
-      return JSON.parse(value)
-    } catch (e) {
-      setCapError('Raw RPC preset JSON parse failed: ' + String(e))
+    const parseFailed = { marker: 'raw-rpc-preset-parse-failed' }
+    const parsed = parseCodexJson<unknown>(value, parseFailed)
+    if (parsed === parseFailed) {
+      setCapError('Raw RPC preset JSON parse failed, using fallback value.')
       return fallback
     }
+    return parsed
   }
 
   const refreshCodexThreads = async () => {
@@ -2782,6 +2844,41 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       toast.success(success)
     } catch (e) {
       setCapError(String(e))
+    } finally {
+      setThreadBusy(false)
+    }
+  }
+
+  const parseCodexThreadActionParams = () => {
+    const params = parseCodexJson<Record<string, unknown>>(
+      codexThreadActionParamsJson || '{}',
+      {}
+    )
+    if (typeof params !== 'object' || params === null || Array.isArray(params)) {
+      setCapError('Thread action params JSON parse failed: must be an object.')
+      return null
+    }
+    return params
+  }
+
+  const runCodexThreadAction = async (
+    action: () => Promise<unknown>,
+    successMessage: string,
+    onResult?: (result: unknown) => void
+  ) => {
+    if (!currentThreadIdForCaps) {
+      setCapError('Set an active thread first.')
+      return
+    }
+    setThreadBusy(true)
+    setCapError(null)
+    try {
+      const result = await action()
+      setCodexThreadSnapshot(result)
+      onResult?.(result)
+      toast.success(successMessage)
+    } catch (e) {
+      setCapError(`Thread action failed: ${String(e)}`)
     } finally {
       setThreadBusy(false)
     }
@@ -2918,107 +3015,14 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
         Based on `git diff HEAD` • Review panel for agent workspace
       </div>
 
-      {/* Agent Analysis / Findings section: the agent (Codex) can surface additional review
-          findings/analysis on top of the real git diff. The diff content itself is NEVER
-          authored by the agent -- only the git backend provides the authoritative diff.
-          This fulfills "surface review findings" in the local agent workspace panel slot
-          while keeping the panel purely git-diff based. */}
-      <div className="p-2 border-t text-xs bg-muted/5">
-        <div className="font-medium mb-1 flex items-center justify-between gap-2">
-          <span>Codex Agent Review Analysis / Findings</span>
-          <div className="flex gap-1 shrink-0">
-            {currentThreadIdForCaps ? (
-              <>
-                <button
-                  type="button"
-                  className="text-[10px] px-2 py-0.5 border rounded hover:bg-accent disabled:opacity-50"
-                  disabled={reviewStarting}
-                  onClick={async () => {
-                    if (!currentThreadIdForCaps) return
-                    setReviewStarting(true)
-                    try {
-                      await startCodexReview(currentThreadIdForCaps, {
-                        type: 'uncommittedChanges',
-                      })
-                      toast.success(
-                        'Codex review started (detached). Analysis surfaces in chat; diff stays in git panel.'
-                      )
-                    } catch (e) {
-                      toast.error(
-                        e instanceof Error ? e.message : 'Failed to start Codex review'
-                      )
-                    } finally {
-                      setReviewStarting(false)
-                    }
-                  }}
-                  title="Call review/start with detached delivery against uncommitted changes"
-                >
-                  {reviewStarting ? 'Starting…' : 'Start Codex review'}
-                </button>
-                <button
-                  type="button"
-                  className="text-[10px] px-2 py-0.5 border rounded hover:bg-accent disabled:opacity-50"
-                  disabled={reviewStarting}
-                onClick={async () => {
-                  if (!currentThreadIdForCaps) return
-                  setReviewStarting(true)
-                  try {
-                    await startCodexReview(
-                      currentThreadIdForCaps,
-                      JSON.parse(codexAdvancedReviewJson || '{}')
-                    )
-                    toast.success('Advanced Codex review started')
-                    } catch (e) {
-                      toast.error(
-                        e instanceof Error
-                          ? e.message
-                          : 'Failed to start advanced Codex review'
-                      )
-                    } finally {
-                      setReviewStarting(false)
-                    }
-                  }}
-                  title="Call review/start with custom JSON params"
-                >
-                  Advanced review
-                </button>
-              </>
-            ) : null}
-            <button
-              type="button"
-              className="text-[10px] px-2 py-0.5 border rounded hover:bg-accent"
-              onClick={async () => {
-                const prompt = `Review the current workspace changes. Use your review/start capability with delivery=detached (or default detached) and target uncommittedChanges (or the appropriate base). Provide structured analysis, issues, risks, and suggestions ONLY — do not output or author the raw diff content itself (the host Review panel / git diff HEAD is the authoritative source). Reference specific files/paths from the real diff. Summarize for the Review tab.`
-                try {
-                  await navigator.clipboard.writeText(prompt)
-                  toast.success('Review prompt copied')
-                } catch {}
-              }}
-              title="Copy prompt to paste into Codex chat (drives review/start detached + analysis for this panel)"
-            >
-              Copy review prompt
-            </button>
-          </div>
-        </div>
-        <div className="text-muted-foreground text-[10px]">
-          Additional analysis or findings from the Codex engine (via
-          review/start with detached delivery + userFacingHint, reasoning, plan,
-          or direct chat instruction) can be surfaced here on top of the git
-          diff above. The base diff is always from real `git diff HEAD` (or
-          equivalent for the target via the Rust git_review_* commands). No
-          agent-generated diff content is used or "added to a spot".
-          The agent owns planning/tool use/subagents/patching/reasoning; Jan (this panel) owns the authoritative git view + approvals + workspace.
-        </div>
-        <div className="mt-1 text-[10px] text-muted-foreground">
-          Select the Review tab (or open /review) while a Codex provider profile is active for the workspace. Instruct the agent in chat or use the copied prompt above. Codex events (including from subagents) with threadId appear in main chat CodexActivity; analysis can be referenced or copied here. Review panel stays purely git for the diff.
-        </div>
-        <textarea
-          className="mt-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-          placeholder="review/start params JSON"
-          value={codexAdvancedReviewJson}
-          onChange={(event) => setCodexAdvancedReviewJson(event.target.value)}
-        />
-      </div>
+      <CodexReviewPanel
+        currentThreadIdForCaps={currentThreadIdForCaps}
+        reviewStarting={reviewStarting}
+        setReviewStarting={setReviewStarting}
+        codexAdvancedReviewJson={codexAdvancedReviewJson}
+        onSetCodexAdvancedReviewJson={setCodexAdvancedReviewJson}
+        onStartReview={startCodexReview}
+      />
 
       {/* Codex app-server capability layer (skills / plugins / hooks / runtime management)
           surfaced in the authoritative agent workspace review panel.
@@ -3055,855 +3059,415 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
             isCodexProtoTransport && 'pointer-events-none opacity-60'
           )}
         >
-        <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-1 flex items-center justify-between gap-2">
-            <span>Threads</span>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || threadBusy}
-              onClick={() => void refreshCodexThreads()}
-            >
-              Refresh
-            </button>
-          </div>
-          <div className="mb-1 flex gap-1">
-            <Input
-              className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-              placeholder="Codex thread id"
-              value={codexThreadId}
-              onChange={(event) => setCodexThreadId(event.target.value)}
-            />
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() => void readTargetCodexThread()}
-            >
-              Read
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(async (threadId) => {
-                  const parsedLimit = Number.parseInt(codexTurnItemsLimit, 10)
-                  const params: Record<string, unknown> = {
-                    threadId,
-                  }
-                  if (codexTargetTurnId.trim()) {
-                    params.turnId = codexTargetTurnId.trim()
-                  }
-                  if (Number.isFinite(parsedLimit) && parsedLimit > 0) {
-                    params.limit = parsedLimit
-                  }
-                  const result = await listCodexThreadTurnItems(
-                    currentThreadIdForCaps!,
-                    threadId,
-                    params
-                  )
-                  setCodexThreadTurnItems(result)
-                  return result
-                }, 'Codex turn items loaded')
-              }
-            >
-              Read turn items
-            </button>
-          </div>
-          <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
-            <textarea
-              className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-              placeholder="Thread metadata JSON"
-              value={codexThreadMetadataJson}
-              onChange={(event) =>
-                setCodexThreadMetadataJson(event.target.value)
-              }
-            />
-            <textarea
-              className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-              placeholder="Thread settings JSON"
-              value={codexThreadSettingsJson}
-              onChange={(event) =>
-                setCodexThreadSettingsJson(event.target.value)
-              }
-            />
-            <textarea
-              className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-              placeholder="Items JSON array to inject"
-              value={codexInjectItemsJson}
-              onChange={(event) => setCodexInjectItemsJson(event.target.value)}
-            />
-          </div>
-          <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
-            <button
-              type="button"
-              className="text-[9px] underline"
-              onClick={() =>
-                setCodexThreadMetadataJson(
-                  JSON.stringify(
-                    {
-                      source: 'jan',
-                      workspace: cwd,
-                      updatedAt: new Date().toISOString(),
-                    },
-                    null,
-                    2
-                  )
-                )
-              }
-            >
-              Metadata template
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline"
-              onClick={() =>
-                setCodexThreadSettingsJson(
-                  JSON.stringify(
-                    {
-                      approvalPolicy: 'on-request',
-                      sandbox: 'workspace-write',
-                    },
-                    null,
-                    2
-                  )
-                )
-              }
-            >
-              Settings template
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline"
-              onClick={() =>
-                setCodexInjectItemsJson(
-                  JSON.stringify(
-                    [
-                      {
-                        type: 'message',
-                        role: 'user',
-                        content: [{ type: 'text', text: codexRealtimeText }],
-                      },
-                    ],
-                    null,
-                    2
-                  )
-                )
-              }
-            >
-              Inject text template
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline"
-              onClick={() =>
-                setCodexAdvancedReviewJson(
-                  JSON.stringify(
-                    {
-                      type: 'uncommittedChanges',
-                      delivery: 'detached',
-                    },
-                    null,
-                    2
-                  )
-                )
-              }
-            >
-              Review uncommitted template
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline"
-              onClick={() =>
-                setCodexAdvancedReviewJson(
-                  JSON.stringify(
-                    {
-                      type: 'branch',
-                      base: 'main',
-                      delivery: 'detached',
-                    },
-                    null,
-                    2
-                  )
-                )
-              }
-            >
-              Review branch template
-            </button>
-          </div>
-          <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-3">
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Thread name"
-              value={codexThreadName}
-              onChange={(event) => setCodexThreadNameInput(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Goal objective"
-              value={codexThreadGoalObjective}
-              onChange={(event) =>
-                setCodexThreadGoalObjective(event.target.value)
-              }
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Turn id for items / rollback"
-              value={codexTargetTurnId}
-              onChange={(event) => setCodexTargetTurnId(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Item id for rollback"
-              value={codexTargetItemId}
-              onChange={(event) => setCodexTargetItemId(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Turn items limit"
-              value={codexTurnItemsLimit}
-              onChange={(event) => setCodexTurnItemsLimit(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Realtime text"
-              value={codexRealtimeText}
-              onChange={(event) => setCodexRealtimeText(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Realtime audio base64"
-              value={codexRealtimeAudioBase64}
-              onChange={(event) =>
-                setCodexRealtimeAudioBase64(event.target.value)
-              }
-            />
-          </div>
-          <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) =>
-                    forkCodexThread(currentThreadIdForCaps!, threadId, {
-                      ephemeral: false,
-                    }),
-                  'Codex thread forked'
-                )
-              }
-            >
-              Fork
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) => archiveCodexThread(currentThreadIdForCaps!, threadId),
-                  'Codex thread archived'
-                )
-              }
-            >
-              Archive
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) => unarchiveCodexThread(currentThreadIdForCaps!, threadId),
-                  'Codex thread unarchived'
-                )
-              }
-            >
-              Unarchive
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) =>
-                    unsubscribeCodexThread(
-                      currentThreadIdForCaps!,
-                      threadId
-                    ),
-                  'Codex thread unsubscribed'
-                )
-              }
-            >
-              Unsubscribe
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !targetCodexThreadId || threadBusy || !codexThreadName.trim()
-              }
-              onClick={() => {
-                const name = codexThreadName.trim()
-                void withTargetCodexThread(
-                  (threadId) =>
-                    setCodexThreadName(currentThreadIdForCaps!, threadId, name),
-                  'Codex thread renamed'
-                )
-              }}
-            >
-              Name
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() => {
-                    try {
-                      void withTargetCodexThread(
-                        (threadId) =>
-                          updateCodexThreadMetadata(
-                            currentThreadIdForCaps!,
-                            threadId,
-                            JSON.parse(codexThreadMetadataJson || '{}')
-                          ),
-                        'Codex thread metadata updated'
-                      )
-                } catch (e) {
-                  setCapError('Thread metadata JSON parse failed: ' + String(e))
-                }
-              }}
-            >
-              Metadata
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() => {
-                    try {
-                      void withTargetCodexThread(
-                        (threadId) =>
-                          updateCodexThreadSettings(
-                            currentThreadIdForCaps!,
-                            threadId,
-                            JSON.parse(codexThreadSettingsJson || '{}')
-                          ),
-                        'Codex thread settings updated'
-                      )
-                } catch (e) {
-                  setCapError('Thread settings JSON parse failed: ' + String(e))
-                }
-              }}
-            >
-              Settings
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() => {
-                const objective = codexThreadGoalObjective.trim()
-                if (!objective) return
-                void withTargetCodexThread(
-                  (threadId) =>
-                    setCodexThreadGoal(currentThreadIdForCaps!, threadId, {
-                      objective,
-                    }),
-                  'Codex goal set'
-                )
-              }}
-            >
-              Set goal
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) => getCodexThreadGoal(currentThreadIdForCaps!, threadId),
-                  'Codex goal loaded'
-                )
-              }
-            >
-              Get goal
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) => clearCodexThreadGoal(currentThreadIdForCaps!, threadId),
-                  'Codex goal cleared'
-                )
-              }
-            >
-              Clear goal
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) =>
-                    setCodexThreadMemoryMode(
-                      currentThreadIdForCaps!,
-                      threadId,
-                      'enabled'
-                    ),
-                  'Codex memory enabled'
-                )
-              }
-            >
-              Memory on
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) =>
-                    setCodexThreadMemoryMode(
-                      currentThreadIdForCaps!,
-                      threadId,
-                      'disabled'
-                    ),
-                  'Codex memory disabled'
-                )
-              }
-            >
-              Memory off
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  () => resetCodexMemory(currentThreadIdForCaps!),
-                  'Codex memory reset'
-                )
-              }
-            >
-              Reset memory
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) =>
-                    interruptCodexThreadTurn(
-                      currentThreadIdForCaps!,
-                      threadId
-                    ),
-                  'Codex turn interrupt requested'
-                )
-              }
-            >
-              Interrupt
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) =>
-                    compactCodexThreadById(
-                      currentThreadIdForCaps!,
-                      threadId
-                    ),
-                  'Codex thread compact requested'
-                )
-              }
-            >
-              Compact
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) =>
-                    reloadCodexThread(
-                      currentThreadIdForCaps!,
-                      threadId
-                    ),
-                  'Codex thread reload requested'
-                )
-              }
-            >
-              Reload
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() => {
-                const params: Record<string, unknown> = {}
-                if (codexTargetTurnId.trim()) {
-                  params.turnId = codexTargetTurnId.trim()
-                }
-                if (codexTargetItemId.trim()) {
-                  params.itemId = codexTargetItemId.trim()
-                }
-                void withTargetCodexThread(
-                  (threadId) =>
-                    rollbackCodexThreadById(
-                      currentThreadIdForCaps!,
-                      threadId,
-                      params
-                    ),
-                  'Codex rollback requested'
-                )
-              }}
-            >
-              Rollback
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() => {
-                try {
-                  const params = JSON.parse(codexAdvancedReviewJson || '{}')
-                  void withTargetCodexThread(
-                    (threadId) =>
-                      startCodexThreadReview(
-                        currentThreadIdForCaps!,
-                        threadId,
-                        params
-                      ),
-                    'Codex review requested'
-                  )
-                } catch (e) {
-                  setCapError('Review params JSON parse failed: ' + String(e))
-                }
-              }}
-            >
-              Review
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() => {
-                try {
-                  void withTargetCodexThread(
-                    (threadId) =>
-                      injectCodexThreadItems(
-                        currentThreadIdForCaps!,
-                        threadId,
-                        JSON.parse(codexInjectItemsJson || '[]')
-                      ),
-                    'Codex thread items injected'
-                  )
-                } catch (e) {
-                  setCapError('Injected items JSON parse failed: ' + String(e))
-                }
-              }}
-            >
-              Inject items
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) =>
-                    cleanCodexBackgroundTerminals(
-                      currentThreadIdForCaps!,
-                      threadId
-                    ),
-                  'Codex background terminals cleaned'
-                )
-              }
-            >
-              Clean terminals
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) =>
-                    startCodexThreadRealtime(
-                      currentThreadIdForCaps!,
-                      threadId
-                    ),
-                  'Codex realtime started'
-                )
-              }
-            >
-              Realtime start
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() => {
-                const text = codexRealtimeText
-                void withTargetCodexThread(
-                  (threadId) =>
-                    appendCodexThreadRealtimeText(
-                      currentThreadIdForCaps!,
-                      threadId,
-                      text
-                    ),
-                  'Codex realtime text appended'
-                )
-              }}
-            >
-              Realtime text
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() => {
-                const audioBase64 = codexRealtimeAudioBase64.trim()
-                if (!audioBase64) return
-                void withTargetCodexThread(
-                  (threadId) =>
-                    appendCodexThreadRealtimeAudio(
-                      currentThreadIdForCaps!,
-                      threadId,
-                      audioBase64.trim()
-                    ),
-                  'Codex realtime audio appended'
-                )
-              }}
-            >
-              Realtime audio
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!targetCodexThreadId || threadBusy}
-              onClick={() =>
-                void withTargetCodexThread(
-                  (threadId) =>
-                    stopCodexThreadRealtime(
-                      currentThreadIdForCaps!,
-                      threadId
-                    ),
-                  'Codex realtime stopped'
-                )
-              }
-            >
-              Realtime stop
-            </button>
-          </div>
-          <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
-            <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words">
-              {codexLoadedThreads
-                ? JSON.stringify(codexLoadedThreads, null, 2)
-                : '— loaded threads'}
-            </pre>
-            <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words">
-              {codexStoredThreads
-                ? JSON.stringify(codexStoredThreads, null, 2)
-                : '— stored threads'}
-            </pre>
-          </div>
-          {codexThreadDescriptors.length ? (
-            <div className="mt-1 grid grid-cols-1 gap-1 md:grid-cols-3">
-              <Input
-                className="h-6 px-2 text-[10px]"
-                placeholder="Search threads"
-                value={codexThreadFilter}
-                onChange={(event) => setCodexThreadFilter(event.target.value)}
-              />
-              <select
-                className="h-6 rounded border bg-background px-2 text-[10px]"
-                value={codexThreadSourceFilter}
-                onChange={(event) =>
-                  setCodexThreadSourceFilter(
-                    event.target.value as 'all' | 'loaded' | 'stored'
-                  )
-                }
-              >
-                <option value="all">All sources</option>
-                <option value="loaded">Loaded only</option>
-                <option value="stored">Stored only</option>
-              </select>
-              <select
-                className="h-6 rounded border bg-background px-2 text-[10px]"
-                value={codexThreadSort}
-                onChange={(event) =>
-                  setCodexThreadSort(
-                    event.target.value as 'updated' | 'name' | 'source'
-                  )
-                }
-              >
-                <option value="updated">Sort by updated</option>
-                <option value="name">Sort by name</option>
-                <option value="source">Sort by source</option>
-              </select>
-            </div>
-          ) : null}
-          {codexThreadDescriptors.length ? (
-            <div className="mt-1 grid grid-cols-1 gap-1 md:grid-cols-2">
-              <div className="col-span-full text-[9px] text-muted-foreground">
-                {filteredCodexThreadDescriptors.length}/
-                {codexThreadDescriptors.length} threads
-              </div>
-              {filteredCodexThreadDescriptors.map((thread) => (
-                <button
-                  key={thread.id}
-                  type="button"
-                  className={cn(
-                    'min-w-0 rounded border px-1.5 py-1 text-left hover:bg-accent',
-                    targetCodexThreadId === thread.id && 'bg-accent'
-                  )}
-                  title={thread.id}
-                  onClick={() => setCodexThreadId(thread.id)}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-mono text-[9px]">
-                      {thread.name ?? thread.id}
-                    </span>
-                    <span className="shrink-0 text-[9px] text-muted-foreground">
-                      {thread.source}
-                    </span>
-                  </div>
-                  <div className="truncate text-[9px] text-muted-foreground">
-                    {thread.status ? `${thread.status} · ` : ''}
-                    {thread.updatedAt ?? thread.id}
-                  </div>
-                </button>
-              ))}
-              {!filteredCodexThreadDescriptors.length ? (
-                <div className="col-span-full rounded border px-1.5 py-2 text-[9px] text-muted-foreground">
-                  No matching Codex threads.
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-          {selectableCodexThreadIds.length ? (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {selectableCodexThreadIds.map((threadId) => (
-                <button
-                  key={threadId}
-                  type="button"
-                  className={cn(
-                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
-                    targetCodexThreadId === threadId && 'bg-accent'
-                  )}
-                  title={threadId}
-                  onClick={() => setCodexThreadId(threadId)}
-                >
-                  {threadId}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {selectedCodexThreadSummary ? (
-            <div className="mt-1 rounded border bg-background/40 p-1 text-[10px]">
-              <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
-                <span className="truncate">
-                  Selected thread:{' '}
-                  {selectedCodexThreadSummary.name ??
-                    selectedCodexThreadSummary.id}
-                </span>
-                <span className="shrink-0 text-muted-foreground">
-                  {selectedCodexThreadSummary.source ?? 'manual'}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[9px] md:grid-cols-4">
-                <span className="text-muted-foreground">status</span>
-                <span className="truncate">
-                  {selectedCodexThreadSummary.status ?? '—'}
-                </span>
-                <span className="text-muted-foreground">updated</span>
-                <span className="truncate">
-                  {selectedCodexThreadSummary.updatedAt ?? '—'}
-                </span>
-                <span className="text-muted-foreground">turns</span>
-                <span>{selectedCodexThreadSummary.turns ?? '—'}</span>
-                <span className="text-muted-foreground">items</span>
-                <span>{selectedCodexThreadSummary.turnItems ?? '—'}</span>
-                <span className="text-muted-foreground">goal</span>
-                <span className="truncate md:col-span-3">
-                  {selectedCodexThreadSummary.goal || '—'}
-                </span>
-                <span className="text-muted-foreground">snapshot</span>
-                <span className="truncate md:col-span-3">
-                  {selectedCodexThreadSummary.snapshot || '—'}
-                </span>
-              </div>
-            </div>
-          ) : null}
-          <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words">
-            {codexThreadSnapshot ||
-            codexThreadTurns ||
-            codexThreadTurnItems ||
-            codexThreadGoal
-              ? JSON.stringify(
-                  {
-                    thread: codexThreadSnapshot,
-                    turns: codexThreadTurns,
-                    turnItems: codexThreadTurnItems,
-                    goal: codexThreadGoal,
-                  },
-                  null,
-                  2
-                )
-              : '— selected thread'}
-          </pre>
-          {selectableCodexTurnIds.length ? (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {selectableCodexTurnIds.map((turnId) => (
-                <button
-                  key={turnId}
-                  type="button"
-                  className={cn(
-                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
-                    codexTargetTurnId.trim() === turnId && 'bg-accent'
-                  )}
-                  title={turnId}
-                  onClick={() => {
-                    setCodexTargetTurnId(turnId)
-                  }}
-                >
-                  turn:{turnId}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {selectableCodexItemIds.length ? (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {selectableCodexItemIds.map((itemId) => (
-                <button
-                  key={itemId}
-                  type="button"
-                  className={cn(
-                    'max-w-full truncate rounded border px-1.5 py-0.5 font-mono text-[9px] hover:bg-accent',
-                    codexTargetItemId.trim() === itemId && 'bg-accent'
-                  )}
-                  title={itemId}
-                  onClick={() => {
-                    setCodexTargetItemId(itemId)
-                  }}
-                >
-                  item:{itemId}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
+        <ThreadsPanel
+          codexInjectItemsJson={codexInjectItemsJson}
+          codexLoadedThreads={codexLoadedThreads}
+          codexRealtimeAudioBase64={codexRealtimeAudioBase64}
+          codexRealtimeText={codexRealtimeText}
+          codexStoredThreads={codexStoredThreads}
+          codexTargetItemId={codexTargetItemId}
+          codexTargetTurnId={codexTargetTurnId}
+          codexThreadDescriptors={codexThreadDescriptors}
+          codexThreadFilter={codexThreadFilter}
+          codexThreadGoal={codexThreadGoal}
+          codexThreadGoalObjective={codexThreadGoalObjective}
+          codexThreadId={codexThreadId}
+          codexThreadMetadataJson={codexThreadMetadataJson}
+          codexThreadName={codexThreadName}
+          codexThreadSettingsJson={codexThreadSettingsJson}
+          codexThreadSnapshot={codexThreadSnapshot}
+          codexConversationSummary={codexConversationSummary}
+          codexGitDiffToRemote={codexGitDiffToRemote}
+          codexAuthStatus={codexAuthStatus}
+          codexThreadSort={codexThreadSort}
+          codexThreadSourceFilter={codexThreadSourceFilter}
+          codexThreadTurnItems={codexThreadTurnItems}
+          codexThreadTurns={codexThreadTurns}
+          codexThreadActionParamsJson={codexThreadActionParamsJson}
+          codexTurnItemsLimit={codexTurnItemsLimit}
+          currentThreadIdForCaps={currentThreadIdForCaps}
+          filteredCodexThreadDescriptors={filteredCodexThreadDescriptors}
+          onArchive={() =>
+            void withTargetCodexThread(
+              (threadId) => archiveCodexThread(currentThreadIdForCaps!, threadId),
+              'Codex thread archived'
+            )
+          }
+          onClearGoal={() =>
+            void withTargetCodexThread(
+              (threadId) => clearCodexThreadGoal(currentThreadIdForCaps!, threadId),
+              'Codex goal cleared'
+            )
+          }
+          onCompact={() =>
+            void withTargetCodexThread(
+              (threadId) => compactCodexThreadById(currentThreadIdForCaps!, threadId),
+              'Codex thread compact requested'
+            )
+          }
+          onFork={() =>
+            void withTargetCodexThread(
+              (threadId) => forkCodexThread(currentThreadIdForCaps!, threadId, { ephemeral: false }),
+              'Codex thread forked'
+            )
+          }
+          onGetGoal={() =>
+            void withTargetCodexThread(
+              (threadId) => getCodexThreadGoal(currentThreadIdForCaps!, threadId),
+              'Codex goal loaded'
+            )
+          }
+          onInjectItems={() => {
+            const items = parseCodexJson<unknown[]>(codexInjectItemsJson || '[]', [])
+            if (!Array.isArray(items)) {
+              setCapError('Injected items JSON parse failed: must be an array.')
+              return
+            }
+            void withTargetCodexThread(
+              (threadId) => injectCodexThreadItems(currentThreadIdForCaps!, threadId, items),
+              'Codex thread items injected'
+            )
+          }}
+          onCleanTerminals={() =>
+            void withTargetCodexThread(
+              (threadId) => cleanCodexBackgroundTerminals(currentThreadIdForCaps!, threadId),
+              'Codex background terminals cleaned'
+            )
+          }
+          onSearchThreads={() => {
+            const params = parseCodexThreadActionParams()
+            if (!params) return
+            void runCodexThreadAction(
+              () => searchCodexThreads(currentThreadIdForCaps!, params),
+              'Codex thread search requested'
+            )
+          }}
+          onStartThread={() => {
+            const params = parseCodexThreadActionParams()
+            if (!params) return
+            void runCodexThreadAction(
+              () => startCodexThread(currentThreadIdForCaps!, params),
+              'Codex thread started'
+            )
+          }}
+          onResumeThread={() => {
+            const params = parseCodexThreadActionParams()
+            if (!params) return
+            void runCodexThreadAction(
+              () => resumeCodexThread(currentThreadIdForCaps!, params),
+              'Codex thread resume requested'
+            )
+          }}
+          onStartTurn={() => {
+            const params = parseCodexThreadActionParams()
+            if (!params) return
+            const nextParams = {
+              ...params,
+              ...(targetCodexThreadId ? { threadId: targetCodexThreadId } : {}),
+            }
+            if (!targetCodexThreadId && typeof params.threadId !== 'string') {
+              setCapError('Set a Codex thread id first or include threadId in action params.')
+              return
+            }
+            void runCodexThreadAction(
+              () => startCodexTurn(currentThreadIdForCaps!, nextParams),
+              'Codex turn started'
+            )
+          }}
+          onListRealtimeVoices={() => {
+            if (!targetCodexThreadId) {
+              setCapError('Set a Codex thread id first.')
+              return
+            }
+            void runCodexThreadAction(
+              () =>
+                listCodexThreadRealtimeVoices(
+                  currentThreadIdForCaps!,
+                  targetCodexThreadId
+                ),
+              'Codex thread realtime voices loaded'
+            )
+          }}
+          onApproveGuardianDeniedAction={() => {
+            const params = parseCodexThreadActionParams()
+            if (!params) return
+            void runCodexThreadAction(
+              () => approveCodexGuardianDeniedAction(currentThreadIdForCaps!, params),
+              'Guardian denied action approved'
+            )
+          }}
+          onIncrementElicitation={() => {
+            const params = parseCodexThreadActionParams()
+            if (!params) return
+            void runCodexThreadAction(
+              () => incrementCodexThreadElicitation(currentThreadIdForCaps!, params),
+              'Thread elicitation incremented'
+            )
+          }}
+          onDecrementElicitation={() => {
+            const params = parseCodexThreadActionParams()
+            if (!params) return
+            void runCodexThreadAction(
+              () => decrementCodexThreadElicitation(currentThreadIdForCaps!, params),
+              'Thread elicitation decremented'
+            )
+          }}
+          onReadConversationSummary={() => {
+            const params = parseCodexThreadActionParams()
+            if (!params) return
+            void runCodexThreadAction(
+              () => readCodexConversationSummary(currentThreadIdForCaps!, params),
+              'Codex conversation summary loaded',
+              setCodexConversationSummary
+            )
+          }}
+          onReadGitDiffToRemote={() => {
+            const params = parseCodexThreadActionParams()
+            if (!params) return
+            void runCodexThreadAction(
+              () => readCodexGitDiffToRemote(currentThreadIdForCaps!, params),
+              'Codex git diff to remote loaded',
+              setCodexGitDiffToRemote
+            )
+          }}
+          onReadAuthStatus={() => {
+            const params = parseCodexThreadActionParams()
+            if (!params) return
+            void runCodexThreadAction(
+              () => readCodexAuthStatus(currentThreadIdForCaps!, params),
+              'Codex auth status loaded',
+              setCodexAuthStatus
+            )
+          }}
+          onInterrupt={() =>
+            void withTargetCodexThread(
+              (threadId) => interruptCodexThreadTurn(currentThreadIdForCaps!, threadId),
+              'Codex turn interrupt requested'
+            )
+          }
+          onMemoryOff={() =>
+            void withTargetCodexThread(
+              (threadId) => setCodexThreadMemoryMode(currentThreadIdForCaps!, threadId, 'disabled'),
+              'Codex memory disabled'
+            )
+          }
+          onMemoryOn={() =>
+            void withTargetCodexThread(
+              (threadId) => setCodexThreadMemoryMode(currentThreadIdForCaps!, threadId, 'enabled'),
+              'Codex memory enabled'
+            )
+          }
+          onMetadata={() => {
+            const metadata = parseCodexJson<Record<string, unknown>>(
+              codexThreadMetadataJson || '{}',
+              {}
+            )
+            if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
+              setCapError('Thread metadata JSON parse failed: must be an object.')
+              return
+            }
+            void withTargetCodexThread(
+              (threadId) =>
+                updateCodexThreadMetadata(
+                  currentThreadIdForCaps!,
+                  threadId,
+                  metadata
+                ),
+              'Codex thread metadata updated'
+            )
+          }}
+          onName={() => {
+            const name = codexThreadName.trim()
+            void withTargetCodexThread(
+              (threadId) => setCodexThreadName(currentThreadIdForCaps!, threadId, name),
+              'Codex thread renamed'
+            )
+          }}
+          onRead={() => void readTargetCodexThread()}
+          onReadTurnItems={() =>
+            void withTargetCodexThread(async (threadId) => {
+              const parsedLimit = Number.parseInt(codexTurnItemsLimit, 10)
+              const params: Record<string, unknown> = { threadId }
+              if (codexTargetTurnId.trim()) params.turnId = codexTargetTurnId.trim()
+              if (Number.isFinite(parsedLimit) && parsedLimit > 0) params.limit = parsedLimit
+              const result = await listCodexThreadTurnItems(currentThreadIdForCaps!, threadId, params)
+              setCodexThreadTurnItems(result)
+              return result
+            }, 'Codex turn items loaded')
+          }
+          onRealtimeAudio={() => {
+            const audioBase64 = codexRealtimeAudioBase64.trim()
+            if (!audioBase64) return
+            void withTargetCodexThread(
+              (threadId) => appendCodexThreadRealtimeAudio(currentThreadIdForCaps!, threadId, audioBase64),
+              'Codex realtime audio appended'
+            )
+          }}
+          onRealtimeStart={() =>
+            void withTargetCodexThread(
+              (threadId) => startCodexThreadRealtime(currentThreadIdForCaps!, threadId),
+              'Codex realtime started'
+            )
+          }
+          onRealtimeStop={() =>
+            void withTargetCodexThread(
+              (threadId) => stopCodexThreadRealtime(currentThreadIdForCaps!, threadId),
+              'Codex realtime stopped'
+            )
+          }
+          onRealtimeText={() =>
+            void withTargetCodexThread(
+              (threadId) => appendCodexThreadRealtimeText(currentThreadIdForCaps!, threadId, codexRealtimeText),
+              'Codex realtime text appended'
+            )
+          }
+          onRefresh={() => void refreshCodexThreads()}
+          onReload={() =>
+            void withTargetCodexThread(
+              (threadId) => reloadCodexThread(currentThreadIdForCaps!, threadId),
+              'Codex thread reload requested'
+            )
+          }
+          onResetMemory={() =>
+            void withTargetCodexThread(
+              () => resetCodexMemory(currentThreadIdForCaps!),
+              'Codex memory reset'
+            )
+          }
+          onReview={(params) => {
+            const mergedParams =
+              params ??
+              parseCodexJson<Record<string, unknown>>(
+                codexAdvancedReviewJson || '{}',
+                {}
+              )
+            if (
+              typeof mergedParams !== 'object' ||
+              mergedParams === null ||
+              Array.isArray(mergedParams)
+            ) {
+              setCapError('Review params JSON parse failed: must be an object.')
+              return
+            }
+            void withTargetCodexThread(
+              (threadId) =>
+                startCodexThreadReview(
+                  currentThreadIdForCaps!,
+                  threadId,
+                  mergedParams
+                ),
+              'Codex review requested'
+            )
+          }}
+          onSetCodexThreadReviewBranch={setCodexThreadReviewBranch}
+          onSetCodexThreadReviewDelivery={setCodexThreadReviewDelivery}
+          onSetCodexThreadReviewType={setCodexThreadReviewType}
+          onRollback={() => {
+            const params: Record<string, unknown> = {}
+            if (codexTargetTurnId.trim()) params.turnId = codexTargetTurnId.trim()
+            if (codexTargetItemId.trim()) params.itemId = codexTargetItemId.trim()
+            void withTargetCodexThread(
+              (threadId) => rollbackCodexThreadById(currentThreadIdForCaps!, threadId, params),
+              'Codex rollback requested'
+            )
+          }}
+          onSetCodexInjectItemsJson={setCodexInjectItemsJson}
+          onSetCodexRealtimeAudioBase64={setCodexRealtimeAudioBase64}
+          onSetCodexRealtimeText={setCodexRealtimeText}
+          onSetCodexTargetItemId={setCodexTargetItemId}
+          onSetCodexTargetTurnId={setCodexTargetTurnId}
+          onSetCodexThreadFilter={setCodexThreadFilter}
+          onSetCodexThreadGoalObjective={setCodexThreadGoalObjective}
+          onSetCodexThreadId={setCodexThreadId}
+          onSetCodexThreadMetadataJson={setCodexThreadMetadataJson}
+          onSetCodexThreadName={setCodexThreadNameInput}
+          onSetCodexThreadSettingsJson={setCodexThreadSettingsJson}
+          onSetCodexThreadSort={setCodexThreadSort}
+          onSetCodexThreadSourceFilter={setCodexThreadSourceFilter}
+          onSetCodexTurnItemsLimit={setCodexTurnItemsLimit}
+          codexThreadReviewBranch={codexThreadReviewBranch}
+          codexThreadReviewDelivery={codexThreadReviewDelivery}
+          codexThreadReviewType={codexThreadReviewType}
+          onSetCodexThreadActionParamsJson={setCodexThreadActionParamsJson}
+          onSettings={() => {
+            const settings = parseCodexJson<Record<string, unknown>>(
+              codexThreadSettingsJson || '{}',
+              {}
+            )
+            if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) {
+              setCapError('Thread settings JSON parse failed: must be an object.')
+              return
+            }
+            void withTargetCodexThread(
+              (threadId) =>
+                updateCodexThreadSettings(
+                  currentThreadIdForCaps!,
+                  threadId,
+                  settings
+                ),
+              'Codex thread settings updated'
+            )
+          }}
+          onSetGoal={() => {
+            const objective = codexThreadGoalObjective.trim()
+            if (!objective) return
+            void withTargetCodexThread(
+              (threadId) => setCodexThreadGoal(currentThreadIdForCaps!, threadId, { objective }),
+              'Codex goal set'
+            )
+          }}
+          onTemplateInjectText={() =>
+            setCodexInjectItemsJson(
+              JSON.stringify(
+                [{ type: 'message', role: 'user', content: [{ type: 'text', text: codexRealtimeText }] }],
+                null,
+                2
+              )
+            )
+          }
+          onTemplateMetadata={() =>
+            setCodexThreadMetadataJson(
+              JSON.stringify(
+                { source: 'jan', workspace: cwd, updatedAt: new Date().toISOString() },
+                null,
+                2
+              )
+            )
+          }
+          onTemplateReviewBranch={() =>
+            setCodexAdvancedReviewJson(
+              JSON.stringify({ type: 'branch', base: 'main', delivery: 'detached' }, null, 2)
+            )
+          }
+          onTemplateReviewUncommitted={() =>
+            setCodexAdvancedReviewJson(
+              JSON.stringify({ type: 'uncommittedChanges', delivery: 'detached' }, null, 2)
+            )
+          }
+          onTemplateSettings={() =>
+            setCodexThreadSettingsJson(
+              JSON.stringify({ approvalPolicy: 'on-request', sandbox: 'workspace-write' }, null, 2)
+            )
+          }
+          onUnarchive={() =>
+            void withTargetCodexThread(
+              (threadId) => unarchiveCodexThread(currentThreadIdForCaps!, threadId),
+              'Codex thread unarchived'
+            )
+          }
+          onUnsubscribe={() =>
+            void withTargetCodexThread(
+              (threadId) => unsubscribeCodexThread(currentThreadIdForCaps!, threadId),
+              'Codex thread unsubscribed'
+            )
+          }
+          selectableCodexItemIds={selectableCodexItemIds}
+          selectableCodexThreadIds={selectableCodexThreadIds}
+          selectableCodexTurnIds={selectableCodexTurnIds}
+          selectedCodexThreadSummary={selectedCodexThreadSummary}
+          targetCodexThreadId={targetCodexThreadId}
+          threadBusy={threadBusy}
+        />
         <AccountPanel
           accountBusy={accountBusy}
           currentThreadIdForCaps={currentThreadIdForCaps}
@@ -3933,456 +3497,65 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           onSetAccountRateLimits={setAccountRateLimits}
           onSetAccountUsage={setAccountUsage}
         />
-        <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-1 flex items-center justify-between gap-2">
-            <span>Remote Control</span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                className="text-[9px] underline disabled:opacity-50"
-                disabled={!currentThreadIdForCaps || remoteBusy}
-                onClick={() => void refreshRemoteControlStatus()}
-              >
-                Status
-              </button>
-              <button
-                type="button"
-                className="text-[9px] underline disabled:opacity-50"
-                disabled={!currentThreadIdForCaps || remoteBusy}
-                onClick={() =>
-                  void runRemoteControlAction(
-                    () => enableCodexRemoteControl(currentThreadIdForCaps!),
-                    'Remote control enabled'
-                  )
-                }
-              >
-                Enable
-              </button>
-              <button
-                type="button"
-                className="text-[9px] underline disabled:opacity-50"
-                disabled={!currentThreadIdForCaps || remoteBusy}
-                onClick={() =>
-                  void runRemoteControlAction(
-                    () => disableCodexRemoteControl(currentThreadIdForCaps!),
-                    'Remote control disabled'
-                  )
-                }
-              >
-                Disable
-              </button>
-              <button
-                type="button"
-                className="text-[9px] underline disabled:opacity-50"
-                disabled={!currentThreadIdForCaps || remoteBusy}
-                onClick={() =>
-                  void runRemoteControlAction(
-                    () =>
-                      listCodexRemoteControlClients(currentThreadIdForCaps!, {}),
-                    'Remote clients loaded'
-                  )
-                }
-              >
-                Clients
-              </button>
-            </div>
-          </div>
-          <div className="mb-1 flex gap-1">
-            <Input
-              className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-              placeholder="Pairing code"
-              value={remotePairingCode}
-              onChange={(event) => setRemotePairingCode(event.target.value)}
-            />
-            <Input
-              className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-              placeholder="Client id"
-              value={remoteClientId}
-              onChange={(event) => setRemoteClientId(event.target.value)}
-            />
-            <Input
-              className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-              placeholder="Pair params JSON"
-              value={remotePairingStartParamsJson}
-              onChange={(event) =>
-                setRemotePairingStartParamsJson(event.target.value)
-              }
-            />
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || remoteBusy}
-              onClick={() => void startRemoteControlPairing()}
-            >
-              Pair
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                remoteBusy ||
-                !remotePairingCode.trim()
-              }
-              onClick={() => void readRemoteControlPairing()}
-            >
-              Check
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps || remoteBusy || !remoteClientId.trim()
-              }
-              onClick={() => {
-                void runRemoteControlAction(
-                  () =>
-                    revokeCodexRemoteControlClient(
-                      currentThreadIdForCaps!,
-                      remoteClientId.trim()
-                    ),
-                  'Remote client revoked'
-                )
-              }}
-            >
-              Revoke
-            </button>
-          </div>
-          <pre className="whitespace-pre-wrap break-words max-h-24 overflow-auto">
-            {remoteStatus || remotePairing
-              ? JSON.stringify(
-                  { status: remoteStatus, pairing: remotePairing },
-                  null,
-                  2
-                )
-              : '— (status/pairing not loaded)'}
-          </pre>
-        </div>
-        <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-1 flex items-center justify-between gap-2">
-            <span>Config / Admin</span>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || adminBusy}
-              onClick={() => void refreshCodexAdminSnapshot()}
-            >
-              {adminBusy ? 'Loading' : 'Refresh'}
-            </button>
-          </div>
-          <div className="mb-1 text-[10px] text-muted-foreground">
-            Reads live app-server config, config requirements, permission
-            profiles, collaboration modes, and external-agent import candidates
-            for the current workspace.
-          </div>
-          <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Config key path, dot-separated"
-              value={codexConfigKeyPath}
-              onChange={(event) => setCodexConfigKeyPath(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Config value JSON"
-              value={codexConfigValueJson}
-              onChange={(event) => setCodexConfigValueJson(event.target.value)}
-            />
-          </div>
-          <textarea
-            className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder="Config batch write JSON"
-            value={codexConfigBatchJson}
-            onChange={(event) => setCodexConfigBatchJson(event.target.value)}
-          />
-          <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
-            <textarea
-              className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-              placeholder="Windows sandbox setup params JSON"
-              value={codexWindowsSandboxJson}
-              onChange={(event) =>
-                setCodexWindowsSandboxJson(event.target.value)
-              }
-            />
-            <textarea
-              className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-              placeholder="External agent import params JSON"
-              value={codexExternalAgentImportJson}
-              onChange={(event) =>
-                setCodexExternalAgentImportJson(event.target.value)
-              }
-            />
-          </div>
-          <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || adminBusy}
-              onClick={async () => {
-                if (!currentThreadIdForCaps) return
-                const keyPath = codexConfigKeyPath.trim()
-                if (!keyPath) return
-                setAdminBusy(true)
-                setCapError(null)
-                try {
-                  await writeCodexConfigValue(
-                    currentThreadIdForCaps,
-                    keyPath.split('.').map((part) => part.trim()).filter(Boolean),
-                    JSON.parse(codexConfigValueJson || 'null')
-                  )
-                  await refreshCodexAdminSnapshot()
-                  toast.success('Codex config value written')
-                } catch (e) {
-                  setCapError('Config write failed: ' + String(e))
-                  setAdminBusy(false)
-                }
-              }}
-            >
-              Write config value
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || adminBusy}
-              onClick={async () => {
-                if (!currentThreadIdForCaps) return
-                setAdminBusy(true)
-                setCapError(null)
-                try {
-                  const params = JSON.parse(codexConfigBatchJson || '{}')
-                  const result = await writeCodexConfigBatch(
-                    currentThreadIdForCaps,
-                    params
-                  )
-                  setCodexAdminSnapshot((previous: any) => ({
-                    ...(previous ?? {}),
-                    batchWrite: result,
-                  }))
-                  await refreshCodexAdminSnapshot()
-                  toast.success('Codex config batch written')
-                } catch (e) {
-                  setCapError('Config batch write failed: ' + String(e))
-                } finally {
-                  setAdminBusy(false)
-                }
-              }}
-            >
-              Batch config
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || adminBusy}
-              onClick={async () => {
-                if (!currentThreadIdForCaps) return
-                setAdminBusy(true)
-                setCapError(null)
-                try {
-                  const result = await uploadCodexFeedback(
-                    currentThreadIdForCaps,
-                    { cwd }
-                  )
-                  setCodexAdminSnapshot((previous: any) => ({
-                    ...(previous ?? {}),
-                    feedbackUpload: result,
-                  }))
-                  toast.success('Codex feedback upload requested')
-                } catch (e) {
-                  setCapError('Feedback upload failed: ' + String(e))
-                } finally {
-                  setAdminBusy(false)
-                }
-              }}
-            >
-              Upload feedback
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || adminBusy}
-              onClick={async () => {
-                if (!currentThreadIdForCaps) return
-                setAdminBusy(true)
-                setCapError(null)
-                try {
-                  const result = await startCodexWindowsSandbox(
-                    currentThreadIdForCaps,
-                    JSON.parse(codexWindowsSandboxJson || '{}')
-                  )
-                  setCodexAdminSnapshot((previous: any) => ({
-                    ...(previous ?? {}),
-                    windowsSandboxSetup: result,
-                  }))
-                  toast.success('Codex Windows sandbox setup started')
-                } catch (e) {
-                  setCapError('Windows sandbox setup failed: ' + String(e))
-                } finally {
-                  setAdminBusy(false)
-                }
-              }}
-            >
-              Windows sandbox
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || adminBusy}
-              onClick={async () => {
-                if (!currentThreadIdForCaps) return
-                setAdminBusy(true)
-                setCapError(null)
-                try {
-                  const parsedParams = JSON.parse(
-                    codexExternalAgentImportJson || '{}'
-                  )
-                  const result = await importCodexExternalAgentConfig(
-                    currentThreadIdForCaps,
-                    { cwd, ...parsedParams }
-                  )
-                  setCodexAdminSnapshot((previous: any) => ({
-                    ...(previous ?? {}),
-                    externalAgentImport: result,
-                  }))
-                  toast.success('External agent config imported into Codex')
-                } catch (e) {
-                  setCapError('External agent import failed: ' + String(e))
-                } finally {
-                  setAdminBusy(false)
-                }
-              }}
-            >
-              Import external agent
-            </button>
-          </div>
-          <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
-            {codexAdminSnapshot
-              ? JSON.stringify(codexAdminSnapshot, null, 2)
-              : '— (refresh to load)'}
-          </pre>
-        </div>
-        <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-1 flex items-center justify-between gap-2">
-            <span>Models / Providers / Features</span>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || modelAdminBusy}
-              onClick={() => void refreshCodexModelSnapshot()}
-            >
-              {modelAdminBusy ? 'Loading' : 'Refresh'}
-            </button>
-          </div>
-          <div className="mb-1 text-[10px] text-muted-foreground">
-            Reads the running Codex app-server model catalog, provider
-            capabilities, and experimental feature state. Also exposes feature
-            enablement and environment registration.
-          </div>
-          <textarea
-            className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder="Experimental feature enablement JSON"
-            value={codexFeatureEnablementJson}
-            onChange={(event) =>
-              setCodexFeatureEnablementJson(event.target.value)
-            }
-          />
-          <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Environment id"
-              value={codexEnvironmentId}
-              onChange={(event) => setCodexEnvironmentId(event.target.value)}
-            />
-            <Input
-              className="h-6 px-2 text-[10px]"
-              placeholder="Exec server URL"
-              value={codexEnvironmentExecUrl}
-              onChange={(event) =>
-                setCodexEnvironmentExecUrl(event.target.value)
-              }
-            />
-          </div>
-          <textarea
-            className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder="User input request JSON"
-            value={codexUserInputRequestJson}
-            onChange={(event) =>
-              setCodexUserInputRequestJson(event.target.value)
-            }
-          />
-          <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || modelAdminBusy}
-              onClick={() => {
-                try {
-                  void runCodexModelAction(
-                    'experimentalFeature/enablement/set',
-                    {
-                      features: JSON.parse(
-                        codexFeatureEnablementJson || '{}'
-                      ),
-                    },
-                    'Codex experimental features updated'
-                  )
-                } catch (e) {
-                  setCapError(
-                    'Experimental feature JSON parse failed: ' + String(e)
-                  )
-                }
-              }}
-            >
-              Set features
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={
-                !currentThreadIdForCaps ||
-                modelAdminBusy ||
-                !codexEnvironmentId.trim() ||
-                !codexEnvironmentExecUrl.trim()
-              }
-              onClick={() => {
-                void runCodexModelAction(
-                  'environment/add',
-                  {
-                    environmentId: codexEnvironmentId.trim(),
-                    execServerUrl: codexEnvironmentExecUrl.trim(),
-                  },
-                  'Codex environment added'
-                )
-              }}
-            >
-              Add environment
-            </button>
-            <button
-              type="button"
-              className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || modelAdminBusy}
-              onClick={() => {
-                try {
-                  void runCodexModelAction(
-                    'tool/requestUserInput',
-                    JSON.parse(codexUserInputRequestJson || '{}'),
-                    'Codex user-input request sent'
-                  )
-                } catch (e) {
-                  setCapError(
-                    'User input request JSON parse failed: ' + String(e)
-                  )
-                }
-              }}
-            >
-              Request user input
-            </button>
-          </div>
-          <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
-            {codexModelSnapshot
-              ? JSON.stringify(codexModelSnapshot, null, 2)
-              : '— (refresh to load)'}
-          </pre>
-        </div>
+        <RemoteControlPanel
+          remoteBusy={remoteBusy}
+          currentThreadIdForCaps={currentThreadIdForCaps}
+          remotePairingCode={remotePairingCode}
+          remoteClientId={remoteClientId}
+          remotePairingStartParamsJson={remotePairingStartParamsJson}
+          remoteStatus={remoteStatus}
+          remotePairing={remotePairing}
+          onSetRemotePairingCode={setRemotePairingCode}
+          onSetRemoteClientId={setRemoteClientId}
+          onSetRemotePairingStartParamsJson={setRemotePairingStartParamsJson}
+          onRefreshRemoteControlStatus={refreshRemoteControlStatus}
+          onRunRemoteControlAction={runRemoteControlAction}
+          onStartRemoteControlPairing={startRemoteControlPairing}
+          onReadRemoteControlPairing={readRemoteControlPairing}
+          onEnableCodexRemoteControl={enableCodexRemoteControl}
+          onDisableCodexRemoteControl={disableCodexRemoteControl}
+          onListCodexRemoteControlClients={listCodexRemoteControlClients}
+          onRevokeCodexRemoteControlClient={revokeCodexRemoteControlClient}
+        />
+        <ConfigAdminPanel
+          adminBusy={adminBusy}
+          currentThreadIdForCaps={currentThreadIdForCaps}
+          codexConfigKeyPath={codexConfigKeyPath}
+          codexConfigValueJson={codexConfigValueJson}
+          codexConfigBatchJson={codexConfigBatchJson}
+          codexWindowsSandboxJson={codexWindowsSandboxJson}
+          codexExternalAgentImportJson={codexExternalAgentImportJson}
+          codexAdminSnapshot={codexAdminSnapshot}
+          cwd={cwd}
+          onSetCodexConfigKeyPath={setCodexConfigKeyPath}
+          onSetCodexConfigValueJson={setCodexConfigValueJson}
+          onSetCodexConfigBatchJson={setCodexConfigBatchJson}
+          onSetCodexWindowsSandboxJson={setCodexWindowsSandboxJson}
+          onSetCodexExternalAgentImportJson={setCodexExternalAgentImportJson}
+          onSetCapError={setCapError}
+          onSetAdminBusy={setAdminBusy}
+          onRefreshCodexAdminSnapshot={refreshCodexAdminSnapshot}
+          onWriteCodexConfigValue={writeCodexConfigValue}
+          onWriteCodexConfigBatch={writeCodexConfigBatch}
+          onUploadCodexFeedback={uploadCodexFeedback}
+          onStartCodexWindowsSandbox={startCodexWindowsSandbox}
+          onImportCodexExternalAgentConfig={importCodexExternalAgentConfig}
+          onSetCodexAdminSnapshot={setCodexAdminSnapshot}
+        />
+        <ModelsProvidersFeaturesPanel
+          modelAdminBusy={modelAdminBusy}
+          currentThreadIdForCaps={currentThreadIdForCaps}
+          codexFeatureEnablementJson={codexFeatureEnablementJson}
+          codexEnvironmentId={codexEnvironmentId}
+          codexEnvironmentExecUrl={codexEnvironmentExecUrl}
+          codexModelSnapshot={codexModelSnapshot}
+          onSetCodexFeatureEnablementJson={setCodexFeatureEnablementJson}
+          onSetCodexEnvironmentId={setCodexEnvironmentId}
+          onSetCodexEnvironmentExecUrl={setCodexEnvironmentExecUrl}
+          onSetCapError={setCapError}
+          onRefreshCodexModelSnapshot={refreshCodexModelSnapshot}
+          onRunCodexModelAction={runCodexModelAction}
+        />
         <RawRpcTool
           codexConfigKeyPath={codexConfigKeyPath}
           codexConfigValueJson={codexConfigValueJson}
@@ -4567,7 +3740,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 {
                   skill: skillId,
                   skillId,
-                  config: JSON.parse(codexSkillConfigJson || '{}'),
+                  config: parseCodexJson<Record<string, unknown>>(
+                    codexSkillConfigJson || '{}',
+                    {}
+                  ),
                 },
                 'Codex skill config written'
               )
@@ -4582,7 +3758,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
                 {
                   skill: codexPluginSkillId.trim(),
                   skillId: codexPluginSkillId.trim(),
-                  config: JSON.parse(codexSkillConfigJson || '{}'),
+                  config: parseCodexJson<Record<string, unknown>>(
+                    codexSkillConfigJson || '{}',
+                    {}
+                  ),
                 },
                 'Codex skill config written'
               )
@@ -4674,39 +3853,19 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           onRunCodexMcpAction={runCodexMcpAction}
           onMcpOauthLogin={runCodexMcpOauthLogin}
         />
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[10px]">
-          <div className="border rounded p-1 bg-background/50">
-            <div className="font-mono mb-0.5">Skills</div>
-            <pre className="whitespace-pre-wrap break-words max-h-24 overflow-auto">{skills ? JSON.stringify(skills, null, 2) : '— (refresh to load)'}</pre>
-            <button type="button" className="mt-1 text-[9px] underline" onClick={() => void handleSetSkillExtraRoots()} disabled={!currentThreadIdForCaps}>Set extra roots for workspace</button>
-          </div>
-          <div className="border rounded p-1 bg-background/50">
-            <div className="font-mono mb-0.5">Plugins (all / installed)</div>
-            <pre className="whitespace-pre-wrap break-words max-h-24 overflow-auto">{plugins ? JSON.stringify(plugins, null, 2) : '— (refresh to load)'}</pre>
-          </div>
-          <div className="border rounded p-1 bg-background/50">
-            <div className="font-mono mb-0.5">Hooks</div>
-            <pre className="whitespace-pre-wrap break-words max-h-24 overflow-auto">{hooks ? JSON.stringify(hooks, null, 2) : '— (refresh to load)'}</pre>
-          </div>
-        </div>
-        <div className="mt-2 border rounded p-1 bg-background/50 text-[10px]">
-          <div className="font-mono mb-0.5 flex items-center justify-between">
-            <span>App-server runtime logs ({codexRuntimeLogs.length})</span>
-            <button
-              type="button"
-              className="text-[9px] underline"
-              onClick={() => clearCodexRuntimeLogs()}
-            >
-              Clear
-            </button>
-          </div>
-          <pre className="whitespace-pre-wrap break-words max-h-28 overflow-auto font-mono">
-            {getCodexAppServerRuntimeLogs() || '— (logs appear when Codex app-server processes run)'}
-          </pre>
-        </div>
-        <div className="mt-1 text-[9px] text-muted-foreground">
-          Full layer also includes remoteControl/*, marketplace, config read/write, listCollaborationModes, Studio CLI actions, and git worktrees (Projects menu).
-        </div>
+        <CodexSummaryCards
+          skills={skills}
+          plugins={plugins}
+          hooks={hooks}
+          currentThreadIdForCaps={currentThreadIdForCaps}
+          onSetSkillExtraRoots={handleSetSkillExtraRoots}
+        />
+        <AppServerRuntimeLogs
+          codexRuntimeLogsLength={codexRuntimeLogs.length}
+          runtimeLogsText={getCodexAppServerRuntimeLogs()}
+          onClearCodexRuntimeLogs={clearCodexRuntimeLogs}
+        />
+        <CodexCapabilitiesFooter />
         </fieldset>
       </div>
     </section>

@@ -579,10 +579,6 @@ export class CodexAppServerSession {
     return this.requestAppServer('mcpServer/oauth/login', { server })
   }
 
-  async requestUserInput(params: Record<string, unknown>) {
-    return this.requestAppServer('tool/requestUserInput', params)
-  }
-
   async listMcpServerStatus(params: Record<string, unknown> = {}) {
     return this.requestAppServer('mcpServer/status/list', params)
   }

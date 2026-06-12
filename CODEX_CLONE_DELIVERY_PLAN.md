@@ -113,7 +113,7 @@ It is deliverable when:
 2. A user can pick any configured Jan provider/model and the request goes through Codex app-server.
 3. A real chat can stream assistant text, reasoning/activity, command/process output, and file-change events.
 4. Approval/deny for command/file actions works in the desktop app.
-5. CLI helpers for `login`, `logout`, `version`, `apply`, `completion`, `exec`, and raw args work from the UI.
+5. CLI helpers for `login`, `logout`, `version`, `apply`, `completion`, `exec`, `help`, `app`, `mcp`, `mcp-server`, `app-server`, `cloud`, `remote-control`, `review`, `doctor`, `features`, `plugin`, and raw args work from the UI.
 6. Runtime process/command sessions are visible and controllable enough to be useful.
 7. Account/MCP/plugin/thread controls either work or show explicit unsupported/actionable errors.
 8. Proto fallback does not pretend to support app-server-only capabilities.
@@ -195,4 +195,36 @@ Run and record:
 
 ## Recommended next action
 
-Do **Milestone 1** first: clean the branch, protect `.jan/codex-home`, and commit the now-building runtime preview. Then run a real desktop smoke and record it in `CODEX_CLONE_PARITY.md`. After that, product polish is mostly UX and compatibility hardening, not architecture rescue.
+**Milestone 1 completed** (2026-06-11):
+
+- Branch stabilized on `feature/codex-runtime-preview`
+- Tracked `.jan/codex-home` runtime artifacts removed from git (kept local-only)
+- Initial stabilization commit: `3d3427548 feat: stabilize codex runtime preview`
+- Second commit + push: `7387b31ad chore: modularize codex capabilities panels (Account, MCP, Plugins, Runtime FS, Raw RPC); incremental fixes and aliases; prep for desktop smoke pass`
+- Pushed to origin (https://github.com/H0ARK/jan.git)
+- Fresh smoke + parity checks passed on the branch
+
+## Next Pass — Desktop Smoke & Approval Verification (Milestone 3 focus + continuing UX modularization)
+
+**Goal for this pass**: Execute and record a real interactive desktop smoke using the built Tauri desktop app on macOS. Verify end-to-end Codex runtime behavior that cannot be tested in browser preview or unit tests.
+
+### Immediate next steps (do these on your desktop Mac)
+
+1. Checkout and pull the branch:
+   ```bash
+   git checkout feature/codex-runtime-preview
+   git pull origin feature/codex-runtime-preview
+   ```
+2. Build/run the desktop app (use the Makefile or `yarn tauri dev` after deps).
+3. Follow the detailed checklist in `DESKTOP_SMOKE_CHECKLIST.md`.
+4. Capture evidence:
+   - Screenshots or screen recordings of key flows
+   - Console/logs from the app
+   - Note any bugs/blockers
+5. Paste results back here so we can update `CODEX_CLONE_PARITY.md` and move to product polish.
+
+See the new `DESKTOP_SMOKE_CHECKLIST.md` for the exact test matrix (chat streaming, approval flows, command execution, review panel, runtime panels, MCP/account states, clean shutdown).
+
+Continue modularization work in parallel if desired (the new panel files are already in the tree).
+
+Once this pass passes, we can close out the remaining polish milestones.

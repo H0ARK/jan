@@ -10,9 +10,20 @@ vi.mock('@/utils/getModelToStart', () => ({
   getModelToStart: vi.fn(),
 }))
 
+vi.mock('@/lib/local-api-gateway', () => ({
+  hasGatewayUpstreamProviders: vi.fn(),
+}))
+
+vi.mock('@/lib/utils', () => ({
+  isLocalProvider: vi.fn((provider: string) =>
+    provider === 'llamacpp' || provider === 'mlx'
+  ),
+}))
+
 import { ensureModelForServer, type EnsureModelDeps } from '../ensureModelForServer'
 import { useModelProvider } from '@/hooks/useModelProvider'
 import { getModelToStart } from '@/utils/getModelToStart'
+import { hasGatewayUpstreamProviders } from '@/lib/local-api-gateway'
 
 const makeProvider = (name: string, modelIds: string[]): ModelProvider => ({
   provider: name,
@@ -30,6 +41,7 @@ const makeDeps = (overrides?: Partial<EnsureModelDeps>): EnsureModelDeps => ({
 beforeEach(() => {
   vi.clearAllMocks()
   vi.useFakeTimers()
+  vi.mocked(hasGatewayUpstreamProviders).mockReturnValue(false)
 })
 
 describe('ensureModelForServer', () => {
@@ -74,8 +86,8 @@ describe('ensureModelForServer', () => {
     })
   })
 
-  it('uses modelOverride when provided and valid', async () => {
-    const myProvider = makeProvider('openai', ['gpt-4'])
+  it('uses modelOverride when provided and valid for a local provider', async () => {
+    const myProvider = makeProvider('llamacpp', ['local-model'])
     vi.mocked(useModelProvider.getState).mockReturnValue({
       providers: [],
       selectedModel: null,
@@ -84,7 +96,7 @@ describe('ensureModelForServer', () => {
     } as any)
 
     const deps = makeDeps({
-      modelOverride: { model: 'gpt-4', provider: 'openai' },
+      modelOverride: { model: 'local-model', provider: 'llamacpp' },
     })
 
     const promise = ensureModelForServer(deps)
@@ -93,10 +105,14 @@ describe('ensureModelForServer', () => {
 
     expect(result).toEqual({
       status: 'loaded',
-      modelId: 'gpt-4',
-      providerName: 'openai',
+      modelId: 'local-model',
+      providerName: 'llamacpp',
     })
-    expect(deps.modelsService.startModel).toHaveBeenCalledWith(myProvider, 'gpt-4', true)
+    expect(deps.modelsService.startModel).toHaveBeenCalledWith(
+      myProvider,
+      'local-model',
+      true
+    )
   })
 
   it('skips invalid modelOverride and falls through to getModelToStart', async () => {
@@ -137,6 +153,37 @@ describe('ensureModelForServer', () => {
       modelId: 'llama',
       providerName: 'llamacpp',
     })
+  })
+
+  it('returns gateway_only when remote providers are configured and no local model is available', async () => {
+    vi.mocked(hasGatewayUpstreamProviders).mockReturnValue(true)
+    vi.mocked(useModelProvider.getState).mockReturnValue({
+      providers: [],
+      selectedModel: null,
+      selectedProvider: null,
+      getProviderByName: vi.fn(),
+    } as any)
+    vi.mocked(getModelToStart).mockReturnValue(null)
+
+    const result = await ensureModelForServer(makeDeps())
+    expect(result).toEqual({ status: 'gateway_only' })
+  })
+
+  it('returns gateway_only instead of loading a remote provider model', async () => {
+    vi.mocked(hasGatewayUpstreamProviders).mockReturnValue(true)
+    const remote = makeProvider('openai', ['gpt-4'])
+    vi.mocked(useModelProvider.getState).mockReturnValue({
+      providers: [remote],
+      selectedModel: null,
+      selectedProvider: null,
+      getProviderByName: vi.fn(),
+    } as any)
+    vi.mocked(getModelToStart).mockReturnValue({ model: 'gpt-4', provider: remote })
+
+    const deps = makeDeps()
+    const result = await ensureModelForServer(deps)
+    expect(result).toEqual({ status: 'gateway_only' })
+    expect(deps.modelsService.startModel).not.toHaveBeenCalled()
   })
 
   it('returns no_model_available when getModelToStart returns null', async () => {

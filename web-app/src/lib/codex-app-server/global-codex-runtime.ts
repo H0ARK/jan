@@ -13,13 +13,16 @@ type GlobalCodexRuntimeState = {
 
 let globalRuntime: GlobalCodexRuntimeState | null = null
 const threadRuntimeSignatures = new Map<string, string>()
+let ensureChain: Promise<CodexAppServerClient> = Promise.resolve(
+  null as unknown as CodexAppServerClient
+)
 
 export function buildCodexProcessSignature(options: CodexSessionOptions): string {
+  // API keys and other env values change after bootstrap; they must not restart the process.
   return JSON.stringify({
     codexBinaryPath: options.codexBinaryPath,
     codexHome: options.codexHome,
     transport: options.transport,
-    env: options.env,
     agentsMd: options.agentsMd,
     customAgents: options.customAgents,
   })
@@ -46,7 +49,7 @@ export function getGlobalCodexClientOrNull(): CodexAppServerClient | null {
   return globalRuntime?.client ?? null
 }
 
-export async function ensureGlobalCodexAppServer(
+async function ensureGlobalCodexAppServerInternal(
   spawnOptions: CodexSessionOptions
 ): Promise<CodexAppServerClient> {
   const processSignature = buildCodexProcessSignature(spawnOptions)
@@ -80,6 +83,19 @@ export async function ensureGlobalCodexAppServer(
   return client
 }
 
+export async function ensureGlobalCodexAppServer(
+  spawnOptions: CodexSessionOptions
+): Promise<CodexAppServerClient> {
+  const next = ensureChain.then(
+    () => ensureGlobalCodexAppServerInternal(spawnOptions),
+    () => ensureGlobalCodexAppServerInternal(spawnOptions)
+  )
+  ensureChain = next.catch(
+    () => null as unknown as CodexAppServerClient
+  )
+  return next
+}
+
 export async function applyCodexRuntimeOptions(
   client: CodexAppServerClient,
   threadId: string,
@@ -109,6 +125,7 @@ export function clearGlobalCodexThreadBinding(threadId: string): void {
 export function resetGlobalCodexRuntimeForTests(): void {
   globalRuntime = null
   threadRuntimeSignatures.clear()
+  ensureChain = Promise.resolve(null as unknown as CodexAppServerClient)
 }
 
 async function writeCodexConfigToDisk(options: CodexSessionOptions) {

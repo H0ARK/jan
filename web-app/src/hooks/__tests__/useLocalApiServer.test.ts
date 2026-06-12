@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { useLocalApiServer } from '../useLocalApiServer'
+import {
+  DEFAULT_LOCAL_API_SERVER_API_KEY,
+  useLocalApiServer,
+} from '../useLocalApiServer'
 
 vi.mock('@/constants/localStorage', () => ({
   localStorageKey: {
@@ -28,7 +31,7 @@ describe('useLocalApiServer', () => {
     store.setCorsEnabled(true)
     store.setVerboseLogs(true)
     store.setTrustedHosts([])
-    store.setApiKey('')
+    store.setApiKey(DEFAULT_LOCAL_API_SERVER_API_KEY)
     store.setProxyTimeout(600)
   })
 
@@ -42,7 +45,7 @@ describe('useLocalApiServer', () => {
     expect(result.current.corsEnabled).toBe(true)
     expect(result.current.verboseLogs).toBe(true)
     expect(result.current.trustedHosts).toEqual([])
-    expect(result.current.apiKey).toBe('')
+    expect(result.current.apiKey).toBe(DEFAULT_LOCAL_API_SERVER_API_KEY)
     expect(result.current.proxyTimeout).toBe(600)
   })
 

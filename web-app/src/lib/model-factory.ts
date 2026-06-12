@@ -63,6 +63,7 @@ import { fetch as httpFetch } from '@tauri-apps/plugin-http'
 import { hasAudioSentinel, splitAudioSentinels } from './audio-sentinel'
 import { isPlatformTauri } from '@/lib/platform/utils'
 import { providerRemoteApiKeyChain } from '@/lib/provider-api-keys'
+import { resolveXaiRuntimeModelId } from '@/lib/provider-gateway'
 import {
   LLAMACPP_ONLY_PARAM_KEYS,
   paramsSettings,
@@ -725,17 +726,14 @@ export function decodeAudioSentinelsInBody(body: Record<string, unknown>): void 
 
 type ApiKeyHeaderMode = 'authorization-bearer' | 'x-api-key'
 
-const XAI_SSO_RUNTIME_MODEL = 'grok-4.3'
-const STALE_XAI_SSO_MODEL_IDS = new Set(['grok-build-0.1'])
-
 function resolveXaiOAuthRuntimeModelId(modelId: string): string {
-  if (STALE_XAI_SSO_MODEL_IDS.has(modelId)) {
+  const resolved = resolveXaiRuntimeModelId(modelId)
+  if (resolved !== modelId.trim()) {
     console.warn(
-      `[xai-oauth] remapping stale model '${modelId}' to '${XAI_SSO_RUNTIME_MODEL}'`
+      `[xai-oauth] remapping stale model '${modelId}' to '${resolved}'`
     )
-    return XAI_SSO_RUNTIME_MODEL
   }
-  return modelId
+  return resolved
 }
 
 /** Retries with the next key when the upstream returns 401, 403, or 429. */

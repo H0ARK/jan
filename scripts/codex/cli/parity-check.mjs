@@ -9,8 +9,35 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-const REQUIRED_COMMANDS = ['exec', 'login', 'logout', 'completion', 'apply']
-const OPTIONAL_COMMANDS = ['help', 'app-server']
+const REQUIRED_COMMANDS = [
+  'exec',
+  'login',
+  'logout',
+  'completion',
+  'apply',
+  'cloud',
+  'help',
+  'app',
+  'archive',
+  'app-server',
+  'mcp-server',
+  'fork',
+  'unarchive',
+  'review',
+  'doctor',
+  'features',
+  'sandbox',
+  'update',
+  'debug',
+  'plugin',
+  'resume',
+  'exec-server',
+  'mcp',
+  'remote-control',
+]
+const OPTIONAL_COMMANDS = [
+  'proto',
+]
 const DEFAULT_TIMEOUT_MS = 5000
 
 function run(command, args, timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -32,7 +59,9 @@ function run(command, args, timeoutMs = DEFAULT_TIMEOUT_MS) {
 
 function parseHelpCommands(helpText) {
   const lines = helpText.split('\n')
-  const commandsStartIndex = lines.findIndex((line) => line.startsWith('Commands:'))
+  const commandsStartIndex = lines.findIndex((line) =>
+    /^\s*(?:Available\s+)?Commands:/i.test(line)
+  )
   if (commandsStartIndex === -1) return new Set()
 
   const commands = new Set()
@@ -47,6 +76,17 @@ function parseHelpCommands(helpText) {
   }
 
   return commands
+}
+
+function runCommandHelp(binary, command) {
+  const commandHelp = run(binary, [command, '--help'])
+  if (commandHelp.ok) return commandHelp
+
+  if (command === 'help') {
+    return run(binary, ['help'])
+  }
+
+  return commandHelp
 }
 
 function runParityChecks(binary = 'codex') {
@@ -96,14 +136,14 @@ function runParityChecks(binary = 'codex') {
 
   const commands = parseHelpCommands(help.stdout)
   for (const command of REQUIRED_COMMANDS) {
-    const commandCheck = run(binary, [command, '--help'])
+    const commandCheck = runCommandHelp(binary, command)
     result.required[command].available = commands.has(command)
     result.required[command].helpOk = commandCheck.ok
   }
   for (const command of OPTIONAL_COMMANDS) {
     result.optional[command].available = commands.has(command)
     if (result.optional[command].available) {
-      const commandCheck = run(binary, [command, '--help'])
+      const commandCheck = runCommandHelp(binary, command)
       result.optional[command].helpOk = commandCheck.ok
     }
   }

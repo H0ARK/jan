@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { localStorageKey } from '@/constants/localStorage'
 
+export const DEFAULT_LOCAL_API_SERVER_API_KEY = '1234'
+
 type LocalApiServerState = {
   // Run local API server once app opens
   enableOnStartup: boolean
@@ -80,13 +82,13 @@ export const useLocalApiServer = create<LocalApiServerState>()(
       enableServerToolExecution: false,
       setEnableServerToolExecution: (value) =>
         set({ enableServerToolExecution: value }),
-      apiKey: '',
+      apiKey: DEFAULT_LOCAL_API_SERVER_API_KEY,
       setApiKey: (value) => set({ apiKey: value }),
     }),
     {
       name: localStorageKey.settingLocalApiServer,
       storage: createJSONStorage(() => localStorage),
-      version: 3,
+      version: 4,
       migrate: (persistedState: unknown, version: number) => {
         const state = persistedState as Partial<LocalApiServerState>
         if (version < 1) {
@@ -100,6 +102,11 @@ export const useLocalApiServer = create<LocalApiServerState>()(
         if (version < 3) {
           // v2 -> v3: add server-side tool execution toggle
           state.enableServerToolExecution = false
+        }
+        if (version < 4) {
+          if (!state.apiKey?.trim()) {
+            state.apiKey = DEFAULT_LOCAL_API_SERVER_API_KEY
+          }
         }
         return state
       },

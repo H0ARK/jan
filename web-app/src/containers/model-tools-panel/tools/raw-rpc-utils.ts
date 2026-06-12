@@ -87,6 +87,46 @@ export function buildCodexRawRpcCatalog({
     },
     {
       group: 'Plugin',
+      method: 'plugin/share/list',
+      params: { remotePluginId: '<remotePluginId>' },
+      description: 'List shared plugin metadata for a remote plugin.',
+    },
+    {
+      group: 'Plugin',
+      method: 'plugin/share/checkout',
+      params: {
+        remotePluginId: '<remotePluginId>',
+        pluginPath: '<pluginPath>',
+      },
+      description: 'Read a shared plugin checkout file by path.',
+    },
+    {
+      group: 'Plugin',
+      method: 'plugin/share/updateTargets',
+      params: {
+        remotePluginId: '<remotePluginId>',
+        targets: [],
+      },
+      description: 'Update share targets for a remote plugin.',
+    },
+    {
+      group: 'Plugin',
+      method: 'plugin/share/save',
+      params: {
+        remotePluginId: '<remotePluginId>',
+        pluginPath: '<pluginPath>',
+        targets: [],
+      },
+      description: 'Save plugin share targets for a given plugin path.',
+    },
+    {
+      group: 'Plugin',
+      method: 'plugin/share/delete',
+      params: { remotePluginId: '<remotePluginId>' },
+      description: 'Delete a remote plugin share entry.',
+    },
+    {
+      group: 'Plugin',
       method: 'plugin/installed',
       params: { suggestions: [] },
       description: 'List installed Codex plugins.',
@@ -114,6 +154,46 @@ export function buildCodexRawRpcCatalog({
       method: 'fs/readDirectory',
       params: { path: codexRuntimePath || cwd },
       description: 'Read a directory through Codex filesystem RPC.',
+    },
+    {
+      group: 'Runtime',
+      method: 'fuzzyFileSearch/sessionStart',
+      params: { sessionId: '<sessionId>' },
+      description: 'Start or resume a fuzzy file search session.',
+    },
+    {
+      group: 'Runtime',
+      method: 'fuzzyFileSearch/sessionUpdate',
+      params: { sessionId: '<sessionId>' },
+      description: 'Update a fuzzy file search session.',
+    },
+    {
+      group: 'Runtime',
+      method: 'fuzzyFileSearch/sessionStop',
+      params: { sessionId: '<sessionId>' },
+      description: 'Stop a fuzzy file search session.',
+    },
+    {
+      group: 'Thread',
+      method: 'review/start',
+      params: {
+        threadId: threadId,
+        type: 'uncommittedChanges',
+        delivery: 'detached',
+      },
+      description:
+        'Start a thread review for a configured thread with detached delivery.',
+    },
+    {
+      group: 'Thread',
+      method: 'review/start',
+      params: {
+        threadId: threadId,
+        type: 'branch',
+        base: '<branchName>',
+        delivery: 'detached',
+      },
+      description: 'Start branch-based thread review for a configured thread.',
     },
   ]
 }

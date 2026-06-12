@@ -19,6 +19,9 @@ export type CodexSpawnCommand = {
 export type CodexConfigTomlOptions = {
   model?: string
   modelProvider?: string
+  modelContextWindow?: number
+  /** Codex `model_reasoning_effort`; use `"none"` when the upstream rejects reasoning. */
+  modelReasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
   providers?: CodexProviderConfig[]
   mcpServers?: MCPServers
   mcpToolTimeoutSeconds?: number
@@ -74,6 +77,14 @@ export const buildCodexConfigToml = (
     if (input.model) lines.push(`model = ${tomlString(input.model)}`)
     if (input.modelProvider) {
       lines.push(`model_provider = ${tomlString(input.modelProvider)}`)
+    }
+    if (input.modelContextWindow) {
+      lines.push(`model_context_window = ${input.modelContextWindow}`)
+    }
+    if (input.modelReasoningEffort) {
+      lines.push(
+        `model_reasoning_effort = ${tomlString(input.modelReasoningEffort)}`
+      )
     }
     if (lines.length > 0 && providers.length > 0) lines.push('')
   }

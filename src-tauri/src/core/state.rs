@@ -24,6 +24,9 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
     pub custom_headers: Vec<ProviderCustomHeader>,
     pub models: Vec<String>,
+    /// Upstream wire API: "chat" (/chat/completions) or "responses" (/responses).
+    #[serde(default)]
+    pub wire_api: Option<String>,
 }
 
 impl ProviderConfig {
@@ -61,6 +64,8 @@ pub struct AppState {
     pub mcp_server_pids: Arc<Mutex<HashMap<String, u32>>>,
     /// Remote provider configurations (e.g., Anthropic, OpenAI, etc.)
     pub provider_configs: Arc<Mutex<HashMap<String, ProviderConfig>>>,
+    /// Listening port when the local API server is running (for idempotent start).
+    pub server_listen_port: Arc<Mutex<Option<u16>>>,
     /// Wakes up MCP monitors to trigger an immediate health check + reconnect
     pub mcp_reconnect_notify: Arc<Notify>,
 }
@@ -80,6 +85,7 @@ impl Default for AppState {
             background_cleanup_handle: Default::default(),
             mcp_server_pids: Default::default(),
             provider_configs: Default::default(),
+            server_listen_port: Default::default(),
             mcp_reconnect_notify: Arc::new(Notify::new()),
         }
     }

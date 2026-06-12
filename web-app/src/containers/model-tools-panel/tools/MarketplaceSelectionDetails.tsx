@@ -1,11 +1,11 @@
 import type { CodexPluginDescriptor, CodexSkillDescriptor } from '../shared/codex-helpers'
 
 type MarketplaceSelectionDetailsProps = {
-  currentThreadIdForCaps: string | null
+  currentThreadIdForCaps: string | null | undefined
   marketplaceBusy: boolean
-  selectedCodexPluginDescriptor?: CodexPluginDescriptor
+  selectedCodexPluginDescriptor?: CodexPluginDescriptor | null
   selectedCodexPluginMetadataKeys: string[]
-  selectedCodexSkillDescriptor?: CodexSkillDescriptor
+  selectedCodexSkillDescriptor?: CodexSkillDescriptor | null
   onCopyPluginMetadata: () => void | Promise<void>
   onReadPlugin: () => void
   onInstallPlugin: () => void

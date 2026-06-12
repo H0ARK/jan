@@ -1085,6 +1085,65 @@ mod server_tests {
     }
 
     #[test]
+    fn responses_wire_api_maps_chat_completions_to_responses() {
+        assert_eq!(
+            proxy::upstream_path_for_wire_api("/chat/completions", "responses"),
+            "/responses"
+        );
+        assert_eq!(
+            proxy::upstream_path_for_wire_api("/chat/completions", "chat"),
+            "/chat/completions"
+        );
+    }
+
+    #[test]
+    fn transform_chat_body_to_xai_responses() {
+        let mut body = json!({
+            "model": "grok-4.3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 128,
+            "reasoningEffort": "medium"
+        });
+        proxy::transform_openai_chat_to_responses(&mut body, "xai");
+        assert_eq!(body["input"], json!([{"role": "user", "content": "hi"}]));
+        assert!(body.get("messages").is_none());
+        assert_eq!(body["max_output_tokens"], json!(128));
+        assert_eq!(body["store"], json!(false));
+        assert!(body.get("reasoningEffort").is_none());
+    }
+
+    #[test]
+    fn transform_responses_json_to_chat_completion() {
+        let responses = json!({
+            "id": "resp_1",
+            "model": "grok-4.3",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Hello"}]
+            }]
+        });
+        let chat = proxy::transform_responses_json_to_chat(&responses);
+        assert_eq!(chat["object"], "chat.completion");
+        assert_eq!(chat["choices"][0]["message"]["content"], "Hello");
+    }
+
+    #[test]
+    fn gateway_model_ids_use_provider_prefix() {
+        assert_eq!(
+            proxy::format_gateway_model_id("xai", "grok-4.3"),
+            "xai/grok-4.3"
+        );
+        assert_eq!(
+            proxy::format_gateway_model_id("xai", "xai/grok-4.3"),
+            "xai/grok-4.3"
+        );
+        assert_eq!(proxy::gateway_provider_prefix("xai/grok-4.3"), Some("xai"));
+        assert_eq!(proxy::gateway_bare_model_id("openai/gpt-4o"), "gpt-4o");
+        assert_eq!(proxy::gateway_bare_model_id("gpt-4o"), "gpt-4o");
+    }
+
+    #[test]
     fn proxy_config_clone_preserves_fields() {
         let cfg = proxy::ProxyConfig {
             prefix: "/p".to_string(),

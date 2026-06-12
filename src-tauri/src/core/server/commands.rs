@@ -50,6 +50,7 @@ pub async fn start_server<R: Runtime>(
 
     let actual_port = proxy::start_server(
         server_handle,
+        state.server_listen_port.clone(),
         llama_state_arc,
         mlx_sessions,
         host,
@@ -75,7 +76,7 @@ pub async fn start_server<R: Runtime>(
 pub async fn stop_server(state: State<'_, AppState>) -> Result<(), String> {
     let server_handle = state.server_handle.clone();
 
-    proxy::stop_server(server_handle)
+    proxy::stop_server(server_handle, state.server_listen_port.clone())
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

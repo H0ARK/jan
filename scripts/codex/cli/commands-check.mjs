@@ -6,8 +6,35 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-const REQUIRED_COMMANDS = ['mcp']
-const OPTIONAL_COMMANDS = ['proto', 'debug', 'help', 'app-server']
+const REQUIRED_COMMANDS = [
+  'exec',
+  'review',
+  'login',
+  'logout',
+  'mcp',
+  'plugin',
+  'mcp-server',
+  'app-server',
+  'remote-control',
+  'app',
+  'completion',
+  'update',
+  'doctor',
+  'sandbox',
+  'debug',
+  'apply',
+  'resume',
+  'archive',
+  'unarchive',
+  'fork',
+  'cloud',
+  'exec-server',
+  'features',
+  'help',
+]
+const OPTIONAL_COMMANDS = [
+  'proto',
+]
 const COMMAND_HELP_TIMEOUT_MS = 5000
 
 function run(command, args, timeoutMs = COMMAND_HELP_TIMEOUT_MS) {
@@ -27,7 +54,9 @@ function run(command, args, timeoutMs = COMMAND_HELP_TIMEOUT_MS) {
 
 function parseCommands(helpText) {
   const lines = helpText.split('\n')
-  const commandStart = lines.findIndex((line) => line.startsWith('Commands:'))
+  const commandStart = lines.findIndex((line) =>
+    /^\s*(?:Available\s+)?Commands:/i.test(line)
+  )
   if (commandStart === -1) return new Set()
 
   const found = new Set()
@@ -42,6 +71,17 @@ function parseCommands(helpText) {
   }
 
   return found
+}
+
+function runCommandHelp(binary, command) {
+  const commandHelp = run(binary, [command, '--help'])
+  if (commandHelp.ok) return commandHelp
+
+  if (command === 'help') {
+    return run(binary, ['help'])
+  }
+
+  return commandHelp
 }
 
 function evaluate(binary = 'codex') {
@@ -65,13 +105,13 @@ function evaluate(binary = 'codex') {
   const availableCommands = parseCommands(help.stdout)
   for (const command of REQUIRED_COMMANDS) {
     result.required[command].available = availableCommands.has(command)
-    const commandHelp = run(binary, [command, '--help'], COMMAND_HELP_TIMEOUT_MS)
+    const commandHelp = runCommandHelp(binary, command)
     result.required[command].helpOk = commandHelp.ok
   }
   for (const command of OPTIONAL_COMMANDS) {
     result.optional[command].available = availableCommands.has(command)
     if (result.optional[command].available) {
-      const commandHelp = run(binary, [command, '--help'], COMMAND_HELP_TIMEOUT_MS)
+      const commandHelp = runCommandHelp(binary, command)
       result.optional[command].helpOk = commandHelp.ok
     }
   }
@@ -99,13 +139,19 @@ export function runCodexCommandsParityCheckCli() {
     if (!check.available) {
       console.error(`${command} command is not listed in Codex --help`)
     } else if (!check.helpOk) {
-      console.error(`${command} command exists but '${command} --help' failed`)
+      const probeCommand = command === 'help' ? 'help' : `${command} --help`
+      console.error(
+        `${command} command exists but '${probeCommand}' failed`
+      )
     }
   }
 
   for (const [command, check] of Object.entries(result.optional)) {
     if (check.available && !check.helpOk) {
-      console.error(`${command} command exists but '${command} --help' failed`)
+      const probeCommand = command === 'help' ? 'help' : `${command} --help`
+      console.error(
+        `${command} command exists but '${probeCommand}' failed`
+      )
     }
   }
 

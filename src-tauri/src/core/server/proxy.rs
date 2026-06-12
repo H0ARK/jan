@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 
 use crate::core::{
     mcp::models::McpSettings,
-    state::{ProviderConfig, ServerHandle, SharedMcpServers},
+    state::{ProviderConfig, ProviderCustomHeader, ServerHandle, SharedMcpServers},
 };
 
 const SCHEMA_PRIMITIVE_TYPES: &[&str] = &[
@@ -593,7 +593,300 @@ pub fn get_destination_path(original_path: &str, prefix: &str) -> String {
     remove_prefix(original_path, prefix)
 }
 
-use crate::core::server::MlxBackendSession;
+pub(crate) fn format_gateway_model_id(provider: &str, model_id: &str) -> String {
+    let prefix = format!("{provider}/");
+    if model_id.starts_with(&prefix) {
+        model_id.to_string()
+    } else {
+        format!("{provider}/{model_id}")
+    }
+}
+
+pub(crate) fn gateway_provider_prefix(model_id: &str) -> Option<&str> {
+    let sep_pos = model_id.find('/')?;
+    let provider = &model_id[..sep_pos];
+    let bare = &model_id[sep_pos + 1..];
+    if provider.is_empty() || bare.is_empty() {
+        None
+    } else {
+        Some(provider)
+    }
+}
+
+pub(crate) fn gateway_bare_model_id(model_id: &str) -> &str {
+    gateway_provider_prefix(model_id)
+        .map(|_| &model_id[model_id.find('/').unwrap() + 1..])
+        .unwrap_or(model_id)
+}
+
+fn gateway_model_registered(configured: &str, requested: &str) -> bool {
+    configured == requested
+        || (gateway_bare_model_id(configured) == gateway_bare_model_id(requested)
+            && gateway_provider_prefix(configured) == gateway_provider_prefix(requested))
+}
+
+fn is_grok_model_id(model_id: &str) -> bool {
+    let bare = gateway_bare_model_id(model_id);
+    bare.starts_with("grok-") || bare.eq_ignore_ascii_case("grok")
+}
+
+fn provider_for_gateway_model(
+    model_id: &str,
+    pc: &HashMap<String, ProviderConfig>,
+) -> Option<String> {
+    if is_grok_model_id(model_id) && pc.contains_key("xai") {
+        return Some("xai".to_string());
+    }
+    if let Some((_, config)) = pc
+        .iter()
+        .find(|(_, config)| config.models.iter().any(|m| gateway_model_registered(m, model_id)))
+    {
+        return Some(config.provider.clone());
+    }
+
+    if let Some(prefix) = gateway_provider_prefix(model_id) {
+        if pc.contains_key(prefix) {
+            return Some(prefix.to_string());
+        }
+    }
+
+    let bare = gateway_bare_model_id(model_id);
+    let matching: Vec<_> = pc
+        .iter()
+        .filter(|(_, config)| {
+            config
+                .models
+                .iter()
+                .any(|m| gateway_bare_model_id(m) == bare)
+        })
+        .collect();
+    if matching.len() == 1 {
+        return Some(matching[0].1.provider.clone());
+    }
+
+    pc.get(model_id).map(|c| c.provider.clone())
+}
+
+fn maybe_rewrite_gateway_model_body(body: &Bytes, model_id: &str) -> Option<Bytes> {
+    let bare = gateway_bare_model_id(model_id);
+    if bare == model_id {
+        None
+    } else {
+        rewrite_model_in_body(body, bare)
+    }
+}
+
+fn find_mlx_session(
+    mlx_sessions: &HashMap<i32, MlxBackendSession>,
+    model_id: &str,
+) -> Option<SessionInfo> {
+    if let Some(prefix) = gateway_provider_prefix(model_id) {
+        if prefix != "mlx" {
+            return None;
+        }
+    }
+    let bare = gateway_bare_model_id(model_id);
+    mlx_sessions
+        .values()
+        .find(|s| s.info.model_id == bare)
+        .map(|s| s.info.clone())
+}
+
+fn should_route_llamacpp(model_id: &str) -> bool {
+    match gateway_provider_prefix(model_id) {
+        Some(prefix) => prefix == "llamacpp",
+        None => true,
+    }
+}
+
+fn join_upstream_url(base_url: &str, path: &str) -> String {
+    format!("{}{}", base_url.trim_end_matches('/'), path)
+}
+
+fn provider_wire_api(config: &ProviderConfig) -> &str {
+    config.wire_api.as_deref().unwrap_or("chat")
+}
+
+pub(crate) fn upstream_path_for_wire_api(incoming: &str, wire_api: &str) -> String {
+    match (incoming, wire_api) {
+        ("/chat/completions" | "/completions", "responses") => "/responses".to_string(),
+        ("/responses", "chat") => "/chat/completions".to_string(),
+        (path, _) => path.to_string(),
+    }
+}
+
+pub(crate) fn transform_openai_chat_to_responses(
+    body: &mut serde_json::Value,
+    provider: &str,
+) {
+    let Some(map) = body.as_object_mut() else {
+        return;
+    };
+    if map.contains_key("messages") && !map.contains_key("input") {
+        if let Some(messages) = map.remove("messages") {
+            map.insert("input".to_string(), messages);
+        }
+    }
+    if let Some(max_tokens) = map.remove("max_tokens") {
+        map.insert("max_output_tokens".to_string(), max_tokens);
+    }
+    if provider == "xai" {
+        map.insert("store".to_string(), serde_json::json!(false));
+        map.remove("previous_response_id");
+        for key in [
+            "reasoning_effort",
+            "reasoningEffort",
+            "reasoning",
+        ] {
+            map.remove(key);
+        }
+    }
+}
+
+pub(crate) fn transform_responses_json_to_chat(body: &serde_json::Value) -> serde_json::Value {
+    if body.get("choices").is_some() {
+        return body.clone();
+    }
+
+    let model = body.get("model").cloned().unwrap_or(serde_json::json!(""));
+    let mut text = String::new();
+    if let Some(output) = body.get("output").and_then(|v| v.as_array()) {
+        for item in output {
+            if item.get("type").and_then(|v| v.as_str()) != Some("message") {
+                continue;
+            }
+            if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
+                for part in content {
+                    if part.get("type").and_then(|v| v.as_str()) == Some("output_text") {
+                        if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                            text.push_str(t);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    serde_json::json!({
+        "id": body.get("id").cloned().unwrap_or(serde_json::json!("")),
+        "object": "chat.completion",
+        "created": body.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": text
+            },
+            "finish_reason": body.get("status").and_then(|v| v.as_str()).unwrap_or("stop")
+        }],
+        "usage": body.get("usage").cloned().unwrap_or(serde_json::json!({}))
+    })
+}
+
+fn prepare_remote_provider_upstream(
+    provider_cfg: &ProviderConfig,
+    provider: &str,
+    incoming_path: &str,
+    body_bytes: &Bytes,
+    model_id: &str,
+) -> Result<(String, Vec<String>, Bytes, bool), String> {
+    let wire_api = provider_wire_api(provider_cfg);
+    let upstream_path = upstream_path_for_wire_api(incoming_path, wire_api);
+    let api_url = provider_cfg
+        .base_url
+        .clone()
+        .ok_or_else(|| format!("Missing base_url for provider '{provider}'"))?;
+    let url = join_upstream_url(&api_url, &upstream_path);
+    let keys = provider_cfg.bearer_key_chain();
+    let mut outbound_body = body_bytes.clone();
+    let mut rewrite_to_chat = false;
+
+    if wire_api == "responses"
+        && matches!(
+            incoming_path,
+            "/chat/completions" | "/completions" | "/responses"
+        )
+    {
+        let mut json_body: serde_json::Value =
+            serde_json::from_slice(&outbound_body).map_err(|e| e.to_string())?;
+        transform_openai_chat_to_responses(&mut json_body, provider);
+        let bare = gateway_bare_model_id(model_id);
+        if let Some(obj) = json_body.as_object_mut() {
+            obj.insert("model".to_string(), serde_json::json!(bare));
+        }
+        outbound_body = Bytes::from(serde_json::to_vec(&json_body).map_err(|e| e.to_string())?);
+        rewrite_to_chat =
+            incoming_path == "/chat/completions" || incoming_path == "/completions";
+    } else if let Some(rewritten) = maybe_rewrite_gateway_model_body(body_bytes, model_id) {
+        outbound_body = rewritten;
+    }
+
+    Ok((url, keys, outbound_body, rewrite_to_chat))
+}
+
+fn responses_sse_data_to_chat_line(data: &str) -> Option<String> {
+    let payload = data.trim();
+    if payload.is_empty() || payload == "[DONE]" {
+        return Some("data: [DONE]\n\n".to_string());
+    }
+    let json: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let event_type = json.get("type").and_then(|v| v.as_str())?;
+    match event_type {
+        "response.output_text.delta" => {
+            let delta = json.get("delta").and_then(|v| v.as_str()).unwrap_or("");
+            let chat = serde_json::json!({
+                "choices": [{"delta": {"content": delta}}]
+            });
+            Some(format!("data: {chat}\n\n"))
+        }
+        "response.completed" => Some("data: [DONE]\n\n".to_string()),
+        _ => None,
+    }
+}
+
+async fn forward_responses_stream_as_chat<S>(mut stream: S, mut sender: hyper::body::Sender)
+where
+    S: futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
+{
+    let mut buffer = String::new();
+    while let Some(chunk_result) = stream.next().await {
+        match chunk_result {
+            Ok(chunk) => {
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(pos) = buffer.find("\n\n") {
+                    let frame = buffer[..pos].to_string();
+                    buffer.drain(..pos + 2);
+                    for line in frame.lines() {
+                        if let Some(rest) = line.strip_prefix("data: ") {
+                            if let Some(chat_line) = responses_sse_data_to_chat_line(rest) {
+                                if sender.send_data(Bytes::from(chat_line)).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Responses stream error: {e}");
+                break;
+            }
+        }
+    }
+}
+
+fn rewrite_model_in_body(body: &Bytes, upstream_model: &str) -> Option<Bytes> {
+    let mut json_body: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let obj = json_body.as_object_mut()?;
+    obj.insert(
+        "model".to_string(),
+        serde_json::Value::String(upstream_model.to_string()),
+    );
+    serde_json::to_vec(&json_body).ok().map(Bytes::from)
+}
+
+use crate::core::server::{MlxBackendSession, SessionInfo};
 
 use rmcp::model::{CallToolRequestParam, CallToolResult};
 
@@ -767,26 +1060,14 @@ async fn router_first_model(llama_state: &LlamacppState, client: &Client) -> Opt
 
 async fn resolve_upstream_for_model(
     model_id: &str,
+    destination_path: &str,
     provider_configs: Arc<Mutex<HashMap<String, ProviderConfig>>>,
     llama_state: Arc<LlamacppState>,
     mlx_sessions: Arc<Mutex<HashMap<i32, MlxBackendSession>>>,
 ) -> Result<(String, Vec<String>), String> {
-    let destination_path = "/chat/completions";
 
     let pc = provider_configs.lock().await;
-    let provider_name = pc
-        .iter()
-        .find(|(_, config)| config.models.iter().any(|m| m == model_id))
-        .map(|(_, config)| config.provider.clone())
-        .or_else(|| {
-            if let Some(sep_pos) = model_id.find('/') {
-                let potential_provider: &str = &model_id[..sep_pos];
-                if pc.contains_key(potential_provider) {
-                    return Some(potential_provider.to_string());
-                }
-            }
-            pc.get(model_id).map(|c| c.provider.clone())
-        });
+    let provider_name = provider_for_gateway_model(model_id, &pc);
     drop(pc);
 
     if let Some(provider) = provider_name {
@@ -796,13 +1077,19 @@ async fn resolve_upstream_for_model(
                 .base_url
                 .clone()
                 .ok_or_else(|| format!("Missing base_url for provider '{provider}'"))?;
-            let url = format!("{}{}", api_url, destination_path);
+            let wire_api = provider_wire_api(&provider_cfg);
+            let upstream_path = upstream_path_for_wire_api(destination_path, wire_api);
+            let url = join_upstream_url(&api_url, &upstream_path);
             return Ok((url, provider_cfg.bearer_key_chain()));
         }
     }
 
+    let bare_model = gateway_bare_model_id(model_id);
     let mlx_guard = mlx_sessions.lock().await;
-    if let Some(info) = mlx_guard.values().find(|s| s.info.model_id == model_id) {
+    if let Some(info) = mlx_guard
+        .values()
+        .find(|s| s.info.model_id == bare_model)
+    {
         let target_port = info.info.port;
         return Ok((
             format!("http://127.0.0.1:{target_port}/v1{destination_path}"),
@@ -1074,6 +1361,7 @@ async fn run_server_side_openai_orchestration(
 
     let (upstream_url, session_api_keys) = resolve_upstream_for_model(
         &model_id,
+        "/chat/completions",
         provider_configs.clone(),
         llama_state.clone(),
         mlx_sessions.clone(),
@@ -1162,6 +1450,7 @@ async fn run_server_side_openai_orchestration(
 async fn proxy_request(
     req: Request<Body>,
     client: Client,
+    streaming_client: Client,
     config: ProxyConfig,
     llama_state: Arc<LlamacppState>,
     mlx_sessions: Arc<Mutex<HashMap<i32, MlxBackendSession>>>,
@@ -1436,7 +1725,9 @@ async fn proxy_request(
     #[allow(unused_assignments)]
     let mut buffered_body: Option<Bytes> = None;
     let mut target_base_url: Option<String> = None;
+    let mut upstream_custom_headers: Vec<ProviderCustomHeader> = Vec::new();
     let mut is_anthropic_messages = false;
+    let mut rewrite_responses_to_chat = false;
 
     match (method.clone(), destination_path.as_str()) {
         // Anthropic /messages endpoint - tries /messages first, falls back to /chat/completions on error
@@ -1537,19 +1828,7 @@ async fn proxy_request(
                         let pc = provider_configs.lock().await;
 
                         // Try to find a provider for this model
-                        let provider_name: Option<String> = pc
-                            .iter()
-                            .find(|(_, config)| config.models.iter().any(|m| m == model_id))
-                            .map(|(_, config)| config.provider.clone())
-                            .or_else(|| {
-                                if let Some(sep_pos) = model_id.find('/') {
-                                    let potential_provider: &str = &model_id[..sep_pos];
-                                    if pc.contains_key(potential_provider) {
-                                        return Some(potential_provider.to_string());
-                                    }
-                                }
-                                pc.get(model_id).map(|c| c.provider.clone())
-                            });
+                        let provider_name = provider_for_gateway_model(model_id, &pc);
 
                         drop(pc);
 
@@ -1568,10 +1847,7 @@ async fn proxy_request(
                         } else {
                             let mlx_session_info = {
                                 let mlx_guard = mlx_sessions.lock().await;
-                                mlx_guard
-                                    .values()
-                                    .find(|s| s.info.model_id == model_id)
-                                    .map(|s| s.info.clone())
+                                find_mlx_session(&mlx_guard, model_id)
                             };
 
                             if let Some(info) = mlx_session_info {
@@ -1579,11 +1855,38 @@ async fn proxy_request(
                                 session_api_keys = vec![info.api_key.clone()];
                                 target_base_url =
                                     Some(format!("http://127.0.0.1:{}/v1/messages", target_port));
-                            } else if let Some((url, key)) =
-                                router_upstream(&llama_state, "/messages").await
-                            {
-                                session_api_keys = vec![key];
-                                target_base_url = Some(url);
+                                if let Some(rewritten) =
+                                    maybe_rewrite_gateway_model_body(&body_bytes, model_id)
+                                {
+                                    buffered_body = Some(rewritten);
+                                }
+                            } else if should_route_llamacpp(model_id) {
+                                if let Some((url, key)) =
+                                    router_upstream(&llama_state, "/messages").await
+                                {
+                                    if let Some(rewritten) =
+                                        maybe_rewrite_gateway_model_body(&body_bytes, model_id)
+                                    {
+                                        buffered_body = Some(rewritten);
+                                    }
+                                    session_api_keys = vec![key];
+                                    target_base_url = Some(url);
+                                } else {
+                                    log::warn!("No running session found for model_id: {model_id}");
+                                    let mut error_response =
+                                        Response::builder().status(StatusCode::NOT_FOUND);
+                                    error_response = add_cors_headers_with_host_and_origin(
+                                        error_response,
+                                        &host_header,
+                                        &origin_header,
+                                        &config.trusted_hosts,
+                                    );
+                                    return Ok(error_response
+                                        .body(Body::from(format!(
+                                            "No running session found for model '{model_id}'"
+                                        )))
+                                        .unwrap());
+                                }
                             } else {
                                 log::warn!("No running session found for model_id: {model_id}");
                                 let mut error_response =
@@ -1814,6 +2117,7 @@ async fn proxy_request(
 
             let (upstream_url, session_api_keys) = match resolve_upstream_for_model(
                 &model_id,
+                "/chat/completions",
                 provider_configs.clone(),
                 llama_state.clone(),
                 mlx_sessions.clone(),
@@ -1972,6 +2276,7 @@ async fn proxy_request(
         (hyper::Method::POST, "/chat/completions")
         | (hyper::Method::POST, "/completions")
         | (hyper::Method::POST, "/embeddings")
+        | (hyper::Method::POST, "/responses")
         | (hyper::Method::POST, "/messages/count_tokens") => {
             log::info!(
                 "Handling POST request to {destination_path} requiring model lookup in body",
@@ -2059,25 +2364,7 @@ async fn proxy_request(
                         // First, check if there's a registered remote provider for this model
                         let pc = provider_configs.lock().await;
 
-                        // Try to find a provider that has this model configured
-                        let provider_name = pc
-                            .iter()
-                            .find(|(_, config)| {
-                                // Check if any model in this provider matches
-                                config.models.iter().any(|m| m == model_id)
-                            })
-                            .map(|(_, config)| config.provider.clone())
-                            .or_else(|| {
-                                // Try to find by provider name in model_id (e.g., "anthropic/claude-3-opus")
-                                if let Some(sep_pos) = model_id.find('/') {
-                                    let potential_provider: &str = &model_id[..sep_pos];
-                                    if pc.contains_key(potential_provider) {
-                                        return Some(potential_provider.to_string());
-                                    }
-                                }
-                                // Also check if the model_id itself matches a provider name
-                                pc.get(model_id).map(|c| c.provider.clone())
-                            });
+                        let provider_name = provider_for_gateway_model(model_id, &pc);
 
                         drop(pc);
 
@@ -2098,27 +2385,44 @@ async fn proxy_request(
                             drop(pc2);
 
                             if let Some(provider_cfg) = provider_config {
-                                if let Some(api_url) = provider_cfg.base_url.clone() {
-                                    target_base_url = Some(format!("{api_url}{destination_path}"));
-                                } else {
-                                    target_base_url = None;
+                                let body_for_upstream = buffered_body.clone().unwrap_or(body_bytes);
+                                match prepare_remote_provider_upstream(
+                                    &provider_cfg,
+                                    provider,
+                                    &destination_path,
+                                    &body_for_upstream,
+                                    model_id,
+                                ) {
+                                    Ok((url, keys, outbound, rewrite)) => {
+                                        log::info!(
+                                            "Routing '{model_id}' via {} wire API to {url}",
+                                            provider_wire_api(&provider_cfg)
+                                        );
+                                        target_base_url = Some(url);
+                                        session_api_keys = keys;
+                                        upstream_custom_headers = provider_cfg.custom_headers.clone();
+                                        buffered_body = Some(outbound);
+                                        rewrite_responses_to_chat = rewrite;
+                                    }
+                                    Err(e) => {
+                                        log::error!("{e}");
+                                        target_base_url = None;
+                                    }
                                 }
-                                session_api_keys = provider_cfg.bearer_key_chain();
                             } else {
                                 log::error!("Provider config not found for '{provider}'");
                             }
                         } else {
-                            let sessions_find_model = model_id;
-
                             let mlx_session_info = {
                                 let mlx_guard = mlx_sessions.lock().await;
-                                mlx_guard
-                                    .values()
-                                    .find(|s| s.info.model_id == sessions_find_model)
-                                    .map(|s| s.info.clone())
+                                find_mlx_session(&mlx_guard, model_id)
                             };
 
-                            let router_up = router_upstream(&llama_state, &destination_path).await;
+                            let router_up = if should_route_llamacpp(model_id) {
+                                router_upstream(&llama_state, &destination_path).await
+                            } else {
+                                None
+                            };
 
                             if mlx_session_info.is_none() && router_up.is_none() {
                                 log::warn!(
@@ -2144,10 +2448,20 @@ async fn proxy_request(
                                 target_base_url = Some(format!(
                                     "http://127.0.0.1:{target_port}/v1{destination_path}"
                                 ));
+                                if let Some(rewritten) =
+                                    maybe_rewrite_gateway_model_body(&body_bytes, model_id)
+                                {
+                                    buffered_body = Some(rewritten);
+                                }
                             } else if let Some((url, key)) = router_up {
                                 log::debug!("Routing model_id {model_id} via llamacpp router");
                                 session_api_keys = vec![key];
                                 target_base_url = Some(url);
+                                if let Some(rewritten) =
+                                    maybe_rewrite_gateway_model_body(&body_bytes, model_id)
+                                {
+                                    buffered_body = Some(rewritten);
+                                }
                             } else {
                                 log::warn!("No running session found for model_id: {model_id}");
                                 let mut error_response =
@@ -2203,10 +2517,10 @@ async fn proxy_request(
                 .into_iter()
                 .map(|id| {
                     serde_json::json!({
-                        "id": id,
+                        "id": format_gateway_model_id("llamacpp", &id),
                         "object": "model",
                         "created": 1,
-                        "owned_by": "llama.cpp"
+                        "owned_by": "llamacpp"
                     })
                 })
                 .collect();
@@ -2218,7 +2532,7 @@ async fn proxy_request(
                     .values()
                     .map(|session| {
                         serde_json::json!({
-                            "id": session.info.model_id,
+                            "id": format_gateway_model_id("mlx", &session.info.model_id),
                             "object": "model",
                             "created": 1,
                             "owned_by": "mlx"
@@ -2231,13 +2545,15 @@ async fn proxy_request(
             let pc = provider_configs.lock().await;
             let remote_models: Vec<_> = pc
                 .values()
-                .flat_map(|provider_cfg| provider_cfg.models.clone())
-                .map(|model_id| {
-                    serde_json::json!({
-                        "id": model_id,
-                        "object": "model",
-                        "created": 1,
-                        "owned_by": "remote"
+                .flat_map(|provider_cfg| {
+                    let provider = provider_cfg.provider.clone();
+                    provider_cfg.models.iter().cloned().map(move |model_id| {
+                        serde_json::json!({
+                            "id": model_id,
+                            "object": "model",
+                            "created": 1,
+                            "owned_by": provider
+                        })
                     })
                 })
                 .collect();
@@ -2469,11 +2785,40 @@ async fn proxy_request(
     // For Anthropic /messages, we need to track if we should transform the response
     let destination_path = path.clone();
 
+    let is_streaming_request = serde_json::from_slice::<serde_json::Value>(&body_bytes_for_proxy)
+        .ok()
+        .and_then(|j| j.get("stream").and_then(|v| v.as_bool()))
+        .unwrap_or(false);
+    let upstream_client = if is_streaming_request || rewrite_responses_to_chat {
+        &streaming_client
+    } else {
+        &client
+    };
+
     for (key_idx, key_opt) in key_attempts.iter().enumerate() {
-        let mut outbound_req = client.request(method.clone(), upstream_url.clone());
+        let mut outbound_req = upstream_client.request(method.clone(), upstream_url.clone());
+
+        outbound_req = outbound_req.header("Accept-Encoding", "identity");
+
+        if method == hyper::Method::POST || method == hyper::Method::PUT || method == hyper::Method::PATCH
+        {
+            outbound_req = outbound_req.header("Content-Type", "application/json");
+        }
+
+        for custom in &upstream_custom_headers {
+            if !custom.header.is_empty() {
+                outbound_req = outbound_req.header(&custom.header, &custom.value);
+            }
+        }
 
         for (name, value) in headers.iter() {
-            if name != hyper::header::HOST && name != hyper::header::AUTHORIZATION {
+            if name != hyper::header::HOST
+                && name != hyper::header::AUTHORIZATION
+                && name != hyper::header::ACCEPT_ENCODING
+                && name != hyper::header::CONTENT_LENGTH
+                && name != hyper::header::TRANSFER_ENCODING
+                && name.as_str() != "content-type"
+            {
                 outbound_req = outbound_req.header(name, value);
             }
         }
@@ -2667,23 +3012,41 @@ async fn proxy_request(
                     &config.trusted_hosts,
                 );
 
-                let mut stream = response.bytes_stream();
                 let (mut sender, body) = hyper::Body::channel();
+                let rewrite_chat = rewrite_responses_to_chat;
+                let stream_upstream = is_streaming_request;
 
                 tokio::spawn(async move {
-                    // Regular passthrough - when /messages succeeds directly,
-                    // the response is already in the correct format
-                    while let Some(chunk_result) = stream.next().await {
-                        match chunk_result {
-                            Ok(chunk) => {
-                                if sender.send_data(chunk).await.is_err() {
-                                    log::debug!("Client disconnected during streaming");
-                                    break;
+                    if rewrite_chat && stream_upstream {
+                        forward_responses_stream_as_chat(response.bytes_stream(), sender).await;
+                    } else if rewrite_chat {
+                        match response.bytes().await {
+                            Ok(bytes) => {
+                                if let Ok(json) =
+                                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                                {
+                                    let chat = transform_responses_json_to_chat(&json);
+                                    if let Ok(out) = serde_json::to_vec(&chat) {
+                                        let _ = sender.send_data(Bytes::from(out)).await;
+                                    }
                                 }
                             }
-                            Err(e) => {
-                                log::error!("Stream error: {e}");
-                                break;
+                            Err(e) => log::error!("Failed to read responses body: {e}"),
+                        }
+                    } else {
+                        let mut stream = response.bytes_stream();
+                        while let Some(chunk_result) = stream.next().await {
+                            match chunk_result {
+                                Ok(chunk) => {
+                                    if sender.send_data(chunk).await.is_err() {
+                                        log::debug!("Client disconnected during streaming");
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Stream error: {e}");
+                                    break;
+                                }
                             }
                         }
                     }
@@ -2744,10 +3107,10 @@ pub(crate) fn add_cors_headers_with_host_and_origin(
         builder = builder
             .header("Access-Control-Allow-Origin", origin)
             .header("Access-Control-Allow-Credentials", "true");
-    } else {
+    } else if !origin.is_empty() {
+        // Empty origin is normal for non-browser clients (curl, SDKs); CORS does not apply.
         log::warn!(
-            "CORS: Origin '{}' is not trusted, not reflecting origin",
-            origin
+            "CORS: Origin '{origin}' is not trusted, not reflecting origin"
         );
     }
 
@@ -2762,6 +3125,7 @@ pub async fn is_server_running(server_handle: Arc<Mutex<Option<ServerHandle>>>) 
 #[allow(clippy::too_many_arguments)]
 pub async fn start_server(
     server_handle: Arc<Mutex<Option<ServerHandle>>>,
+    server_listen_port: Arc<Mutex<Option<u16>>>,
     llama_state: Arc<LlamacppState>,
     mlx_sessions: Arc<Mutex<HashMap<i32, MlxBackendSession>>>,
     host: String,
@@ -2778,6 +3142,7 @@ pub async fn start_server(
 ) -> Result<u16, Box<dyn std::error::Error + Send + Sync>> {
     start_server_internal(
         server_handle,
+        server_listen_port,
         llama_state,
         mlx_sessions,
         host,
@@ -2798,6 +3163,7 @@ pub async fn start_server(
 #[allow(clippy::too_many_arguments)]
 async fn start_server_internal(
     server_handle: Arc<Mutex<Option<ServerHandle>>>,
+    server_listen_port: Arc<Mutex<Option<u16>>>,
     llama_state: Arc<LlamacppState>,
     mlx_sessions: Arc<Mutex<HashMap<i32, MlxBackendSession>>>,
     host: String,
@@ -2814,7 +3180,9 @@ async fn start_server_internal(
 ) -> Result<u16, Box<dyn std::error::Error + Send + Sync>> {
     let mut handle_guard = server_handle.lock().await;
     if handle_guard.is_some() {
-        return Err("Server is already running".into());
+        let stored_port = server_listen_port.lock().await.unwrap_or(port);
+        log::debug!("Jan API server already running on port {stored_port}");
+        return Ok(stored_port);
     }
 
     let addr: SocketAddr = format!("{host}:{port}")
@@ -2841,12 +3209,22 @@ async fn start_server_internal(
 
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(proxy_timeout))
+        .http1_only()
+        .pool_max_idle_per_host(10)
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let streaming_client = Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .tcp_keepalive(std::time::Duration::from_secs(60))
+        .http1_only()
         .pool_max_idle_per_host(10)
         .pool_idle_timeout(std::time::Duration::from_secs(30))
         .build()?;
 
     let make_svc = make_service_fn(move |_conn| {
         let client = client.clone();
+        let streaming_client = streaming_client.clone();
         let config = config.clone();
         let llama_state = llama_state.clone();
         let mlx_sessions = mlx_sessions.clone();
@@ -2860,6 +3238,7 @@ async fn start_server_internal(
                 proxy_request(
                     req,
                     client.clone(),
+                    streaming_client.clone(),
                     config.clone(),
                     llama_state.clone(),
                     mlx_sessions.clone(),
@@ -2891,18 +3270,21 @@ async fn start_server_internal(
 
     *handle_guard = Some(server_task);
     let actual_port = addr.port();
+    *server_listen_port.lock().await = Some(actual_port);
     log::info!("Jan API server started successfully on port {actual_port}");
     Ok(actual_port)
 }
 
 pub async fn stop_server(
     server_handle: Arc<Mutex<Option<ServerHandle>>>,
+    server_listen_port: Arc<Mutex<Option<u16>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut handle_guard = server_handle.lock().await;
 
     if let Some(handle) = handle_guard.take() {
         handle.abort();
         *handle_guard = None;
+        *server_listen_port.lock().await = None;
         log::info!("Jan API server stopped");
     } else {
         log::debug!("Server was not running");

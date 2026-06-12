@@ -3,6 +3,7 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import {
   buildJsonTemplateFromSchema,
+  parseCodexJson,
   type CodexMcpResourceDescriptor,
   type CodexMcpToolDescriptor,
 } from '../shared/codex-helpers'
@@ -88,19 +89,20 @@ export function McpPanel({
   }
 
   const handleCallTool = () => {
-    try {
-      void onRunCodexMcpAction(
-        'mcpServer/tool/call',
-        {
-          server: codexMcpServerName.trim(),
-          toolName: codexMcpToolName.trim(),
-          arguments: JSON.parse(codexMcpToolArguments || '{}'),
-        },
-        'Codex MCP tool called'
-      )
-    } catch (e) {
-      onSetCapError('MCP tool arguments JSON parse failed: ' + String(e))
+    const parsed = parseCodexJson<unknown>(codexMcpToolArguments || '{}', {})
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      onSetCapError('MCP tool arguments must be a JSON object.')
+      return
     }
+    void onRunCodexMcpAction(
+      'mcpServer/tool/call',
+      {
+        server: codexMcpServerName.trim(),
+        toolName: codexMcpToolName.trim(),
+        arguments: parsed as Record<string, unknown>,
+      },
+      'Codex MCP tool called'
+    )
   }
 
   return (

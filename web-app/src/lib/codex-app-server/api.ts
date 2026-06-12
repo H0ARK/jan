@@ -440,10 +440,6 @@ export class CodexAppServerClient {
     return this.session.startMcpOauthLogin(server)
   }
 
-  requestUserInput(params: Record<string, unknown>) {
-    return this.session.requestUserInput(params)
-  }
-
   listMcpServerStatus(params: Record<string, unknown> = {}) {
     return this.session.listMcpServerStatus(params)
   }

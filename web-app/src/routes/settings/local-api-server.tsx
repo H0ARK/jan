@@ -22,6 +22,16 @@ import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { LogViewer } from '@/components/LogViewer'
 import { ensureModelForServer } from '@/utils/ensureModelForServer'
+import {
+  buildGatewayCurlExample,
+  buildLocalApiBaseUrl,
+  formatGatewayModelId,
+  gatewayBareModelId,
+  getGatewayUpstreamProviders,
+  hasGatewayUpstreamProviders,
+} from '@/lib/local-api-gateway'
+import { CopyButton } from '@/containers/CopyButton'
+import { getProviderTitle, isLocalProvider } from '@/lib/utils'
 
 import {
   Popover,
@@ -80,10 +90,95 @@ function LocalAPIServerContent() {
   const localModels = useMemo(
     () =>
       providers
-        .filter((p) => p.provider === 'llamacpp' || p.provider === 'mlx')
+        .filter((p) => isLocalProvider(p.provider))
         .flatMap((p) => p.models.map((m) => ({ id: m.id, provider: p.provider }))),
     [providers]
   )
+
+  const gatewayProviders = useMemo(
+    () => getGatewayUpstreamProviders(providers),
+    [providers]
+  )
+
+  const gatewayModels = useMemo(
+    () =>
+      gatewayProviders.flatMap((p) =>
+        p.models.map((m) => ({
+          id: formatGatewayModelId(p.provider, m.id),
+          provider: p.provider,
+        }))
+      ),
+    [gatewayProviders]
+  )
+
+  const prefixedLocalModels = useMemo(
+    () =>
+      localModels.map((m) => ({
+        ...m,
+        id: formatGatewayModelId(m.provider, m.id),
+      })),
+    [localModels]
+  )
+
+  const defaultModelOptions = useMemo(
+    () => [
+      ...gatewayModels.map((m) => ({
+        model: gatewayBareModelId(m.id),
+        provider: m.provider,
+        label: m.id,
+        kind: 'remote' as const,
+      })),
+      ...localModels.map((m) => ({
+        model: m.id,
+        provider: m.provider,
+        label: formatGatewayModelId(m.provider, m.id),
+        kind: 'local' as const,
+      })),
+    ],
+    [gatewayModels, localModels]
+  )
+
+  const selectedDefaultModelLabel = useMemo(() => {
+    if (!defaultModelLocalApiServer) return null
+    return formatGatewayModelId(
+      defaultModelLocalApiServer.provider,
+      defaultModelLocalApiServer.model
+    )
+  }, [defaultModelLocalApiServer])
+
+  const exampleGatewayModel = useMemo(() => {
+    if (defaultModelLocalApiServer) {
+      return formatGatewayModelId(
+        defaultModelLocalApiServer.provider,
+        defaultModelLocalApiServer.model
+      )
+    }
+    if (gatewayModels.length > 0) return gatewayModels[0].id
+    if (prefixedLocalModels.length > 0) return prefixedLocalModels[0].id
+    return 'openai/gpt-4o'
+  }, [defaultModelLocalApiServer, gatewayModels, prefixedLocalModels])
+
+  const baseUrl = useMemo(
+    () =>
+      buildLocalApiBaseUrl({
+        host: serverHost,
+        port: serverPort,
+        prefix: apiPrefix,
+      }),
+    [serverHost, serverPort, apiPrefix]
+  )
+
+  const curlExample = useMemo(
+    () =>
+      buildGatewayCurlExample({
+        baseUrl,
+        apiKey: apiKey?.toString() ?? '',
+        modelId: exampleGatewayModel,
+      }),
+    [baseUrl, apiKey, exampleGatewayModel]
+  )
+
+  const canStartGatewayOnly = hasGatewayUpstreamProviders(providers)
 
   const { serverStatus, setServerStatus } = useAppState()
   const [showApiKeyError, setShowApiKeyError] = useState(false)
@@ -136,7 +231,19 @@ function LocalAPIServerContent() {
       })
         .then(async (result) => {
           if (result.status === 'no_model_available') {
-            throw new Error('No model available to load')
+            throw new Error(
+              canStartGatewayOnly
+                ? 'No local model available to load'
+                : 'No model available to load. Add a local model or configure a remote provider with an API key.'
+            )
+          }
+
+          if (result.status === 'gateway_only') {
+            toast.info('Starting API gateway', {
+              description:
+                'Routing requests through your configured remote providers.',
+            })
+            return
           }
 
           // Remember loaded models for next startup
@@ -156,9 +263,12 @@ function LocalAPIServerContent() {
           const models = await serviceHub.models().getActiveModels()
           setActiveModels(models || [])
         })
-        .then(() => {
+        .then(async () => {
           // Then start the server
-          return window.core?.api?.startServer({
+          const { ensureLocalApiServerRunning } = await import(
+            '@/lib/ensure-local-api-server'
+          )
+          return ensureLocalApiServerRunning({
             host: serverHost,
             port: serverPort,
             prefix: apiPrefix,
@@ -171,10 +281,6 @@ function LocalAPIServerContent() {
           })
         })
         .then((actualPort: number) => {
-          // Store the actual port that was assigned (important for mobile with port 0)
-          if (actualPort && actualPort !== serverPort) {
-            setServerPort(actualPort)
-          }
           setServerStatus('running')
         })
         .catch((error: unknown) => {
@@ -463,10 +569,10 @@ function LocalAPIServerContent() {
                         <Button
                           variant="outline"
                           size="sm"
-                          className="w-40 justify-between"
+                          className="w-52 justify-between"
                         >
                           <span className="truncate">
-                            {defaultModelLocalApiServer?.model ??
+                            {selectedDefaultModelLabel ??
                               t(
                                 'settings:localApiServer.defaultModelPlaceholder'
                               )}
@@ -474,27 +580,80 @@ function LocalAPIServerContent() {
                           <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground ml-2" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-64 max-h-60 overflow-y-auto">
-                        {localModels.map(({ id: modelId, provider }) => (
-                          <DropdownMenuItem
-                            key={`${provider}/${modelId}`}
-                            className={cn(
-                              'cursor-pointer my-0.5',
-                              defaultModelLocalApiServer?.model === modelId &&
-                                defaultModelLocalApiServer?.provider ===
-                                  provider &&
-                                'bg-secondary-foreground/8'
-                            )}
-                            onClick={() =>
-                              setDefaultModelLocalApiServer({
-                                model: modelId,
-                                provider,
-                              })
-                            }
-                          >
-                            <span className="truncate">{modelId}</span>
-                          </DropdownMenuItem>
-                        ))}
+                      <DropdownMenuContent align="end" className="w-72 max-h-72 overflow-y-auto">
+                        <DropdownMenuItem
+                          className={cn(
+                            'cursor-pointer my-0.5',
+                            !defaultModelLocalApiServer &&
+                              'bg-secondary-foreground/8'
+                          )}
+                          onClick={() => setDefaultModelLocalApiServer(null)}
+                        >
+                          <span className="truncate">
+                            {t('settings:localApiServer.defaultModelNone')}
+                          </span>
+                        </DropdownMenuItem>
+                        {defaultModelOptions.some((m) => m.kind === 'remote') && (
+                          <div className="px-2 py-1.5 text-[11px] font-medium text-muted-foreground">
+                            {t('settings:localApiServer.defaultModelRemote')}
+                          </div>
+                        )}
+                        {defaultModelOptions
+                          .filter((m) => m.kind === 'remote')
+                          .map(({ model, provider, label }) => (
+                            <DropdownMenuItem
+                              key={`${provider}/${model}`}
+                              className={cn(
+                                'cursor-pointer my-0.5',
+                                defaultModelLocalApiServer?.model === model &&
+                                  defaultModelLocalApiServer?.provider ===
+                                    provider &&
+                                  'bg-secondary-foreground/8'
+                              )}
+                              onClick={() =>
+                                setDefaultModelLocalApiServer({
+                                  model,
+                                  provider,
+                                })
+                              }
+                            >
+                              <span className="truncate font-mono text-xs">
+                                {label}
+                              </span>
+                            </DropdownMenuItem>
+                          ))}
+                        {defaultModelOptions.some((m) => m.kind === 'local') && (
+                          <div className="px-2 py-1.5 text-[11px] font-medium text-muted-foreground">
+                            {t('settings:localApiServer.defaultModelLocal')}
+                          </div>
+                        )}
+                        {defaultModelOptions
+                          .filter((m) => m.kind === 'local')
+                          .map(({ model, provider, label }) => (
+                            <DropdownMenuItem
+                              key={`${provider}/${model}`}
+                              className={cn(
+                                'cursor-pointer my-0.5',
+                                defaultModelLocalApiServer?.model === model &&
+                                  defaultModelLocalApiServer?.provider ===
+                                    provider &&
+                                  'bg-secondary-foreground/8'
+                              )}
+                              onClick={() =>
+                                setDefaultModelLocalApiServer({
+                                  model,
+                                  provider,
+                                })
+                              }
+                            >
+                              <span className="truncate font-mono text-xs">
+                                {label}
+                              </span>
+                              <span className="ml-2 text-[10px] text-muted-foreground">
+                                {getProviderTitle(provider)}
+                              </span>
+                            </DropdownMenuItem>
+                          ))}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   }
@@ -503,21 +662,89 @@ function LocalAPIServerContent() {
 
               <Card>
                 <CardItem
-                  title="Server Status"
+                  title={t('settings:localApiServer.serverStatus')}
                   description={
                     isServerRunning ? (
                       <div className="space-y-1">
-                        <div>The server is currently running.</div>
-                        <div className="text-xs font-mono">
-                          http://{serverHost}:{serverPort}
-                          {apiPrefix}
-                        </div>
+                        <div>{t('settings:localApiServer.serverRunning')}</div>
+                        <div className="text-xs font-mono">{baseUrl}</div>
                       </div>
                     ) : (
-                      'The server is stopped.'
+                      t('settings:localApiServer.serverStopped')
                     )
                   }
                 />
+
+                {isServerRunning && (
+                  <CardItem
+                    title={t('settings:localApiServer.connectAppsTitle')}
+                    description={
+                      <div className="space-y-3">
+                        <p>{t('settings:localApiServer.connectAppsDesc')}</p>
+                        <div className="space-y-2 text-xs">
+                          <div className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5">
+                            <div className="min-w-0">
+                              <div className="text-muted-foreground">
+                                {t('settings:localApiServer.baseUrl')}
+                              </div>
+                              <div className="font-mono truncate">{baseUrl}</div>
+                            </div>
+                            <CopyButton text={baseUrl} />
+                          </div>
+                          <div className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5">
+                            <div className="min-w-0">
+                              <div className="text-muted-foreground">
+                                {t('settings:localApiServer.apiKey')}
+                              </div>
+                              <div className="font-mono truncate">
+                                {apiKey?.toString().trim() || t('settings:localApiServer.apiKeyUnset')}
+                              </div>
+                            </div>
+                            {apiKey?.toString().trim() ? (
+                              <CopyButton text={apiKey.toString()} />
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-muted-foreground">
+                              {t('settings:localApiServer.exampleRequest')}
+                            </span>
+                            <CopyButton text={curlExample} />
+                          </div>
+                          <pre className="overflow-x-auto rounded-md border bg-muted/40 p-2 text-[11px] leading-relaxed font-mono">
+                            {curlExample}
+                          </pre>
+                        </div>
+                        {(gatewayModels.length > 0 || prefixedLocalModels.length > 0) && (
+                          <div className="space-y-1">
+                            <div className="text-xs text-muted-foreground">
+                              {t('settings:localApiServer.availableModels')}
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {[...gatewayModels, ...prefixedLocalModels].slice(0, 12).map((m) => (
+                                <span
+                                  key={`${m.provider}/${m.id}`}
+                                  className="rounded border px-1.5 py-0.5 text-[11px] font-mono"
+                                >
+                                  {m.id}
+                                </span>
+                              ))}
+                              {gatewayModels.length + prefixedLocalModels.length > 12 && (
+                                <span className="text-[11px] text-muted-foreground">
+                                  +{gatewayModels.length + prefixedLocalModels.length - 12} more
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-muted-foreground">
+                              {t('settings:localApiServer.modelsHint')}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    }
+                  />
+                )}
 
                 <CardItem
                   title={t('settings:localApiServer.swaggerDocs')}

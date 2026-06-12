@@ -67,13 +67,19 @@ vi.mock('@/hooks/useThreads', () => ({
   useThreads: () => ({ setThreads: h.setThreads }),
 }))
 
-vi.mock('@/hooks/useLocalApiServer', () => ({
-  useLocalApiServer: () => ({
+vi.mock('@/hooks/useLocalApiServer', () => {
+  const localApiState = () => ({
     ...h.localApi,
     setLastServerModels: h.setLastServerModels,
     setServerPort: h.setServerPort,
-  }),
-}))
+  })
+  const useLocalApiServer = vi.fn(localApiState) as unknown as {
+    (): ReturnType<typeof localApiState>
+    getState: () => ReturnType<typeof localApiState>
+  }
+  useLocalApiServer.getState = localApiState
+  return { useLocalApiServer }
+})
 
 vi.mock('@/hooks/useAppState', () => ({
   useAppState: (sel: (s: { setServerStatus: unknown }) => unknown) =>
@@ -86,6 +92,8 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('@/lib/utils', () => ({
   isDev: () => h.isDev(),
+  isLocalProvider: (provider: string) =>
+    provider === 'llamacpp' || provider === 'mlx',
 }))
 
 vi.mock('@/lib/provider-api-keys', () => ({
@@ -268,6 +276,31 @@ describe('DataProvider', () => {
     expect(hubState.unsubscribe).toHaveBeenCalled()
   })
 
+  it('does not register codex or mlx as HTTP upstream providers', async () => {
+    hubState.getProviders.mockResolvedValue([
+      {
+        provider: 'codex',
+        active: true,
+        models: [{ id: 'gpt-oss' }],
+        custom_header: [],
+        base_url: 'https://codex',
+      },
+      {
+        provider: 'mlx',
+        active: true,
+        models: [{ id: 'mlx-model' }],
+        custom_header: [],
+        api_key: 'key-1',
+      },
+    ])
+    render(<DataProvider />)
+    await waitFor(() => {
+      expect(hubState.getProviders).toHaveBeenCalled()
+    })
+    const regCalls = h.invoke.mock.calls.filter((c) => c[0] === 'register_provider_config')
+    expect(regCalls.length).toBe(0)
+  })
+
   it('registers remote providers with the backend for active providers', async () => {
     hubState.getProviders.mockResolvedValue([
       {
@@ -292,7 +325,8 @@ describe('DataProvider', () => {
           request: expect.objectContaining({
             provider: 'openai',
             api_key: 'key-1',
-            models: ['gpt-4'],
+            wire_api: 'responses',
+            models: ['openai/gpt-4'],
           }),
         }),
       )
@@ -388,12 +422,12 @@ describe('DataProvider', () => {
 
   it('starts default model and local API server when enabled', async () => {
     h.localApi.enableOnStartup = true
-    h.localApi.defaultModelLocalApiServer = { model: 'm1', provider: 'openai' }
-    h.getProviderByName.mockReturnValue({ provider: 'openai' })
+    h.localApi.defaultModelLocalApiServer = { model: 'm1', provider: 'llamacpp' }
+    h.getProviderByName.mockReturnValue({ provider: 'llamacpp' })
     hubState.getServerStatus.mockResolvedValue(false)
     hubState.startServer.mockResolvedValue(2000)
     hubState.getActiveModels.mockResolvedValue(['m1'])
-    h.providers = [{ provider: 'openai', models: [{ id: 'm1' }] }]
+    h.providers = [{ provider: 'llamacpp', models: [{ id: 'm1' }] }]
 
     render(<DataProvider />)
 
@@ -407,7 +441,7 @@ describe('DataProvider', () => {
       expect(h.setServerPort).toHaveBeenCalledWith(2000)
       expect(h.setServerStatus).toHaveBeenCalledWith('running')
       expect(h.setLastServerModels).toHaveBeenCalledWith([
-        { model: 'm1', provider: 'openai' },
+        { model: 'm1', provider: 'llamacpp' },
       ])
     })
   })

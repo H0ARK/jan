@@ -20,6 +20,22 @@ export function decodeUtf8Base64(value: string) {
   }
 }
 
+export function parseCodexJson<T>(value: string, fallback: T): T {
+  try {
+    return JSON.parse(value || '') as T
+  } catch {
+    return fallback
+  }
+}
+
+export function stringifyCodexJson(value: unknown, fallback: string = ''): string {
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return fallback
+  }
+}
+
 export type CodexThreadDescriptor = {
   id: string
   name?: string

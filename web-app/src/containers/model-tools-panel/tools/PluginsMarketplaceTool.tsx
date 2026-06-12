@@ -1,3 +1,5 @@
+import { useEffect, useMemo, useState } from 'react'
+
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 
@@ -5,6 +7,10 @@ import type {
   CodexMarketplaceDescriptor,
   CodexPluginDescriptor,
   CodexSkillDescriptor,
+} from '../shared/codex-helpers'
+import {
+  parseCodexJson,
+  stringifyCodexJson,
 } from '../shared/codex-helpers'
 import { MarketplaceSelectionDetails } from './MarketplaceSelectionDetails'
 
@@ -20,7 +26,7 @@ type PluginsMarketplaceToolProps = {
   codexPluginSkillId: string
   codexSkillConfigJson: string
   codexSkillDescriptors: CodexSkillDescriptor[]
-  currentThreadIdForCaps: string
+  currentThreadIdForCaps: string | null | undefined
   filteredCodexPluginDescriptors: CodexPluginDescriptor[]
   filteredCodexSkillDescriptors: CodexSkillDescriptor[]
   marketplaceBusy: boolean
@@ -48,9 +54,14 @@ type PluginsMarketplaceToolProps = {
   onWriteSkillConfig: () => void
   selectableCodexPluginIds: string[]
   selectableCodexSkillIds: string[]
-  selectedCodexPluginDescriptor: CodexPluginDescriptor | null
+  selectedCodexPluginDescriptor: CodexPluginDescriptor | null | undefined
   selectedCodexPluginMetadataKeys: string[]
-  selectedCodexSkillDescriptor: CodexSkillDescriptor | null
+  selectedCodexSkillDescriptor: CodexSkillDescriptor | null | undefined
+}
+
+type SkillConfigField = {
+  key: string
+  value: string
 }
 
 export function PluginsMarketplaceTool({
@@ -97,6 +108,101 @@ export function PluginsMarketplaceTool({
   selectedCodexPluginMetadataKeys,
   selectedCodexSkillDescriptor,
 }: PluginsMarketplaceToolProps) {
+  const [showAdvancedSkillConfigJson, setShowAdvancedSkillConfigJson] =
+    useState(false)
+  const [skillConfigFields, setSkillConfigFields] = useState<SkillConfigField[]>([
+    { key: '', value: '' },
+  ])
+
+  const parsedSkillConfig = parseCodexJson<Record<string, unknown>>(
+    codexSkillConfigJson,
+    {}
+  )
+  const parsedSkillConfigEntries = useMemo<SkillConfigField[]>(() => {
+    if (
+      !parsedSkillConfig ||
+      typeof parsedSkillConfig !== 'object' ||
+      Array.isArray(parsedSkillConfig)
+    ) {
+      return [{ key: '', value: '' }]
+    }
+    const entries = Object.entries(parsedSkillConfig).map(([key, value]) => ({
+      key,
+      value:
+        typeof value === 'string'
+          ? value
+          : stringifyCodexJson(value, String(value ?? '')),
+    }))
+    return entries.length ? entries : [{ key: '', value: '' }]
+  }, [parsedSkillConfig, codexSkillConfigJson])
+
+  const parseSkillConfigValue = (value: string): unknown => {
+    const trimmed = value.trim()
+    if (!trimmed) return value
+    if (trimmed === 'true') return true
+    if (trimmed === 'false') return false
+    if (trimmed === 'null') return null
+    if (!Number.isNaN(Number(trimmed))) return Number(trimmed)
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      try {
+        return JSON.parse(trimmed)
+      } catch {
+        return value
+      }
+    }
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      return trimmed.slice(1, -1)
+    }
+    return value
+  }
+
+  const normalizeSkillConfigPayload = (fields: SkillConfigField[]) => {
+    const payload: Record<string, unknown> = {}
+    fields.forEach((field) => {
+      const fieldKey = field.key.trim()
+      if (!fieldKey) return
+      payload[fieldKey] = parseSkillConfigValue(field.value)
+    })
+    return payload
+  }
+
+  const setSkillConfigFromFields = (nextFields: SkillConfigField[]) => {
+    setSkillConfigFields(nextFields)
+    onSetSkillConfigJson(
+      stringifyCodexJson(normalizeSkillConfigPayload(nextFields), '{}')
+    )
+  }
+
+  const setSkillConfigField = (index: number, field: SkillConfigField) => {
+    setSkillConfigFromFields(
+      skillConfigFields.map((nextField, nextIndex) =>
+        nextIndex === index ? field : nextField
+      )
+    )
+  }
+
+  const addSkillConfigField = () => {
+    setSkillConfigFromFields([...skillConfigFields, { key: '', value: '' }])
+  }
+
+  const removeSkillConfigField = (index: number) => {
+    const nextFields = skillConfigFields.filter((_, fieldIndex) => {
+      return fieldIndex !== index
+    })
+    setSkillConfigFromFields(nextFields.length ? nextFields : [{ key: '', value: '' }])
+  }
+
+  useEffect(() => {
+    if (showAdvancedSkillConfigJson) return
+    setSkillConfigFields(parsedSkillConfigEntries)
+  }, [showAdvancedSkillConfigJson, parsedSkillConfigEntries])
+
   return (
     <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
       <div className="font-mono mb-1 flex items-center justify-between gap-2">
@@ -155,12 +261,79 @@ export function PluginsMarketplaceTool({
           Installed plugins only
         </label>
       </div>
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder="Skill config JSON"
-        value={codexSkillConfigJson}
-        onChange={(event) => onSetSkillConfigJson(event.target.value)}
-      />
+      <div className="mb-1 flex gap-2">
+        <button
+          type="button"
+          className="text-[9px] underline disabled:opacity-50"
+          disabled={!currentThreadIdForCaps || marketplaceBusy}
+          onClick={() =>
+            setShowAdvancedSkillConfigJson((previous) => !previous)
+          }
+        >
+          {showAdvancedSkillConfigJson ? 'Use fields' : 'Advanced skill JSON'}
+        </button>
+      </div>
+      {showAdvancedSkillConfigJson ? (
+        <textarea
+          className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+          placeholder="Skill config JSON"
+          value={codexSkillConfigJson}
+          onChange={(event) => onSetSkillConfigJson(event.target.value)}
+        />
+      ) : (
+        <div className="mb-1 space-y-1">
+          {skillConfigFields.map((field, index) => (
+            <div
+              key={`${field.key || 'key'}-${index}`}
+              className="grid grid-cols-[1.3fr_1.6fr_auto] gap-1"
+            >
+              <Input
+                className="h-6 px-2 text-[10px]"
+                placeholder="config key"
+                value={field.key}
+                onChange={(event) =>
+                  setSkillConfigField(index, {
+                    ...field,
+                    key: event.target.value,
+                  })
+                }
+              />
+              <Input
+                className="h-6 px-2 text-[10px]"
+                placeholder="config value"
+                value={field.value}
+                onChange={(event) =>
+                  setSkillConfigField(index, {
+                    ...field,
+                    value: event.target.value,
+                  })
+                }
+              />
+              <button
+                type="button"
+                className="text-[9px] underline disabled:opacity-50"
+                disabled={marketplaceBusy}
+                onClick={() => removeSkillConfigField(index)}
+              >
+                remove
+              </button>
+            </div>
+          ))}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[9px] text-muted-foreground">
+              Keys configured: {Object.keys(normalizeSkillConfigPayload(skillConfigFields)).length}
+            </span>
+            <button
+              type="button"
+              className="text-[9px] underline disabled:opacity-50"
+              disabled={marketplaceBusy}
+              onClick={addSkillConfigField}
+            >
+              + add key
+            </button>
+          </div>
+        </div>
+      )}
       <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
         <button
           type="button"

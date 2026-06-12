@@ -9,8 +9,26 @@ import {
   getCodexAppServerRuntimeLogs,
   runCodexExec,
   runCodexCliDebug,
+  runCodexCliCloud,
+  runCodexCliAppServer,
+  runCodexCliDoctor,
+  runCodexCliFeatures,
+  runCodexCliHelp,
+  runCodexCliPlugin,
+  runCodexCliReview,
+  runCodexCliCommand,
+  runCodexCliApp,
   runCodexCliMcp,
+  runCodexCliMcpServer,
+  runCodexCliArchive,
+  runCodexCliUnarchive,
+  runCodexCliFork,
+  runCodexCliResume,
+  runCodexCliSandbox,
+  runCodexCliUpdate,
+  runCodexCliExecServer,
   runCodexCliProto,
+  runCodexCliRemoteControl,
   runCodexLogout,
   runCodexVersion,
   sendCodexAppServerChatMessage,
@@ -144,6 +162,12 @@ vi.mock('@/hooks/useModelProvider', () => ({
   useModelProvider: {
     getState: () => mockModelProviderState,
   },
+}))
+
+const mockProviderRemoteAuthKeyChain = vi.hoisted(() => vi.fn())
+
+vi.mock('@/lib/provider-api-keys', () => ({
+  providerRemoteAuthKeyChain: mockProviderRemoteAuthKeyChain,
 }))
 
 vi.mock('@/hooks/useLocalApiServer', () => ({
@@ -390,6 +414,11 @@ describe('Codex chat backend approval bridge', () => {
     mockProfilesState.profiles = {}
     mockProfilesState.activeProfileId = null
     mockModelProviderState.providers = []
+    mockProviderRemoteAuthKeyChain.mockReset()
+    mockProviderRemoteAuthKeyChain.mockImplementation(async (provider) => {
+      const apiKey = provider.api_key?.trim()
+      return apiKey ? [apiKey] : []
+    })
     mockServiceHubState.mcpCallTool.mockReset()
     mockServiceHubState.startModel.mockReset()
     mockServiceHubState.startModel.mockResolvedValue(undefined)
@@ -906,6 +935,76 @@ describe('Codex chat backend approval bridge', () => {
     expect(options.configToml).toContain('wire_api = "chat"')
   })
 
+  it('projects xAI Grok models through the xai provider with responses wire API', () => {
+    const xaiProvider: ModelProvider = {
+      active: true,
+      provider: 'xai',
+      api_key: 'xai-api-key',
+      base_url: 'https://api.x.ai/v1',
+      settings: [],
+      models: [],
+    }
+
+    const options = buildCodexSessionOptions('thread-1', xaiProvider, {
+      id: 'grok-4.3',
+    })
+
+    expect(options).toEqual(
+      expect.objectContaining({
+        model: 'grok-4.3',
+        modelProvider: 'xai',
+        env: { JAN_CODEX_PROVIDER_API_KEY: 'xai-api-key' },
+      })
+    )
+    expect(options.configToml).toContain('model = "grok-4.3"')
+    expect(options.configToml).toContain('model_provider = "xai"')
+    expect(options.configToml).toContain('[model_providers.xai]')
+    expect(options.configToml).toContain('base_url = "https://api.x.ai/v1"')
+    expect(options.configToml).toContain('wire_api = "responses"')
+    expect(options.configToml).toContain('model_context_window = 1000000')
+  })
+
+  it('remaps stale grok-build SSO ids and disables reasoning effort for Codex', () => {
+    const xaiProvider: ModelProvider = {
+      active: true,
+      provider: 'xai',
+      api_key: 'xai-api-key',
+      base_url: 'https://api.x.ai/v1',
+      settings: [],
+      models: [],
+    }
+
+    const options = buildCodexSessionOptions('thread-1', xaiProvider, {
+      id: 'grok-build-0.1',
+    })
+
+    expect(options.model).toBe('grok-4.3')
+    expect(options.configToml).toContain('model = "grok-4.3"')
+    expect(options.configToml).toContain('model_reasoning_effort = "none"')
+  })
+
+  it('reroutes grok models away from jan-openai when Codex settings still target openai', () => {
+    const codexProvider = providerWithSettings({
+      codexProvider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+    })
+
+    const options = buildCodexSessionOptions('thread-1', codexProvider, {
+      id: 'grok-4.3',
+    })
+
+    expect(options).toEqual(
+      expect.objectContaining({
+        model: 'grok-4.3',
+        modelProvider: 'xai',
+      })
+    )
+    expect(options.configToml).toContain('model_provider = "xai"')
+    expect(options.configToml).not.toContain('model_provider = "jan-openai"')
+    expect(options.configToml).toContain('base_url = "https://api.x.ai/v1"')
+    expect(options.configToml).toContain('wire_api = "responses"')
+  })
+
   it('uses the Jan local API server as the default llama.cpp Codex endpoint', () => {
     const llamacppProvider: ModelProvider = {
       active: true,
@@ -1147,7 +1246,7 @@ describe('Codex chat backend approval bridge', () => {
     expect(mockGlobalRuntime.applyCodexRuntimeOptions).toHaveBeenCalledTimes(2)
   })
 
-  it('restarts the global Codex process when provider env changes', async () => {
+  it('reuses the global Codex process when only provider API key env changes', async () => {
     await sendCodexAppServerChatMessage({
       threadId: 'thread-1',
       messages,
@@ -1167,15 +1266,9 @@ describe('Codex chat backend approval bridge', () => {
       model,
     })
 
-    expect(mockSessionState.instances).toHaveLength(2)
-    expect(mockSessionState.instances[0].shutdownCodex).toHaveBeenCalled()
-    expect(mockSessionState.constructorParams[1]).toEqual(
-      expect.objectContaining({
-        options: expect.objectContaining({
-          env: { JAN_CODEX_PROVIDER_API_KEY: 'second-key' },
-        }),
-      })
-    )
+    expect(mockSessionState.instances).toHaveLength(1)
+    expect(mockSessionState.instances[0].shutdownCodex).not.toHaveBeenCalled()
+    expect(mockGlobalRuntime.applyCodexRuntimeOptions).toHaveBeenCalledTimes(2)
   })
 
   it('removes abort listeners after the Codex stream finishes', async () => {
@@ -1461,6 +1554,419 @@ describe('Codex chat backend approval bridge', () => {
     expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
       command: 'codex',
       args: ['debug', 'help'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex cloud via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliCloud({
+      args: ['status'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['cloud', 'status'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex remote-control via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliRemoteControl({
+      args: ['status'],
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['remote-control', 'status'],
+      cwd: '/repo',
+      codexHome: null,
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex arbitrary command via raw command helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliCommand({
+      command: 'codex',
+      args: ['doctor', '--help'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['doctor', '--help'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex help via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliHelp({
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['help'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex app-server via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliAppServer({
+      args: ['--stdio'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['app-server', '--stdio'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex doctor via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliDoctor({
+      args: ['--help'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['doctor', '--help'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex features via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliFeatures({
+      args: ['--help'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['features', '--help'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex plugin via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliPlugin({
+      args: ['list'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['plugin', 'list'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex review via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliReview({
+      args: ['--help'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+      prompt: 'Check changes',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['review', '--help', 'Check changes'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex archive via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliArchive({
+      args: ['thread-1'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['archive', 'thread-1'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex unarchive via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliUnarchive({
+      args: ['thread-1'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['unarchive', 'thread-1'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex fork via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliFork({
+      args: ['thread-1'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['fork', 'thread-1'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex resume via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliResume({
+      args: ['thread-1'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['resume', 'thread-1'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex sandbox via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliSandbox({
+      args: ['--help'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['sandbox', '--help'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex update via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliUpdate({
+      args: ['--help'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['update', '--help'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex exec-server via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliExecServer({
+      args: ['status'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['exec-server', 'status'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex mcp-server via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliMcpServer({
+      args: ['--stdio'],
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['mcp-server', '--stdio'],
+      cwd: '/repo',
+      codexHome: '/tmp/codex-home',
+      extraEnv: null,
+    })
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('runs codex app via dedicated helper', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const result = await runCodexCliApp({
+      codexHome: '/tmp/codex-home',
+      cwd: '/repo',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('run_codex_cli_subcommand', {
+      command: 'codex',
+      args: ['app'],
       cwd: '/repo',
       codexHome: '/tmp/codex-home',
       extraEnv: null,

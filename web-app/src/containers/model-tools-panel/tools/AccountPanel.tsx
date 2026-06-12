@@ -1,6 +1,12 @@
+import { useState } from 'react'
+
 import { Input } from '@/components/ui/input'
-import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
+
+import {
+  parseCodexJson,
+  stringifyCodexJson,
+} from '../shared/codex-helpers'
 
 type AccountPanelProps = {
   accountBusy: boolean
@@ -26,8 +32,8 @@ type AccountPanelProps = {
   onCancelDeviceCodeLogin: () => Promise<void> | void
   onLogoutCodex: () => Promise<void> | void
   onReadCodexAccountRateLimits: (janThreadId: string) => Promise<unknown>
-  onReadCodexAccountUsage: (janThreadId: string, params: unknown) => Promise<unknown>
-  onSendCodexAddCreditsNudgeEmail: (janThreadId: string, nudgeType: string) => Promise<unknown>
+  onReadCodexAccountUsage: (janThreadId: string, params?: Record<string, unknown>) => Promise<unknown>
+  onSendCodexAddCreditsNudgeEmail: (janThreadId: string, creditType: 'credits' | 'usage_limit') => Promise<unknown>
   onSetAccountRateLimits: (value: unknown) => void
   onSetAccountUsage: (value: unknown) => void
 }
@@ -43,9 +49,6 @@ export function AccountPanel({
   accountUsage,
   accountLogin,
   accountRequiresAuth,
-  accountType,
-  accountEmail,
-  accountPlan,
   onSetAccountLoginParamsJson,
   onSetAccountUsageParamsJson,
   onSetAccountCreditsNudgeType,
@@ -61,6 +64,55 @@ export function AccountPanel({
   onSetAccountRateLimits,
   onSetAccountUsage,
 }: AccountPanelProps) {
+  const [showAdvancedLoginParams, setShowAdvancedLoginParams] = useState(false)
+  const [showAdvancedUsageParams, setShowAdvancedUsageParams] = useState(false)
+
+  const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+  }
+
+  const parsedLoginParams = parseCodexJson<Record<string, unknown>>(
+    accountLoginParamsJson,
+    {}
+  )
+  const parsedUsageParams = parseCodexJson<Record<string, unknown>>(
+    accountUsageParamsJson,
+    {}
+  )
+  const parsedLoginType =
+    typeof parsedLoginParams.type === 'string'
+      ? parsedLoginParams.type
+      : 'chatgptDeviceCode'
+  const parsedRangeDays =
+    typeof parsedUsageParams.rangeDays === 'number'
+      ? String(parsedUsageParams.rangeDays)
+      : parsedUsageParams.rangeDays === 0
+        ? '0'
+        : ''
+
+  const onSetLoginType = (nextType: string) => {
+    const nextParams = {
+      ...parsedLoginParams,
+      type: nextType || 'chatgptDeviceCode',
+    }
+    onSetAccountLoginParamsJson(stringifyCodexJson(nextParams, accountLoginParamsJson))
+  }
+
+  const onSetUsageRangeDays = (rawRangeDays: string) => {
+    const nextParams = { ...parsedUsageParams }
+    if (rawRangeDays.trim()) {
+      const parsedRangeDays = Number.parseInt(rawRangeDays, 10)
+      if (!Number.isNaN(parsedRangeDays)) {
+        nextParams.rangeDays = parsedRangeDays
+      } else {
+        delete nextParams.rangeDays
+      }
+    } else {
+      delete nextParams.rangeDays
+    }
+    onSetAccountUsageParamsJson(stringifyCodexJson(nextParams, accountUsageParamsJson))
+  }
+
   const account = (accountInfo as any)?.account
   const resolvedAccountType = account?.type ?? (accountInfo as any)?.authMode ?? 'none'
   const resolvedAccountEmail = account?.email ?? (accountInfo as any)?.email
@@ -107,22 +159,62 @@ export function AccountPanel({
         </div>
       </div>
       <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
-        <textarea
-          className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-          placeholder="Account login params JSON"
-          value={accountLoginParamsJson}
-          onChange={(event) =>
-            onSetAccountLoginParamsJson(event.target.value)
+        {showAdvancedLoginParams ? (
+          <textarea
+            className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+            placeholder="Account login params JSON"
+            value={accountLoginParamsJson}
+            onChange={(event) =>
+              onSetAccountLoginParamsJson(event.target.value)
+            }
+          />
+        ) : (
+          <Input
+            className="h-6 px-2 text-[10px]"
+            placeholder="Account login type"
+            value={parsedLoginType}
+            onChange={(event) => onSetLoginType(event.target.value)}
+          />
+        )}
+        {showAdvancedUsageParams ? (
+          <textarea
+            className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+            placeholder="Account usage params JSON"
+            value={accountUsageParamsJson}
+            onChange={(event) =>
+              onSetAccountUsageParamsJson(event.target.value)
+            }
+          />
+        ) : (
+          <Input
+            className="h-6 px-2 text-[10px]"
+            placeholder="Usage range days"
+            value={parsedRangeDays}
+            onChange={(event) => onSetUsageRangeDays(event.target.value)}
+          />
+        )}
+      </div>
+      <div className="mb-1 flex gap-2">
+        <button
+          type="button"
+          className="text-[9px] underline disabled:opacity-50"
+          disabled={accountBusy}
+          onClick={() =>
+            setShowAdvancedLoginParams((previous) => !previous)
           }
-        />
-        <textarea
-          className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-          placeholder="Account usage params JSON"
-          value={accountUsageParamsJson}
-          onChange={(event) =>
-            onSetAccountUsageParamsJson(event.target.value)
+        >
+          {showAdvancedLoginParams ? 'Use structured login' : 'Advanced login JSON'}
+        </button>
+        <button
+          type="button"
+          className="text-[9px] underline disabled:opacity-50"
+          disabled={accountBusy}
+          onClick={() =>
+            setShowAdvancedUsageParams((previous) => !previous)
           }
-        />
+        >
+          {showAdvancedUsageParams ? 'Use structured usage' : 'Advanced usage JSON'}
+        </button>
       </div>
       <Input
         className="mb-1 h-6 px-2 text-[10px]"
@@ -158,16 +250,22 @@ export function AccountPanel({
             onSetAccountBusy(true)
             onSetCapError(null)
             try {
+              const params = parseCodexJson<unknown>(
+                accountUsageParamsJson,
+                null
+              )
+              if (!isPlainObject(params)) {
+                throw new Error('Account usage params must be a JSON object.')
+              }
               const [rateLimitSnapshot, usageSnapshot] =
-                await Promise.all([
-                  onReadCodexAccountRateLimits(currentThreadIdForCaps).catch(
-                    (e) => ({ error: String(e) })
-                  ),
-                  onReadCodexAccountUsage(
-                    currentThreadIdForCaps,
-                    JSON.parse(accountUsageParamsJson || '{}')
-                  ).catch((e) => ({ error: String(e) })),
-                ])
+              await Promise.all([
+                onReadCodexAccountRateLimits(currentThreadIdForCaps).catch(
+                  (e) => ({ error: String(e) })
+                ),
+                onReadCodexAccountUsage(currentThreadIdForCaps, params).catch((e) => ({
+                  error: String(e),
+                })),
+              ])
               onSetAccountRateLimits(rateLimitSnapshot)
               onSetAccountUsage(usageSnapshot)
             } catch (e) {
@@ -186,10 +284,20 @@ export function AccountPanel({
           onClick={async () => {
             if (!currentThreadIdForCaps) return
             try {
+              const normalizedCreditType =
+                accountCreditsNudgeType.trim() === 'credits' ||
+                accountCreditsNudgeType.trim() === 'usage_limit'
+                  ? (accountCreditsNudgeType.trim() as 'credits' | 'usage_limit')
+                  : 'usage_limit'
               await onSendCodexAddCreditsNudgeEmail(
                 currentThreadIdForCaps,
-                accountCreditsNudgeType.trim() as any
+                normalizedCreditType
               )
+              if (accountCreditsNudgeType.trim() && accountCreditsNudgeType.trim() !== normalizedCreditType) {
+                onSetCapError(
+                  `Invalid credits nudge type "${accountCreditsNudgeType}". Using "${normalizedCreditType}".`
+                )
+              }
               toast.success('Credits nudge sent')
             } catch (e) {
               onSetCapError('Credits nudge failed: ' + String(e))

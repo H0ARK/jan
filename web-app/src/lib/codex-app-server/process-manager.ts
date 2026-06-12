@@ -51,6 +51,9 @@ export class CodexAppServerProcessManager {
 
   initialize() {
     if (this.initializePromise && this.isRunning) return this.initializePromise
+    if (this.initializePromise && !this.isRunning) {
+      this.initializePromise = null
+    }
 
     const command = buildCodexSpawnCommand(this.options)
     this.initializePromise = Promise.resolve(

@@ -1,7 +1,160 @@
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { encodeUtf8Base64 } from '../shared/codex-helpers'
+import {
+  encodeUtf8Base64,
+  parseCodexJson,
+  stringifyCodexJson,
+} from '../shared/codex-helpers'
+
+type JsonObject = Record<string, unknown>
+
+function isPlainObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseStringArray(value: string): string[] | null {
+  const parsed = parseCodexJson<unknown>(value, undefined)
+  if (
+    Array.isArray(parsed) &&
+    parsed.every((item): item is string => typeof item === 'string')
+  ) {
+    return parsed.filter((item): item is string => typeof item === 'string')
+  }
+  if (typeof parsed === 'string') {
+    return parsed
+      .split(' ')
+      .map((part) => part.trim())
+      .filter(Boolean)
+  }
+  return null
+}
+
+function parseCommandArray(value: string): { command: string; args: string[] } {
+  const parsed = parseCodexJson<unknown>(value, undefined)
+  let commandParts: string[] = []
+
+  if (Array.isArray(parsed) && parsed.every((item): item is string => typeof item === 'string')) {
+    commandParts = parsed
+  } else if (typeof parsed === 'string') {
+    commandParts = parsed
+      .split(' ')
+      .map((part) => part.trim())
+      .filter(Boolean)
+  }
+
+  return {
+    command: commandParts[0] ?? '',
+    args: commandParts.slice(1),
+  }
+}
+
+function parseCommandExecPayload(
+  value: string,
+  fallbackCwd: string,
+  onInvalid?: (message: string) => void
+) {
+  const parsed = parseCodexJson<unknown>(value, null)
+  if (parsed !== null && !isPlainObject(parsed)) {
+    onInvalid?.('Command/exec params must be a JSON object.')
+    return {
+      command: '',
+      args: [],
+      cwd: fallbackCwd,
+      extras: {},
+    }
+  }
+  const parsedRecord = parsed ?? {}
+  const objectCommand = parsedRecord.command
+  let commandParts = {
+    command: '',
+    args: [] as string[],
+  }
+  if (typeof objectCommand === 'string') {
+    commandParts = parseCommandArray(objectCommand)
+  } else if (Array.isArray(objectCommand)) {
+    if (!objectCommand.every((item): item is string => typeof item === 'string')) {
+      onInvalid?.('Command/exec params command field must be an array of strings when provided as an array.')
+      commandParts = {
+        command: '',
+        args: [],
+      }
+    } else {
+      commandParts = {
+        command: objectCommand[0] ?? '',
+        args: objectCommand.slice(1),
+      }
+    }
+  } else if (typeof objectCommand !== 'undefined') {
+    onInvalid?.('Command/exec params command field must be a string or array of strings.')
+  }
+
+  const extras = {
+    ...(parsedRecord as JsonObject),
+  }
+  const hasCwd = Object.prototype.hasOwnProperty.call(parsedRecord, 'cwd')
+  if (typeof extras.command !== 'undefined') {
+    delete extras.command
+  }
+  if (typeof extras.cwd !== 'undefined') {
+    delete extras.cwd
+  }
+  if (hasCwd && typeof parsedRecord.cwd !== 'string') {
+    onInvalid?.('Command/exec params cwd must be a string when supplied.')
+  }
+  return {
+    command: commandParts.command,
+    args: commandParts.args,
+    cwd:
+      typeof parsedRecord.cwd === 'string' && hasCwd
+        ? parsedRecord.cwd
+        : fallbackCwd,
+    extras,
+  }
+}
+
+function buildJsonString(value: string[] | string, fallback: string[] = []) {
+  if (Array.isArray(value)) {
+    return stringifyCodexJson(value, '[]')
+  }
+  const parsed = parseCodexJson<unknown>(value, undefined)
+  if (Array.isArray(parsed) && parsed.every((item): item is string => typeof item === 'string')) {
+    return stringifyCodexJson(parsed, '[]')
+  }
+  return stringifyCodexJson(fallback.filter(Boolean).map((entry) => entry.trim()), '[]')
+}
+
+function parsePtySize(value: string) {
+  const parsed = parseCodexJson<unknown>(value, undefined)
+  const rows =
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    typeof (parsed as JsonObject).rows === 'number'
+      ? (parsed as JsonObject).rows
+      : 24
+  const cols =
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    typeof (parsed as JsonObject).cols === 'number'
+      ? (parsed as JsonObject).cols
+      : 80
+
+  return {
+    rows: Number.isFinite(rows) ? rows : 24,
+    cols: Number.isFinite(cols) ? cols : 80,
+  }
+}
+
+function parseTerminalSize(rowsValue: string, colsValue: string, onInvalid?: (message: string) => void) {
+  const rows = Number.parseInt(rowsValue, 10)
+  const cols = Number.parseInt(colsValue, 10)
+  if (!Number.isFinite(rows) || !Number.isFinite(cols) || rows <= 0 || cols <= 0) {
+    onInvalid?.('Terminal rows and cols must be positive integers.')
+    return null
+  }
+  return { rows, cols }
+}
 
 type CodexProcessTerminalSession = {
   handle: string
@@ -9,6 +162,11 @@ type CodexProcessTerminalSession = {
   label: string
   status: string
   lines: string[]
+}
+
+type CommandExecExtraField = {
+  key: string
+  value: string
 }
 
 type RuntimeFsProcessPanelProps = {
@@ -27,7 +185,7 @@ type RuntimeFsProcessPanelProps = {
   codexRuntimeSpawnCommand: string
   codexRuntimeStdin: string
   codexRuntimeWatchId: string
-  currentThreadIdForCaps: string
+  currentThreadIdForCaps: string | null | undefined
   cwd: string
   filteredCodexProcessTerminalLines: string[]
   onAppendCodexTerminalLines: (
@@ -58,7 +216,7 @@ type RuntimeFsProcessPanelProps = {
   onSetCodexRuntimeSpawnCommand: (value: string) => void
   onSetCodexRuntimeStdin: (value: string) => void
   onSetCodexRuntimeWatchId: (value: string) => void
-  onSpawnCodexRuntimeProcess: () => Promise<void>
+  onSpawnCodexRuntimeProcess: (command?: string) => Promise<void>
   onWriteCodexRuntimeFile: () => Promise<void>
   runtimeBusy: boolean
   selectableCodexProcessHandles: string[]
@@ -110,6 +268,190 @@ export function RuntimeFsProcessPanel({
   selectableCodexProcessHandles,
   selectedCodexProcessTerminal,
 }: RuntimeFsProcessPanelProps) {
+  const [spawnCommand, setSpawnCommand] = useState('')
+  const [spawnArgs, setSpawnArgs] = useState('[]')
+  const [commandExecCommand, setCommandExecCommand] = useState('')
+  const [commandExecArgs, setCommandExecArgs] = useState('[]')
+  const [commandExecCwd, setCommandExecCwd] = useState(cwd)
+  const [commandExecExtraFields, setCommandExecExtraFields] = useState<
+    CommandExecExtraField[]
+  >([{ key: '', value: '' }])
+  const [runtimePtyRows, setRuntimePtyRows] = useState('24')
+  const [runtimePtyCols, setRuntimePtyCols] = useState('80')
+  const [showSpawnJson, setShowSpawnJson] = useState(false)
+  const [showCommandExecJson, setShowCommandExecJson] = useState(false)
+  const [showPtyJson, setShowPtyJson] = useState(false)
+
+  useEffect(() => {
+    const parsed = parseCommandArray(codexRuntimeSpawnCommand)
+    setSpawnCommand(parsed.command)
+    setSpawnArgs(buildJsonString(parsed.args, ['']))
+  }, [codexRuntimeSpawnCommand])
+
+  useEffect(() => {
+    const payload = parseCommandExecPayload(codexCommandExecParams, cwd)
+    setCommandExecCommand(payload.command)
+    setCommandExecArgs(buildJsonString(payload.args, ['']))
+    setCommandExecCwd(payload.cwd)
+    const extras = payload.extras
+    const nextExtras = (() => {
+      if (!extras || typeof extras !== 'object' || Array.isArray(extras)) {
+        return [{ key: '', value: '' }]
+      }
+      const nextEntries = Object.entries(extras).map(([key, value]) => ({
+        key,
+        value:
+          typeof value === 'string'
+            ? value
+            : stringifyCodexJson(value, String(value ?? '')),
+      }))
+      return nextEntries.length ? nextEntries : [{ key: '', value: '' }]
+    })()
+    setCommandExecExtraFields(nextExtras)
+  }, [codexCommandExecParams, cwd])
+
+  useEffect(() => {
+    const size = parsePtySize(codexRuntimePtySize)
+    setRuntimePtyRows(String(size.rows))
+    setRuntimePtyCols(String(size.cols))
+  }, [codexRuntimePtySize])
+
+  const composeSpawnPayload = () => {
+    const command = spawnCommand.trim()
+    if (!command) {
+      onSetCapError('Process spawn command is required.')
+      return null
+    }
+    const args = parseStringArray(spawnArgs)
+    if (args === null) {
+      onSetCapError('Spawn args must be a JSON array of strings.')
+      return null
+    }
+    return {
+      command,
+      args,
+      payload: stringifyCodexJson([command, ...args], '[]'),
+    }
+  }
+
+  const composeCommandExecPayload = () => {
+    const command = commandExecCommand.trim()
+    if (!command) {
+      onSetCapError('Command/exec command is required.')
+      return null
+    }
+    const args = parseStringArray(commandExecArgs)
+    if (args === null) {
+      onSetCapError('Command/exec args must be a JSON array of strings.')
+      return null
+    }
+    const extras = commandExecExtraFields.reduce<Record<string, unknown>>(
+      (accumulator, field) => {
+        const fieldKey = field.key.trim()
+        if (!fieldKey) return accumulator
+        if (Object.prototype.hasOwnProperty.call(accumulator, fieldKey)) {
+          onSetCapError(`Command/exec extra key duplicated: ${fieldKey}`)
+        }
+        accumulator[fieldKey] = parseCommandExecValue(field.value)
+        return accumulator
+      },
+      {}
+    )
+    const payload = {
+      command: [command, ...args],
+      cwd: commandExecCwd,
+      ...extras,
+    }
+    return { payload, serialized: stringifyCodexJson(payload, '{}') }
+  }
+
+  const parseCommandExecValue = (value: string): unknown => {
+    const trimmed = value.trim()
+    if (!trimmed) return value
+    if (trimmed === 'true') return true
+    if (trimmed === 'false') return false
+    if (trimmed === 'null') return null
+    if (!Number.isNaN(Number(trimmed))) return Number(trimmed)
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      try {
+        return JSON.parse(trimmed)
+      } catch {
+        return value
+      }
+    }
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      return trimmed.slice(1, -1)
+    }
+    return value
+  }
+
+  const syncCommandExecParamsFromFields = (
+    fields: CommandExecExtraField[] = commandExecExtraFields
+  ) => {
+    const command = commandExecCommand.trim()
+    if (!command) return
+    const args = parseStringArray(commandExecArgs)
+    if (args === null) return
+    const normalizedExtras = fields.reduce<Record<string, unknown>>((acc, field) => {
+      const fieldKey = field.key.trim()
+      if (!fieldKey) return acc
+      if (Object.prototype.hasOwnProperty.call(acc, fieldKey)) return acc
+      acc[fieldKey] = parseCommandExecValue(field.value)
+      return acc
+    }, {})
+    onSetCodexCommandExecParams(
+      stringifyCodexJson(
+        {
+          command: [command, ...args],
+          cwd: commandExecCwd,
+          ...normalizedExtras,
+        },
+        '{}'
+      )
+    )
+  }
+
+  const setCommandExecExtraField = (
+    index: number,
+    field: CommandExecExtraField
+  ) => {
+    const nextFields = commandExecExtraFields.map((nextField, nextIndex) =>
+      nextIndex === index ? field : nextField
+    )
+    setCommandExecExtraFields(nextFields)
+    if (!showCommandExecJson) {
+      syncCommandExecParamsFromFields(nextFields)
+    }
+  }
+
+  const addCommandExecExtraField = () => {
+    setCommandExecExtraFields([...commandExecExtraFields, { key: '', value: '' }])
+  }
+
+  const removeCommandExecExtraField = (index: number) => {
+    const nextFields = commandExecExtraFields.filter((_, nextIndex) => {
+      return nextIndex !== index
+    })
+    const fallbackFields = nextFields.length ? nextFields : [{ key: '', value: '' }]
+    setCommandExecExtraFields(fallbackFields)
+    if (!showCommandExecJson) {
+      syncCommandExecParamsFromFields(fallbackFields)
+    }
+  }
+
+  const composePtySize = () => {
+    const size = parseTerminalSize(runtimePtyRows, runtimePtyCols, onSetCapError)
+    if (!size) return null
+    onSetCodexRuntimePtySize(stringifyCodexJson(size, '{}'))
+    return size
+  }
+
   return (
     <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
       <div className="font-mono mb-1 flex items-center justify-between gap-2">
@@ -157,7 +499,7 @@ export function RuntimeFsProcessPanel({
           Write
         </button>
       </div>
-      <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-3">
+      <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-4">
         <Input
           className="h-6 px-2 text-[10px]"
           placeholder="Copy destination path"
@@ -174,25 +516,130 @@ export function RuntimeFsProcessPanel({
         />
         <Input
           className="h-6 px-2 text-[10px]"
-          placeholder="Spawn command JSON or shell command"
-          value={codexRuntimeSpawnCommand}
-          onChange={(event) =>
-            onSetCodexRuntimeSpawnCommand(event.target.value)
-          }
+          placeholder="Spawn command"
+          value={spawnCommand}
+          onChange={(event) => setSpawnCommand(event.target.value)}
+        />
+        <Input
+          className="h-6 px-2 text-[10px]"
+          placeholder='Spawn args JSON (e.g. ["-l", "/"])'
+          value={spawnArgs}
+          onChange={(event) => setSpawnArgs(event.target.value)}
         />
       </div>
+      <div className="mb-1 flex gap-1">
+        <button
+          type="button"
+          className="text-[9px] underline disabled:opacity-50"
+          onClick={() => setShowSpawnJson((previous) => !previous)}
+        >
+          {showSpawnJson ? 'Hide' : 'Advanced'} spawn JSON
+        </button>
+      </div>
+      {showSpawnJson ? (
+        <textarea
+          className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+          value={codexRuntimeSpawnCommand}
+          onChange={(event) => onSetCodexRuntimeSpawnCommand(event.target.value)}
+        />
+      ) : null}
       <textarea
         className="mb-1 min-h-16 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
         placeholder="File text for fs/writeFile, populated by fs/readFile"
         value={codexRuntimeFileText}
         onChange={(event) => onSetCodexRuntimeFileText(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder="command/exec params JSON"
-        value={codexCommandExecParams}
-        onChange={(event) => onSetCodexCommandExecParams(event.target.value)}
-      />
+      <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-3">
+        <Input
+          className="h-6 px-2 text-[10px]"
+          placeholder="command/exec command"
+          value={commandExecCommand}
+          onChange={(event) => setCommandExecCommand(event.target.value)}
+        />
+        <Input
+          className="h-6 px-2 text-[10px]"
+          placeholder='command/exec args JSON (e.g. ["-l"])'
+          value={commandExecArgs}
+          onChange={(event) => setCommandExecArgs(event.target.value)}
+        />
+        <Input
+          className="h-6 px-2 text-[10px]"
+          placeholder="command/exec cwd"
+          value={commandExecCwd}
+          onChange={(event) => setCommandExecCwd(event.target.value)}
+        />
+      </div>
+      <div className="mb-1 flex gap-1">
+        <button
+          type="button"
+          className="text-[9px] underline disabled:opacity-50"
+          onClick={() => setShowCommandExecJson((previous) => !previous)}
+        >
+          {showCommandExecJson ? 'Hide' : 'Advanced'} command/exec JSON
+        </button>
+      </div>
+      {showCommandExecJson ? (
+        <textarea
+          className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+          placeholder="command/exec params JSON"
+          value={codexCommandExecParams}
+          onChange={(event) => onSetCodexCommandExecParams(event.target.value)}
+        />
+      ) : null}
+      {!showCommandExecJson ? (
+        <div className="mb-1 space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[9px] text-muted-foreground">
+              Command/exec extra params
+            </span>
+            <button
+              type="button"
+              className="text-[9px] underline disabled:opacity-50"
+              disabled={runtimeBusy}
+              onClick={addCommandExecExtraField}
+            >
+              + add extra
+            </button>
+          </div>
+          {commandExecExtraFields.map((field, index) => (
+            <div
+              key={`${field.key || 'extra'}-${index}`}
+              className="grid grid-cols-[1.2fr_1.8fr_auto] gap-1"
+            >
+              <Input
+                className="h-6 px-2 text-[10px]"
+                placeholder="extra key"
+                value={field.key}
+                onChange={(event) =>
+                  setCommandExecExtraField(index, {
+                    ...field,
+                    key: event.target.value,
+                  })
+                }
+              />
+              <Input
+                className="h-6 px-2 text-[10px]"
+                placeholder="extra value"
+                value={field.value}
+                onChange={(event) =>
+                  setCommandExecExtraField(index, {
+                    ...field,
+                    value: event.target.value,
+                  })
+                }
+              />
+              <button
+                type="button"
+                className="text-[9px] underline disabled:opacity-50"
+                disabled={runtimeBusy}
+                onClick={() => removeCommandExecExtraField(index)}
+              >
+                remove
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
         <button
           type="button"
@@ -317,29 +764,29 @@ export function RuntimeFsProcessPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={runtimeBusy}
-          onClick={() => void onSpawnCodexRuntimeProcess()}
+          disabled={runtimeBusy || !spawnCommand.trim()}
+          onClick={() => {
+            const payload = composeSpawnPayload()
+            if (!payload) return
+            onSetCodexRuntimeSpawnCommand(payload.payload)
+            void onSpawnCodexRuntimeProcess(payload.payload)
+          }}
         >
           Spawn process
         </button>
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={runtimeBusy}
+          disabled={runtimeBusy || !commandExecCommand.trim()}
           onClick={() => {
-            try {
-              const params = JSON.parse(codexCommandExecParams || '{}')
-              void onRunCodexRuntimeAction(
-                'command/exec',
-                {
-                  cwd,
-                  ...params,
-                },
-                'Codex command exec started'
-              )
-            } catch (e) {
-              onSetCapError('Command exec JSON parse failed: ' + String(e))
-            }
+            const payload = composeCommandExecPayload()
+            if (!payload) return
+            onSetCodexCommandExecParams(payload.serialized)
+            void onRunCodexRuntimeAction(
+              'command/exec',
+              payload.payload,
+              'Codex command exec started'
+            )
           }}
         >
           Command exec
@@ -360,10 +807,33 @@ export function RuntimeFsProcessPanel({
         />
         <Input
           className="h-6 min-w-0 flex-1 px-2 text-[10px]"
+          placeholder="PTY rows"
+          value={runtimePtyRows}
+          onChange={(event) => setRuntimePtyRows(event.target.value)}
+        />
+        <Input
+          className="h-6 min-w-0 flex-1 px-2 text-[10px]"
+          placeholder="PTY cols"
+          value={runtimePtyCols}
+          onChange={(event) => setRuntimePtyCols(event.target.value)}
+        />
+        <button
+          type="button"
+          className="text-[9px] underline disabled:opacity-50"
+          onClick={() => setShowPtyJson((previous) => !previous)}
+        >
+          {showPtyJson ? 'Hide' : 'Advanced'} PTY JSON
+        </button>
+      </div>
+      {showPtyJson ? (
+        <textarea
+          className="mb-1 min-h-10 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
           placeholder="PTY size JSON"
           value={codexRuntimePtySize}
           onChange={(event) => onSetCodexRuntimePtySize(event.target.value)}
         />
+      ) : null}
+      <div className="mb-1 flex gap-1">
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
@@ -403,19 +873,16 @@ export function RuntimeFsProcessPanel({
           className="text-[9px] underline disabled:opacity-50"
           disabled={!codexProcessHandle.trim() || runtimeBusy}
           onClick={() => {
-            try {
-              const size = JSON.parse(codexRuntimePtySize || '{}')
-              void onRunCodexRuntimeAction(
-                'process/resizePty',
-                {
-                  processHandle: codexProcessHandle.trim(),
-                  size,
-                },
-                'Codex PTY resized'
-              )
-            } catch (e) {
-              onSetCapError('PTY size JSON parse failed: ' + String(e))
-            }
+            const size = composePtySize()
+            if (!size) return
+            void onRunCodexRuntimeAction(
+              'process/resizePty',
+              {
+                processHandle: codexProcessHandle.trim(),
+                size,
+              },
+              'Codex PTY resized'
+            )
           }}
         >
           Resize
@@ -425,19 +892,16 @@ export function RuntimeFsProcessPanel({
           className="text-[9px] underline disabled:opacity-50"
           disabled={!codexProcessHandle.trim() || runtimeBusy}
           onClick={() => {
-            try {
-              const size = JSON.parse(codexRuntimePtySize || '{}')
-              void onRunCodexRuntimeAction(
-                'command/resize',
-                {
-                  processId: codexProcessHandle.trim(),
-                  size,
-                },
-                'Codex command PTY resized'
-              )
-            } catch (e) {
-              onSetCapError('Command PTY size JSON parse failed: ' + String(e))
-            }
+            const size = composePtySize()
+            if (!size) return
+            void onRunCodexRuntimeAction(
+              'command/resize',
+              {
+                processId: codexProcessHandle.trim(),
+                size,
+              },
+              'Codex command PTY resized'
+            )
           }}
         >
           Cmd resize
@@ -525,10 +989,13 @@ export function RuntimeFsProcessPanel({
               disabled={!selectedCodexProcessTerminal || runtimeBusy}
               onClick={() => {
                 if (!selectedCodexProcessTerminal) return
-                const rows = Number.parseInt(codexProcessTerminalRows, 10) || 24
-                const cols = Number.parseInt(codexProcessTerminalCols, 10) || 80
-                const size = { rows, cols }
-                onSetCodexRuntimePtySize(JSON.stringify(size))
+                const size = parseTerminalSize(
+                  codexProcessTerminalRows,
+                  codexProcessTerminalCols,
+                  onSetCapError
+                )
+                if (!size) return
+                onSetCodexRuntimePtySize(stringifyCodexJson(size, '{}'))
                 const handle = selectedCodexProcessTerminal.handle
                 if (selectedCodexProcessTerminal.kind === 'command') {
                   void onRunCodexRuntimeAction(
@@ -653,7 +1120,7 @@ export function RuntimeFsProcessPanel({
       </div>
       <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
         {codexRuntimeSnapshot
-          ? JSON.stringify(codexRuntimeSnapshot, null, 2)
+          ? stringifyCodexJson(codexRuntimeSnapshot, '{}')
           : '— (runtime action results)'}
       </pre>
       {selectableCodexProcessHandles.length ? (

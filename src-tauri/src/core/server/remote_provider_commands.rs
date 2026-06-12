@@ -19,6 +19,8 @@ pub struct RegisterProviderRequest {
     #[serde(default)]
     pub api_keys: Vec<String>,
     pub base_url: Option<String>,
+    #[serde(default)]
+    pub wire_api: Option<String>,
     pub custom_headers: Vec<ProviderCustomHeader>,
     pub models: Vec<String>,
 }
@@ -68,7 +70,8 @@ pub async fn register_provider_config(
                 value: h.value,
             })
             .collect(),
-        models: request.models, // Models will be added when they are configured
+        models: request.models,
+        wire_api: request.wire_api,
     };
 
     let provider_name = request.provider.clone();

@@ -11,9 +11,21 @@ import { useRuntimePermission } from '@/stores/runtime-permission-store'
 import { useModelProvider } from '@/hooks/useModelProvider'
 import { useLocalApiServer } from '@/hooks/useLocalApiServer'
 import { getServiceHub } from '@/hooks/useServiceHub'
+import { providerRemoteAuthKeyChain } from '@/lib/provider-api-keys'
+import {
+  gatewayWireApiForProvider as codexWireApiForProvider,
+  resolveXaiRuntimeModelId,
+  xaiModelSupportsReasoningEffort,
+} from '@/lib/provider-gateway'
 import { buildCodexConfigToml } from './config'
 import { buildCodexMcpServersConfig } from './mcp-config-bridge'
-import type { CodexAppServerClient } from './api'
+import type {
+  CodexAppServerClient,
+  CodexCommandExecParams,
+  CodexFileSystemCopyParams,
+  CodexFileSystemRemoveParams,
+  CodexMcpToolCallParams,
+} from './api'
 import { CODEX_APP_SERVER_METHOD_FALLBACKS } from './method-aliases'
 import {
   GLOBAL_CODEX_APP_SERVER_SESSION_ID,
@@ -158,27 +170,21 @@ async function ensureCodexTargetProviderReady(
   try {
     await serviceHub.models().startModel(provider, model.id, true)
 
-    const isRunning = await serviceHub
-      .app()
-      .getServerStatus()
-      .catch(() => false)
-    if (!isRunning) {
-      appState.setServerStatus('pending')
-      const actualPort = await window.core?.api?.startServer({
-        host: localApi.serverHost,
-        port: localApi.serverPort,
-        prefix: localApi.apiPrefix,
-        apiKey: localApi.apiKey,
-        trustedHosts: localApi.trustedHosts,
-        isCorsEnabled: localApi.corsEnabled,
-        isVerboseEnabled: localApi.verboseLogs,
-        proxyTimeout: localApi.proxyTimeout,
-      })
-      if (actualPort && actualPort !== localApi.serverPort) {
-        localApi.setServerPort(actualPort)
-      }
-      appState.setServerStatus('running')
-    }
+    appState.setServerStatus('pending')
+    const { ensureLocalApiServerRunning } = await import(
+      '@/lib/ensure-local-api-server'
+    )
+    await ensureLocalApiServerRunning({
+      host: localApi.serverHost,
+      port: localApi.serverPort,
+      prefix: localApi.apiPrefix,
+      apiKey: localApi.apiKey,
+      trustedHosts: localApi.trustedHosts,
+      isCorsEnabled: localApi.corsEnabled,
+      isVerboseEnabled: localApi.verboseLogs,
+      proxyTimeout: localApi.proxyTimeout,
+    })
+    appState.setServerStatus('running')
   } catch (error) {
     appState.setServerStatus('stopped')
     throw new Error(
@@ -210,7 +216,7 @@ async function prepareThreadCodexRuntime(
   provider: ModelProvider,
   model: Model
 ): Promise<CodexAppServerClient> {
-  const options = buildCodexSessionOptions(threadId, provider, model)
+  const options = await resolveCodexSessionOptions(threadId, provider, model)
   const spawnOptions = toGlobalSpawnOptions(options)
   const client = await ensureGlobalCodexAppServer(spawnOptions)
   client.setThreadOptions(threadId, options)
@@ -750,16 +756,9 @@ export async function addCodexEnvironment(
   return requireCodexSession(janThreadId).addEnvironment(params)
 }
 
-export async function requestCodexToolUserInput(
-  janThreadId: string,
-  params: Record<string, unknown>
-) {
-  return requireCodexSession(janThreadId).requestUserInput(params)
-}
-
 export async function execCodexCommand(
   janThreadId: string,
-  params: Record<string, unknown>
+  params: CodexCommandExecParams
 ) {
   return requireCodexSession(janThreadId).execCommand(params)
 }
@@ -856,14 +855,14 @@ export async function createCodexDirectory(
 
 export async function removeCodexFileSystemPath(
   janThreadId: string,
-  params: Record<string, unknown>
+  params: CodexFileSystemRemoveParams
 ) {
   return requireCodexSession(janThreadId).removeFileSystemPath(params)
 }
 
 export async function copyCodexFileSystemPath(
   janThreadId: string,
-  params: Record<string, unknown>
+  params: CodexFileSystemCopyParams
 ) {
   return requireCodexSession(janThreadId).copyFileSystemPath(params)
 }
@@ -977,6 +976,33 @@ export async function listCodexThreads(
   return requireCodexSession(janThreadId).listThreads(params)
 }
 
+export async function searchCodexThreads(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'thread/search',
+    params
+  )
+}
+
+export async function startCodexThread(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer('thread/start', params)
+}
+
+export async function resumeCodexThread(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'thread/resume',
+    params
+  )
+}
+
 export async function listLoadedCodexThreads(janThreadId: string) {
   return requireCodexSession(janThreadId).listLoadedThreads()
 }
@@ -1006,6 +1032,13 @@ export async function listCodexThreadTurnItems(
     threadId: codexThreadId,
     ...params,
   })
+}
+
+export async function startCodexTurn(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer('turn/start', params)
 }
 
 export async function forkCodexThread(
@@ -1125,9 +1158,7 @@ export async function reloadCodexThread(
   janThreadId: string,
   codexThreadId: string
 ) {
-  return requireCodexSession(janThreadId).requestAppServer('thread/reload', {
-    threadId: codexThreadId,
-  })
+  return readCodexThread(janThreadId, codexThreadId)
 }
 
 export async function rollbackCodexThreadById(
@@ -1216,10 +1247,80 @@ export async function stopCodexThreadRealtime(
   return requireCodexSession(janThreadId).stopThreadRealtime(codexThreadId)
 }
 
+export async function listCodexThreadRealtimeVoices(
+  janThreadId: string,
+  codexThreadId: string
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'thread/realtime/listVoices',
+    { threadId: codexThreadId }
+  )
+}
+
+export async function approveCodexGuardianDeniedAction(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'thread/approveGuardianDeniedAction',
+    params
+  )
+}
+
+export async function incrementCodexThreadElicitation(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'thread/increment_elicitation',
+    params
+  )
+}
+
+export async function decrementCodexThreadElicitation(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'thread/decrement_elicitation',
+    params
+  )
+}
+
 export async function resetCodexMemory(
   janThreadId: string
 ) {
   return requireCodexSession(janThreadId).resetMemory()
+}
+
+export async function readCodexConversationSummary(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'getConversationSummary',
+    params
+  )
+}
+
+export async function readCodexGitDiffToRemote(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'gitDiffToRemote',
+    params
+  )
+}
+
+export async function readCodexAuthStatus(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'getAuthStatus',
+    params
+  )
 }
 
 export async function enableCodexRemoteControl(janThreadId: string) {
@@ -1311,6 +1412,102 @@ export async function startCodexWindowsSandbox(
   return requireCodexSession(janThreadId).startWindowsSandboxSetup(params)
 }
 
+export async function readCodexWindowsSandboxReadiness(janThreadId: string) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'windowsSandbox/readiness'
+  )
+}
+
+export async function startCodexFuzzyFileSearchSession(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'fuzzyFileSearch/sessionStart',
+    params
+  )
+}
+
+export async function updateCodexFuzzyFileSearchSession(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'fuzzyFileSearch/sessionUpdate',
+    params
+  )
+}
+
+export async function stopCodexFuzzyFileSearchSession(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'fuzzyFileSearch/sessionStop',
+    params
+  )
+}
+
+export async function listCodexPluginShares(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'plugin/share/list',
+    params
+  )
+}
+
+export async function checkoutCodexPluginShare(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'plugin/share/checkout',
+    params
+  )
+}
+
+export async function updateCodexPluginShareTargets(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'plugin/share/updateTargets',
+    params
+  )
+}
+
+export async function deleteCodexPluginShare(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'plugin/share/delete',
+    params
+  )
+}
+
+export async function saveCodexPluginShare(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'plugin/share/save',
+    params
+  )
+}
+
+export async function runCodexMockExperimentalMethod(
+  janThreadId: string,
+  params: Record<string, unknown> = {}
+) {
+  return requireCodexSession(janThreadId).requestAppServer(
+    'mock/experimentalMethod',
+    params
+  )
+}
+
 export async function uploadCodexFeedback(
   janThreadId: string,
   params: Record<string, unknown>
@@ -1327,11 +1524,9 @@ export async function readCodexMcpResource(
 
 export async function callCodexMcpTool(
   janThreadId: string,
-  params: Record<string, unknown>
+  params: CodexMcpToolCallParams
 ) {
-  return requireCodexSession(janThreadId).callMcpTool(
-    params as { [key: string]: unknown }
-  )
+  return requireCodexSession(janThreadId).callMcpTool(params)
 }
 
 export async function reloadCodexMcpConfig(
@@ -1374,6 +1569,16 @@ export async function runCodexCliSubcommand(input: {
   })
 }
 
+export async function runCodexCliCommand(input: {
+  command: string
+  args?: string[]
+  cwd?: string
+  codexHome?: string
+  env?: Record<string, string>
+}) {
+  return runCodexCliSubcommand(input)
+}
+
 export async function runCodexCliNamedCommand(input: {
   command?: string
   codexHome?: string
@@ -1388,6 +1593,97 @@ export async function runCodexCliNamedCommand(input: {
     cwd: input.cwd,
     codexHome: input.codexHome,
     env: input.env,
+  })
+}
+
+export async function runCodexCliHelp(input?: {
+  args?: string[]
+  command?: string
+  codexHome?: string
+  cwd?: string
+  env?: Record<string, string>
+}) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'help',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliAppServer(input?: {
+  args?: string[]
+  command?: string
+  codexHome?: string
+  cwd?: string
+  env?: Record<string, string>
+}) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'app-server',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliReview(input?: {
+  args?: string[]
+  prompt?: string
+  command?: string
+  codexHome?: string
+  cwd?: string
+  env?: Record<string, string>
+}) {
+  const args = [...(input?.args ?? [])]
+  if (input?.prompt?.trim()) {
+    args.push(input.prompt.trim())
+  }
+
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'review',
+    args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliDoctor(input?: {
+  args?: string[]
+  command?: string
+  codexHome?: string
+  cwd?: string
+  env?: Record<string, string>
+}) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'doctor',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliFeatures(input?: {
+  args?: string[]
+  command?: string
+  codexHome?: string
+  cwd?: string
+  env?: Record<string, string>
+}) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'features',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
   })
 }
 
@@ -1410,6 +1706,162 @@ export async function runCodexCliMcp(input?: {
   return runCodexCliNamedCommand({
     command: input?.command,
     subcommand: 'mcp',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliMcpServer(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'mcp-server',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliApp(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'app',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliPlugin(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'plugin',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliCloud(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'cloud',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliRemoteControl(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'remote-control',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliArchive(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'archive',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliUnarchive(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'unarchive',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliFork(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'fork',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliResume(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'resume',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliSandbox(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'sandbox',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliUpdate(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'update',
+    args: input?.args,
+    codexHome: input?.codexHome,
+    cwd: input?.cwd,
+    env: input?.env,
+  })
+}
+
+export async function runCodexCliExecServer(input?: {
+  args?: string[]
+} & CodexCliSubcommandInput) {
+  return runCodexCliNamedCommand({
+    command: input?.command,
+    subcommand: 'exec-server',
     args: input?.args,
     codexHome: input?.codexHome,
     cwd: input?.cwd,
@@ -1648,23 +2100,63 @@ export async function warmupCodexSession(
   provider: ModelProvider,
   model: Model
 ): Promise<void> {
-  const client = await prepareThreadCodexRuntime(threadId, provider, model)
-  await client.startCodexSession().catch(() => {
+  await prepareThreadCodexRuntime(threadId, provider, model).catch(() => {
     // Warmup failures are non-fatal; the real send will surface the error
   })
 }
 
 
-export function buildCodexSessionOptions(
+export type BuildCodexSessionOptionsOverrides = {
+  apiKeyOverride?: string
+}
+
+export async function resolveCodexSessionOptions(
   threadId: string,
   provider: ModelProvider,
-  model: Model
-) {
+  model: Model,
+  overrides: BuildCodexSessionOptionsOverrides = {}
+): Promise<CodexSessionOptions> {
   const modelProviderState = useModelProvider.getState()
   const activeProfileId = useCodexProviderProfiles.getState().activeProfileId
   const activeProfile = activeProfileId
     ? useCodexProviderProfiles.getState().profiles[activeProfileId]
     : undefined
+  const targetProvider = resolveCodexTargetProvider(provider, model, activeProfile)
+  const authProvider = resolveCodexAuthProvider(
+    targetProvider,
+    provider,
+    modelProviderState
+  )
+  const apiKey =
+    overrides.apiKeyOverride ??
+    (await resolveCodexProviderApiKey(authProvider))
+  return buildCodexSessionOptions(threadId, provider, model, {
+    ...overrides,
+    apiKeyOverride: apiKey,
+    targetProvider,
+    activeProfile,
+  })
+}
+
+export function buildCodexSessionOptions(
+  threadId: string,
+  provider: ModelProvider,
+  model: Model,
+  overrides: BuildCodexSessionOptionsOverrides & {
+    targetProvider?: string
+    activeProfile?: ReturnType<
+      typeof useCodexProviderProfiles.getState
+    >['profiles'][string]
+  } = {}
+) {
+  const modelProviderState = useModelProvider.getState()
+  const activeProfile =
+    overrides.activeProfile ??
+    (useCodexProviderProfiles.getState().activeProfileId
+      ? useCodexProviderProfiles.getState().profiles[
+          useCodexProviderProfiles.getState().activeProfileId!
+        ]
+      : undefined)
   const codexSettingsProvider =
     provider.provider === CODEX_APP_SERVER_PROVIDER_ID
       ? provider
@@ -1673,34 +2165,43 @@ export function buildCodexSessionOptions(
   const usesCodexSettingsProvider =
     provider.provider === CODEX_APP_SERVER_PROVIDER_ID
 
-  const targetProvider = activeProfile
-    ? mapProfileProviderType(activeProfile.providerType)
-    : usesCodexSettingsProvider
-      ? settingValue(provider, 'codex-provider') || 'openai'
-      : provider.provider
+  const targetProvider =
+    overrides.targetProvider ??
+    resolveCodexTargetProvider(provider, model, activeProfile)
   const codexConfigProvider = codexManagedProviderId(targetProvider)
 
   const baseUrl = activeProfile
     ? activeProfile.baseUrl
-    : usesCodexSettingsProvider
+    : usesCodexSettingsProvider && !isGrokModelId(model.id)
       ? settingValue(provider, 'base-url') ||
         provider.base_url ||
         defaultBaseUrlForProvider(targetProvider)
-      : provider.base_url ||
-        settingValue(provider, 'base-url') ||
-        defaultBaseUrlForProvider(targetProvider)
+      : targetProvider === 'xai'
+        ? resolveXaiBaseUrl(provider, modelProviderState)
+        : provider.base_url ||
+          settingValue(provider, 'base-url') ||
+          defaultBaseUrlForProvider(targetProvider)
 
-  let apiKey = ''
-  if (activeProfile) {
-    const mappedProviderName = mapProfileProviderType(
-      activeProfile.providerType
-    )
-    const janProvider = modelProviderState.getProviderByName(mappedProviderName)
-    apiKey =
-      janProvider?.api_key ||
-      (janProvider ? settingValue(janProvider, 'api-key') : '')
-  } else {
-    apiKey = provider.api_key || settingValue(provider, 'api-key')
+  let apiKey = overrides.apiKeyOverride
+  if (apiKey === undefined) {
+    if (activeProfile) {
+      const mappedProviderName = mapProfileProviderType(
+        activeProfile.providerType
+      )
+      const janProvider =
+        modelProviderState.getProviderByName(mappedProviderName)
+      apiKey =
+        janProvider?.api_key ||
+        (janProvider ? settingValue(janProvider, 'api-key') : '')
+    } else {
+      const authProvider = resolveCodexAuthProvider(
+        targetProvider,
+        provider,
+        modelProviderState
+      )
+      apiKey =
+        authProvider.api_key || settingValue(authProvider, 'api-key')
+    }
   }
 
   const codexBinaryPath =
@@ -1716,7 +2217,11 @@ export function buildCodexSessionOptions(
   const envKey =
     configuredApiKeyEnv || (apiKey ? 'JAN_CODEX_PROVIDER_API_KEY' : undefined)
   const { mcpServers, settings: mcpSettings } = useMCPServers.getState()
-  const targetModel = (activeProfile && activeProfile.model.trim()) || model.id
+  const rawTargetModel = (activeProfile && activeProfile.model.trim()) || model.id
+  const targetModel =
+    targetProvider === 'xai'
+      ? resolveXaiRuntimeModelId(rawTargetModel)
+      : rawTargetModel
   const approvalPolicy = activeProfile?.approvalPolicy || 'on-request'
   const sandbox = activeProfile?.sandbox || 'workspace-write'
   const agentsMd = activeProfile?.agentsMd
@@ -1746,6 +2251,12 @@ export function buildCodexSessionOptions(
     configToml: buildCodexConfigToml({
       model: targetModel,
       modelProvider: codexConfigProvider,
+      modelContextWindow: codexModelContextWindowForModel(targetModel),
+      modelReasoningEffort:
+        targetProvider === 'xai' &&
+        !xaiModelSupportsReasoningEffort(rawTargetModel)
+          ? 'none'
+          : undefined,
       providers: [
         {
           id: codexConfigProvider,
@@ -1763,7 +2274,7 @@ export function buildCodexSessionOptions(
           : undefined,
       defaultPermissions: permissionProfile,
       advancedConfigSnippet: activeProfile?.advancedConfigSnippet,
-    }),
+    } as import('./config').CodexConfigTomlOptions),
     mcpRefreshConfig: {
       mcp_servers: buildCodexMcpServersConfig(mcpServers, {
         toolTimeoutSeconds: mcpSettings.toolCallTimeoutSeconds,
@@ -1777,7 +2288,87 @@ export function buildCodexSessionOptions(
 function mapProfileProviderType(type: string): string {
   if (type === 'openai-compatible') return 'openai'
   if (type === 'llama-cpp') return 'llamacpp'
+  if (type === 'xai') return 'xai'
   return type
+}
+
+function isGrokModelId(modelId: string): boolean {
+  return /^grok(?:-|$)/i.test(modelId.trim())
+}
+
+function resolveCodexTargetProvider(
+  provider: ModelProvider,
+  model: Model,
+  activeProfile?: {
+    providerType: string
+    model: string
+  }
+): string {
+  const profileModel = activeProfile?.model.trim()
+  if (activeProfile) {
+    const mapped = mapProfileProviderType(activeProfile.providerType)
+    if (
+      isGrokModelId(profileModel || model.id) &&
+      mapped === 'openai'
+    ) {
+      return 'xai'
+    }
+    return mapped
+  }
+
+  if (isGrokModelId(model.id) || provider.provider === 'xai') {
+    return 'xai'
+  }
+
+  if (provider.provider === CODEX_APP_SERVER_PROVIDER_ID) {
+    return settingValue(provider, 'codex-provider') || 'openai'
+  }
+
+  return provider.provider
+}
+
+function resolveCodexAuthProvider(
+  targetProvider: string,
+  selectedProvider: ModelProvider,
+  modelProviderState: ReturnType<typeof useModelProvider.getState>
+): ModelProvider {
+  if (selectedProvider.provider === targetProvider) {
+    return selectedProvider
+  }
+  return (
+    modelProviderState.getProviderByName(targetProvider) ?? selectedProvider
+  )
+}
+
+async function resolveCodexProviderApiKey(
+  provider: ModelProvider
+): Promise<string> {
+  const keys = await providerRemoteAuthKeyChain(provider)
+  if (keys[0]) return keys[0]
+  return provider.api_key || settingValue(provider, 'api-key')
+}
+
+function resolveXaiBaseUrl(
+  provider: ModelProvider,
+  modelProviderState: ReturnType<typeof useModelProvider.getState>
+): string {
+  const xaiProvider =
+    provider.provider === 'xai'
+      ? provider
+      : modelProviderState.getProviderByName('xai')
+  if (xaiProvider) {
+    return (
+      xaiProvider.base_url ||
+      settingValue(xaiProvider, 'base-url') ||
+      'https://api.x.ai/v1'
+    )
+  }
+  return 'https://api.x.ai/v1'
+}
+
+function codexModelContextWindowForModel(modelId: string): number | undefined {
+  if (modelId === 'grok-4.3') return 1_000_000
+  return undefined
 }
 
 const CODEX_RESERVED_PROVIDER_IDS = new Set([
@@ -1837,6 +2428,7 @@ function defaultCodexBinaryPath() {
 
 function defaultBaseUrlForProvider(providerId: string) {
   if (providerId === 'openai') return 'https://api.openai.com/v1'
+  if (providerId === 'xai') return 'https://api.x.ai/v1'
   if (providerId === 'openrouter') return 'https://openrouter.ai/api/v1'
   if (providerId === 'ollama') return 'http://127.0.0.1:11434/v1'
   if (providerId === 'vllm') return 'http://127.0.0.1:8000/v1'
@@ -1845,13 +2437,6 @@ function defaultBaseUrlForProvider(providerId: string) {
     return `http://${serverHost}:${serverPort}${apiPrefix}`
   }
   return 'https://api.openai.com/v1'
-}
-
-function codexWireApiForProvider(providerId: string): 'chat' | 'responses' {
-  if (providerId === 'openai' || providerId === 'openrouter') {
-    return 'responses'
-  }
-  return 'chat'
 }
 
 type CodexImageInput = {

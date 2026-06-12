@@ -98,9 +98,12 @@ pub fn cli_get_thread(thread_id: &str) -> Result<serde_json::Value, String> {
 
 /// Stop the running proxy server.
 pub async fn cli_stop_server(app_state: Arc<AppState>) -> Result<(), String> {
-    proxy::stop_server(app_state.server_handle.clone())
-        .await
-        .map_err(|e| e.to_string())
+    proxy::stop_server(
+        app_state.server_handle.clone(),
+        app_state.server_listen_port.clone(),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Check whether the proxy server is currently running.

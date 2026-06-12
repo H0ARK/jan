@@ -19,6 +19,15 @@ import {
   providerHasRemoteAuth,
   providerRemoteAuthKeyChain,
 } from '@/lib/provider-api-keys'
+import {
+  formatGatewayModelId,
+  gatewayWireApiForProvider,
+  hasGatewayUpstreamProviders,
+  isLocalApiGatewayUpstreamProvider,
+  resolveGatewayProviderBaseUrl,
+} from '@/lib/local-api-gateway'
+import { isLocalProvider } from '@/lib/utils'
+import { ensureLocalApiServerRunning } from '@/lib/ensure-local-api-server'
 
 type ProviderCustomHeader = {
   header: string
@@ -30,13 +39,13 @@ type RegisterProviderRequest = {
   api_key?: string
   api_keys?: string[]
   base_url?: string
+  wire_api?: string
   custom_headers: ProviderCustomHeader[]
   models: string[]
 }
 
 async function registerRemoteProvider(provider: ModelProvider) {
-  // Skip llamacpp - those are local models
-  if (provider.provider === 'llamacpp') return
+  if (!isLocalApiGatewayUpstreamProvider(provider.provider)) return
 
   const chain = await providerRemoteAuthKeyChain(provider)
   if (chain.length === 0) {
@@ -48,12 +57,15 @@ async function registerRemoteProvider(provider: ModelProvider) {
     provider: provider.provider,
     api_key: chain[0],
     api_keys: chain.slice(1),
-    base_url: provider.base_url,
+    base_url: resolveGatewayProviderBaseUrl(provider),
+    wire_api: gatewayWireApiForProvider(provider.provider),
     custom_headers: (provider.custom_header || []).map((h) => ({
       header: h.header,
       value: h.value,
     })),
-    models: provider.models.map(e => e.id)
+    models: provider.models.map((m) =>
+      formatGatewayModelId(provider.provider, m.id)
+    ),
   }
 
   try {
@@ -75,7 +87,7 @@ const syncRemoteProviders = async () => {
   for (const provider of providers) {
     if (
       provider.active &&
-      provider.provider !== 'llamacpp' &&
+      isLocalApiGatewayUpstreamProvider(provider.provider) &&
       (await providerHasRemoteAuth(provider))
     ) {
       await registerRemoteProvider(provider)
@@ -130,7 +142,10 @@ export function DataProvider() {
       // Register active remote providers with the backend
       void Promise.all(
         providers.map(async (provider) => {
-          if (provider.active && provider.provider !== 'llamacpp') {
+          if (
+            provider.active &&
+            isLocalApiGatewayUpstreamProvider(provider.provider)
+          ) {
             await registerRemoteProvider(provider)
             registeredProviderNames.add(provider.provider)
           }
@@ -257,9 +272,14 @@ export function DataProvider() {
             return lastServerModels
           })()
 
-          if (modelsToStart.length > 0) {
+          const localModelsToStart = modelsToStart.filter(({ provider: providerName }) => {
+            const provider = getProviderByName(providerName)
+            return provider && isLocalProvider(provider.provider)
+          })
+
+          if (localModelsToStart.length > 0) {
             await Promise.allSettled(
-              modelsToStart.map(async ({ model, provider: providerName }) => {
+              localModelsToStart.map(async ({ model, provider: providerName }) => {
                 const provider = getProviderByName(providerName)
                 if (!provider) return
                 try {
@@ -270,24 +290,26 @@ export function DataProvider() {
                 }
               })
             )
+          } else if (
+            !hasGatewayUpstreamProviders(useModelProvider.getState().providers)
+          ) {
+            console.warn(
+              'Skipping Local API Server auto-start: no local model and no configured remote providers'
+            )
+            setServerStatus('stopped')
+            return
           }
 
-          return window.core?.api
-            ?.startServer({
-              host: serverHost,
-              port: serverPort,
-              prefix: apiPrefix,
-              apiKey,
-              trustedHosts,
-              isCorsEnabled: corsEnabled,
-              isVerboseEnabled: verboseLogs,
-              proxyTimeout: proxyTimeout,
-            })
-            .then(async (actualPort: number) => {
-              // Store the actual port that was assigned (important for mobile with port 0)
-              if (actualPort && actualPort !== serverPort) {
-                setServerPort(actualPort)
-              }
+          return ensureLocalApiServerRunning({
+            host: serverHost,
+            port: serverPort,
+            prefix: apiPrefix,
+            apiKey,
+            trustedHosts,
+            isCorsEnabled: corsEnabled,
+            isVerboseEnabled: verboseLogs,
+            proxyTimeout: proxyTimeout,
+          }).then(async (actualPort: number) => {
               setServerStatus('running')
               // Persist whichever models are actually running so next startup can restore them
               const activeModels = await serviceHub.models().getActiveModels().catch(() => [] as string[])
