@@ -1,7 +1,7 @@
 # Jan Codex Runtime — Desktop Smoke Checklist
 
-**Date anchor**: 2026-06-11  
-**Branch**: `feature/codex-runtime-preview` (commit 7387b31ad)  
+**Date anchor**: 2026-06-12  
+**Branch**: `feature/codex-runtime-preview` (commit a0e270dab)  
 **Purpose**: Verify real end-to-end Codex app-server behavior in the built Tauri desktop app (things browser preview and unit tests cannot cover).
 
 ## Prerequisites (run once)

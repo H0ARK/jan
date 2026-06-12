@@ -899,11 +899,28 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
         value={remoteControlArgs}
         onChange={(event) => setRemoteControlArgs(event.target.value)}
       />
-      <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
-        {snapshot
-          ? JSON.stringify(snapshot, null, 2)
-          : '— (CLI result)'}
-      </pre>
+            {snapshot ? (
+        <div className="mt-1 border rounded bg-background/60 p-1 text-[9px] font-mono">
+          <div className="font-semibold mb-0.5">{snapshot.label} — exit: {(snapshot.result as any)?.exit_code ?? "—"}</div>
+          {(snapshot.result as any)?.stdout ? (
+            <div>
+              <div className="text-green-600">stdout:</div>
+              <pre className="whitespace-pre-wrap break-words max-h-28 overflow-auto bg-black/5 p-1">{(snapshot.result as any).stdout}</pre>
+            </div>
+          ) : null}
+          {(snapshot.result as any)?.stderr ? (
+            <div>
+              <div className="text-red-600 mt-1">stderr:</div>
+              <pre className="whitespace-pre-wrap break-words max-h-20 overflow-auto bg-black/5 p-1 text-red-500">{(snapshot.result as any).stderr}</pre>
+            </div>
+          ) : null}
+          {!((snapshot.result as any)?.stdout || (snapshot.result as any)?.stderr) && (
+            <pre className="whitespace-pre-wrap break-words max-h-28 overflow-auto">{JSON.stringify(snapshot.result, null, 2)}</pre>
+          )}
+        </div>
+      ) : (
+        <div className="text-[9px] text-muted-foreground">— (no CLI result yet)</div>
+      )}
       {errorMessage ? (
         <div className="mt-1 text-[9px] text-red-500">{errorMessage}</div>
       ) : null}
