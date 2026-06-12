@@ -482,9 +482,6 @@ describe('Codex app-server integration API', () => {
     await client.installPlugin({ pluginId: 'foo@official' })
     await client.uninstallPlugin({ pluginId: 'foo@official' })
     await client.startMcpOauthLogin('fetch')
-    await client.requestUserInput({
-      questions: [{ id: 'confirm', question: 'Proceed?' }],
-    })
     await client.listMcpServerStatus({ detail: 'full' })
     await client.readMcpResource({ server: 'fetch', uri: 'resource://one' })
     await client.callMcpTool({
@@ -859,10 +856,6 @@ describe('Codex app-server integration API', () => {
         expect.objectContaining({
           method: 'mcpServer/oauth/login',
           params: { server: 'fetch' },
-        }),
-        expect.objectContaining({
-          method: 'tool/requestUserInput',
-          params: { questions: [{ id: 'confirm', question: 'Proceed?' }] },
         }),
         expect.objectContaining({
           method: 'mcpServer/status/list',

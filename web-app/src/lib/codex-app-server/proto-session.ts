@@ -524,9 +524,6 @@ export class CodexProtoSession {
     return unsupportedAppServerMethod('mcpServer/oauth/login')
   }
 
-  requestUserInput(_params: Record<string, unknown>) {
-    return unsupportedAppServerMethod('tool/requestUserInput')
-  }
 
   listMcpServerStatus(_params: Record<string, unknown> = {}) {
     return unsupportedAppServerMethod('mcpServer/status/list')
