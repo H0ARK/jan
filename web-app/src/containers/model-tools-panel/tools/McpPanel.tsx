@@ -1,3 +1,5 @@
+import { useMemo, useState } from 'react'
+
 import { Input } from '@/components/ui/input'
 
 import { cn } from '@/lib/utils'
@@ -41,6 +43,75 @@ type McpPanelProps = {
   onMcpOauthLogin: () => Promise<void>
 }
 
+type McpArgumentField = {
+  key: string
+  label: string
+  type: 'string' | 'number' | 'integer' | 'boolean'
+  required: boolean
+  description?: string
+  enumValues?: string[]
+}
+
+const getRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+
+const normalizeSchemaType = (
+  schema: Record<string, unknown>
+): McpArgumentField['type'] | null => {
+  if (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === 'string')) {
+    return 'string'
+  }
+  if (schema.type === 'string') return 'string'
+  if (schema.type === 'number') return 'number'
+  if (schema.type === 'integer') return 'integer'
+  if (schema.type === 'boolean') return 'boolean'
+  return null
+}
+
+const getSimpleArgumentFields = (schema: unknown): McpArgumentField[] => {
+  const record = getRecord(schema)
+  const properties = getRecord(record?.properties)
+  if (!properties) return []
+
+  const required = Array.isArray(record?.required)
+    ? new Set(record.required.map((item) => String(item)))
+    : new Set<string>()
+
+  return Object.entries(properties).flatMap(([key, value]) => {
+    const property = getRecord(value)
+    if (!property) return []
+    const type = normalizeSchemaType(property)
+    if (!type) return []
+    return [
+      {
+        key,
+        label: key,
+        type,
+        required: required.has(key),
+        description:
+          typeof property.description === 'string'
+            ? property.description
+            : undefined,
+        enumValues:
+          Array.isArray(property.enum) &&
+          property.enum.every((item) => typeof item === 'string')
+            ? property.enum
+            : undefined,
+      },
+    ]
+  })
+}
+
+const parseArgumentObject = (value: string): Record<string, unknown> => {
+  const parsed = parseCodexJson<unknown>(value || '{}', {})
+  return getRecord(parsed) ?? {}
+}
+
+const stringifyArgumentObject = (value: Record<string, unknown>) =>
+  JSON.stringify(value, null, 2)
+
 export function McpPanel({
   codexMcpServerName,
   codexMcpResourceUri,
@@ -69,6 +140,40 @@ export function McpPanel({
   onRunCodexMcpAction,
   onMcpOauthLogin,
 }: McpPanelProps) {
+  const [showAdvancedToolArguments, setShowAdvancedToolArguments] =
+    useState(false)
+
+  const simpleArgumentFields = useMemo(
+    () => getSimpleArgumentFields(selectedCodexMcpToolDescriptor?.inputSchema),
+    [selectedCodexMcpToolDescriptor?.inputSchema]
+  )
+
+  const hasSimpleArgumentFields = simpleArgumentFields.length > 0
+
+  const currentArgumentObject = useMemo(
+    () => parseArgumentObject(codexMcpToolArguments),
+    [codexMcpToolArguments]
+  )
+
+  const updateArgumentField = (field: McpArgumentField, rawValue: string) => {
+    const nextArguments = { ...currentArgumentObject }
+    if (rawValue === '' && !field.required) {
+      delete nextArguments[field.key]
+    } else if (field.type === 'boolean') {
+      nextArguments[field.key] = rawValue === 'true'
+    } else if (field.type === 'number' || field.type === 'integer') {
+      const parsedNumber = Number(rawValue)
+      nextArguments[field.key] = Number.isFinite(parsedNumber)
+        ? field.type === 'integer'
+          ? Math.trunc(parsedNumber)
+          : parsedNumber
+        : rawValue
+    } else {
+      nextArguments[field.key] = rawValue
+    }
+    onSetCodexMcpToolArguments(stringifyArgumentObject(nextArguments))
+  }
+
   const handleReadResource = () => {
     void onRunCodexMcpAction(
       'mcpServer/resource/read',
@@ -141,11 +246,100 @@ export function McpPanel({
         />
       </div>
       <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+        className={cn(
+          'mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]',
+          hasSimpleArgumentFields && !showAdvancedToolArguments && 'hidden'
+        )}
         placeholder="MCP tool arguments JSON"
         value={codexMcpToolArguments}
         onChange={(event) => onSetCodexMcpToolArguments(event.target.value)}
       />
+      {hasSimpleArgumentFields ? (
+        <div className="mb-1 rounded border bg-background/40 p-1">
+          <div className="mb-1 flex items-center justify-between gap-2 font-mono text-[9px]">
+            <span>Tool arguments</span>
+            <button
+              type="button"
+              className="underline"
+              onClick={() =>
+                setShowAdvancedToolArguments((current) => !current)
+              }
+            >
+              {showAdvancedToolArguments ? 'Hide JSON' : 'Advanced JSON'}
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
+            {simpleArgumentFields.map((field) => {
+              const value = currentArgumentObject[field.key]
+              const stringValue =
+                typeof value === 'boolean'
+                  ? String(value)
+                  : value === undefined || value === null
+                    ? ''
+                    : String(value)
+              return (
+                <label
+                  key={field.key}
+                  className="grid gap-0.5 text-[9px] text-muted-foreground"
+                  title={field.description}
+                >
+                  <span>
+                    {field.label}
+                    {field.required ? ' *' : ''}
+                  </span>
+                  {field.type === 'boolean' ? (
+                    <select
+                      className="h-6 rounded border border-border bg-background px-1 text-[10px] text-foreground"
+                      value={stringValue || 'false'}
+                      onChange={(event) =>
+                        updateArgumentField(field, event.target.value)
+                      }
+                    >
+                      <option value="false">false</option>
+                      <option value="true">true</option>
+                    </select>
+                  ) : field.enumValues?.length ? (
+                    <select
+                      className="h-6 rounded border border-border bg-background px-1 text-[10px] text-foreground"
+                      value={stringValue}
+                      onChange={(event) =>
+                        updateArgumentField(field, event.target.value)
+                      }
+                    >
+                      {!field.required ? <option value="">—</option> : null}
+                      {field.enumValues.map((enumValue) => (
+                        <option key={enumValue} value={enumValue}>
+                          {enumValue}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <Input
+                      className="h-6 px-2 text-[10px] text-foreground"
+                      type={
+                        field.type === 'number' || field.type === 'integer'
+                          ? 'number'
+                          : 'text'
+                      }
+                      step={field.type === 'integer' ? 1 : undefined}
+                      value={stringValue}
+                      onChange={(event) =>
+                        updateArgumentField(field, event.target.value)
+                      }
+                    />
+                  )}
+                </label>
+              )
+            })}
+          </div>
+          {showAdvancedToolArguments ? (
+            <div className="mt-1 text-[9px] text-muted-foreground">
+              Advanced JSON remains authoritative for nested or unsupported
+              schema fields.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {selectedCodexMcpToolDescriptor?.inputSchema ? (
         <div
           className={cn(

@@ -4,7 +4,19 @@
  */
 
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+
+function resolveBinary() {
+  if (process.env.CODEX_BINARY) {
+    return process.env.CODEX_BINARY
+  }
+
+  return process.platform === 'darwin' &&
+    existsSync('/Applications/Codex.app/Contents/Resources/codex')
+    ? '/Applications/Codex.app/Contents/Resources/codex'
+    : 'codex'
+}
 
 const REQUIRED_COMMANDS = [
   'exec',
@@ -128,7 +140,7 @@ function evaluate(binary = 'codex') {
 }
 
 export function runCodexCommandsParityCheck() {
-  return evaluate(process.env.CODEX_BINARY || 'codex')
+  return evaluate(resolveBinary())
 }
 
 export function runCodexCommandsParityCheckCli() {

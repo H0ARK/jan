@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import {
   encodeUtf8Base64,
+  parseCodexArgTokens,
   parseCodexJson,
   stringifyCodexJson,
 } from '../shared/codex-helpers'
@@ -23,25 +24,31 @@ function parseStringArray(value: string): string[] | null {
     return parsed.filter((item): item is string => typeof item === 'string')
   }
   if (typeof parsed === 'string') {
-    return parsed
-      .split(' ')
-      .map((part) => part.trim())
-      .filter(Boolean)
+    const tokens = parseCodexArgTokens(parsed)
+    return tokens
   }
   return null
 }
+
 
 function parseCommandArray(value: string): { command: string; args: string[] } {
   const parsed = parseCodexJson<unknown>(value, undefined)
   let commandParts: string[] = []
 
-  if (Array.isArray(parsed) && parsed.every((item): item is string => typeof item === 'string')) {
+  if (
+    Array.isArray(parsed) &&
+    parsed.every((item): item is string => typeof item === 'string')
+  ) {
     commandParts = parsed
   } else if (typeof parsed === 'string') {
-    commandParts = parsed
-      .split(' ')
-      .map((part) => part.trim())
-      .filter(Boolean)
+    const tokens = parseCodexArgTokens(parsed)
+    if (tokens === null) {
+      return {
+        command: '',
+        args: [],
+      }
+    }
+    commandParts = tokens
   }
 
   return {
@@ -114,6 +121,7 @@ function parseCommandExecPayload(
   }
 }
 
+
 function buildJsonString(value: string[] | string, fallback: string[] = []) {
   if (Array.isArray(value)) {
     return stringifyCodexJson(value, '[]')
@@ -180,7 +188,6 @@ type RuntimeFsProcessPanelProps = {
   codexRuntimeCopyDestination: string
   codexRuntimeFileText: string
   codexRuntimePath: string
-  codexRuntimePtySize: string
   codexRuntimeSnapshot: unknown
   codexRuntimeSpawnCommand: string
   codexRuntimeStdin: string
@@ -191,17 +198,17 @@ type RuntimeFsProcessPanelProps = {
   onAppendCodexTerminalLines: (
     handle: string,
     lines: string[],
-    options?: { label?: string }
+    patch?: Partial<Omit<CodexProcessTerminalSession, 'handle' | 'lines'>>
   ) => void
   onClearCodexProcessEvents: () => void
   onClearCodexProcessTerminals: () => void
-  onReadCodexRuntimeFile: () => Promise<void>
+  onReadCodexRuntimeFile: () => void
   onRunCodexRuntimeAction: (
     method: string,
     params: Record<string, unknown>,
     success?: string
-  ) => Promise<unknown | null>
-  onSetCapError: (message: string) => void
+  ) => Promise<unknown>
+  onSetCapError: (error: string | null) => void
   onSetCodexCommandExecParams: (value: string) => void
   onSetCodexProcessHandle: (value: string) => void
   onSetCodexProcessTerminalCols: (value: string) => void
@@ -212,12 +219,12 @@ type RuntimeFsProcessPanelProps = {
   onSetCodexRuntimeFileText: (value: string) => void
   onSetCodexRuntimePath: (value: string) => void
   onSetCodexRuntimePtySize: (value: string) => void
-  onSetCodexRuntimeSnapshot: (updater: (previous: unknown) => unknown) => void
+  onSetCodexRuntimeSnapshot: (value: any) => void
   onSetCodexRuntimeSpawnCommand: (value: string) => void
   onSetCodexRuntimeStdin: (value: string) => void
   onSetCodexRuntimeWatchId: (value: string) => void
   onSpawnCodexRuntimeProcess: (command?: string) => Promise<void>
-  onWriteCodexRuntimeFile: () => Promise<void>
+  onWriteCodexRuntimeFile: () => void
   runtimeBusy: boolean
   selectableCodexProcessHandles: string[]
   selectedCodexProcessTerminal: CodexProcessTerminalSession | null
@@ -324,7 +331,7 @@ export function RuntimeFsProcessPanel({
     }
     const args = parseStringArray(spawnArgs)
     if (args === null) {
-      onSetCapError('Spawn args must be a JSON array of strings.')
+      onSetCapError('Spawn args must be a JSON array of strings or command tokens.')
       return null
     }
     return {
@@ -342,7 +349,7 @@ export function RuntimeFsProcessPanel({
     }
     const args = parseStringArray(commandExecArgs)
     if (args === null) {
-      onSetCapError('Command/exec args must be a JSON array of strings.')
+      onSetCapError('Command/exec args must be a JSON array of strings or command tokens.')
       return null
     }
     const extras = commandExecExtraFields.reduce<Record<string, unknown>>(
@@ -452,6 +459,73 @@ export function RuntimeFsProcessPanel({
     return size
   }
 
+  const runSelectedTerminalStdin = () => {
+    if (!selectedCodexProcessTerminal) return
+    const handle = selectedCodexProcessTerminal.handle
+    if (selectedCodexProcessTerminal.kind === 'command') {
+      void onRunCodexRuntimeAction(
+        'command/stdin',
+        {
+          processId: handle,
+          deltaBase64: encodeUtf8Base64(codexRuntimeStdin),
+        },
+        'Codex command stdin sent'
+      )
+      return
+    }
+    void onRunCodexRuntimeAction(
+      'process/writeStdin',
+      {
+        processHandle: handle,
+        deltaBase64: encodeUtf8Base64(codexRuntimeStdin),
+      },
+      'Codex stdin sent'
+    )
+  }
+
+  const runSelectedTerminalResize = () => {
+    if (!selectedCodexProcessTerminal) return
+    const size = parseTerminalSize(
+      codexProcessTerminalRows,
+      codexProcessTerminalCols,
+      onSetCapError
+    )
+    if (!size) return
+    onSetCodexRuntimePtySize(stringifyCodexJson(size, '{}'))
+    const handle = selectedCodexProcessTerminal.handle
+    if (selectedCodexProcessTerminal.kind === 'command') {
+      void onRunCodexRuntimeAction(
+        'command/resize',
+        { processId: handle, size },
+        'Codex command PTY resized'
+      )
+      return
+    }
+    void onRunCodexRuntimeAction(
+      'process/resizePty',
+      { processHandle: handle, size },
+      'Codex PTY resized'
+    )
+  }
+
+  const runSelectedTerminalStop = () => {
+    if (!selectedCodexProcessTerminal) return
+    const handle = selectedCodexProcessTerminal.handle
+    if (selectedCodexProcessTerminal.kind === 'command') {
+      void onRunCodexRuntimeAction(
+        'command/terminate',
+        { processId: handle },
+        'Codex command terminated'
+      )
+      return
+    }
+    void onRunCodexRuntimeAction(
+      'process/kill',
+      { processHandle: handle },
+      'Codex process killed'
+    )
+  }
+
   return (
     <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
       <div className="font-mono mb-1 flex items-center justify-between gap-2">
@@ -522,7 +596,7 @@ export function RuntimeFsProcessPanel({
         />
         <Input
           className="h-6 px-2 text-[10px]"
-          placeholder='Spawn args JSON (e.g. ["-l", "/"])'
+          placeholder='Spawn args (JSON array or command tokens)'
           value={spawnArgs}
           onChange={(event) => setSpawnArgs(event.target.value)}
         />
@@ -558,7 +632,7 @@ export function RuntimeFsProcessPanel({
         />
         <Input
           className="h-6 px-2 text-[10px]"
-          placeholder='command/exec args JSON (e.g. ["-l"])'
+          placeholder='command/exec args (JSON array or command tokens)'
           value={commandExecArgs}
           onChange={(event) => setCommandExecArgs(event.target.value)}
         />
@@ -987,30 +1061,7 @@ export function RuntimeFsProcessPanel({
               type="button"
               className="text-[9px] underline disabled:opacity-50"
               disabled={!selectedCodexProcessTerminal || runtimeBusy}
-              onClick={() => {
-                if (!selectedCodexProcessTerminal) return
-                const size = parseTerminalSize(
-                  codexProcessTerminalRows,
-                  codexProcessTerminalCols,
-                  onSetCapError
-                )
-                if (!size) return
-                onSetCodexRuntimePtySize(stringifyCodexJson(size, '{}'))
-                const handle = selectedCodexProcessTerminal.handle
-                if (selectedCodexProcessTerminal.kind === 'command') {
-                  void onRunCodexRuntimeAction(
-                    'command/resize',
-                    { processId: handle, size },
-                    'Codex command PTY resized'
-                  )
-                } else {
-                  void onRunCodexRuntimeAction(
-                    'process/resizePty',
-                    { processHandle: handle, size },
-                    'Codex PTY resized'
-                  )
-                }
-              }}
+              onClick={runSelectedTerminalResize}
             >
               Apply size
             </button>
@@ -1047,6 +1098,48 @@ export function RuntimeFsProcessPanel({
               }}
             >
               Clear terminals
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-2 py-1 text-[9px] text-zinc-400">
+          <div className="min-w-0">
+            {selectedCodexProcessTerminal ? (
+              <>
+                Selected {selectedCodexProcessTerminal.kind} handle:{' '}
+                <span className="font-mono text-zinc-100">
+                  {selectedCodexProcessTerminal.handle}
+                </span>{' '}
+                · {selectedCodexProcessTerminal.status} ·{' '}
+                {selectedCodexProcessTerminal.lines.length} lines
+              </>
+            ) : (
+              'Select a terminal session for kind-aware stdin, resize, and stop actions.'
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="text-[9px] underline disabled:opacity-50"
+              disabled={!selectedCodexProcessTerminal || runtimeBusy}
+              onClick={runSelectedTerminalStdin}
+            >
+              Send stdin to selected
+            </button>
+            <button
+              type="button"
+              className="text-[9px] underline disabled:opacity-50"
+              disabled={!selectedCodexProcessTerminal || runtimeBusy}
+              onClick={runSelectedTerminalResize}
+            >
+              Resize selected
+            </button>
+            <button
+              type="button"
+              className="text-[9px] underline disabled:opacity-50"
+              disabled={!selectedCodexProcessTerminal || runtimeBusy}
+              onClick={runSelectedTerminalStop}
+            >
+              Stop selected
             </button>
           </div>
         </div>

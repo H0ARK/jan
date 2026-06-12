@@ -28,6 +28,64 @@ export function parseCodexJson<T>(value: string, fallback: T): T {
   }
 }
 
+export function parseCodexArgTokens(value: string): string[] | null {
+  const trimmed = value.trim()
+  if (!trimmed) return []
+
+  const tokens: string[] = []
+  let inQuotes: '"' | "'" | null = null
+  let escapeNext = false
+  let current = ''
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index]
+
+    if (escapeNext) {
+      current += char
+      escapeNext = false
+      continue
+    }
+
+    if (char === '\\') {
+      escapeNext = true
+      continue
+    }
+
+    if (inQuotes === null) {
+      if (char === '"' || char === "'") {
+        inQuotes = char
+        continue
+      }
+      if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
+        if (current.length > 0) {
+          tokens.push(current)
+          current = ''
+        }
+        continue
+      }
+      current += char
+      continue
+    }
+
+    if (char === inQuotes) {
+      inQuotes = null
+      continue
+    }
+
+    current += char
+  }
+
+  if (escapeNext || inQuotes !== null) {
+    return null
+  }
+
+  if (current.length > 0) {
+    tokens.push(current)
+  }
+
+  return tokens
+}
+
 export function stringifyCodexJson(value: unknown, fallback: string = ''): string {
   try {
     return JSON.stringify(value, null, 2)
@@ -42,6 +100,9 @@ export type CodexThreadDescriptor = {
   status?: string
   updatedAt?: string
   source: 'loaded' | 'stored'
+  turns?: number | null
+  turnItems?: number | null
+  goal?: string
 }
 
 export type CodexMcpResourceDescriptor = {
@@ -153,6 +214,34 @@ export function collectCodexThreadDescriptors(
               : typeof record.updated_at === 'string'
                 ? record.updated_at
                 : existing?.updatedAt,
+          turns:
+            typeof record.turns === 'number'
+              ? record.turns
+              : typeof record.turn_count === 'number'
+                ? record.turn_count
+                : typeof record.numTurns === 'number'
+                  ? record.numTurns
+                  : typeof record.turnsCount === 'number'
+                    ? record.turnsCount
+                    : existing?.turns ?? null,
+          turnItems:
+            typeof record.turnItems === 'number'
+              ? record.turnItems
+              : typeof record.item_count === 'number'
+                ? record.item_count
+                : typeof record.numItems === 'number'
+                  ? record.numItems
+                  : typeof record.turnItemsCount === 'number'
+                    ? record.turnItemsCount
+                    : existing?.turnItems ?? null,
+          goal:
+            typeof record.goal === 'string'
+              ? record.goal
+              : typeof record.objective === 'string'
+                ? record.objective
+                : typeof record.title === 'string'
+                  ? record.title
+                  : existing?.goal,
           source,
         })
       }

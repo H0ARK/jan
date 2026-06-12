@@ -10,6 +10,7 @@ type ParsedCodexAppServerLogLine = {
 }
 
 type StreamFilter = 'all' | 'stdout' | 'stderr' | 'system'
+type LevelFilter = 'all' | ParsedCodexAppServerLogLine['level']
 
 const LOG_LINE_RE =
   /^\[(.*?)\]\s+\[(.*?)\]\s+\[(.*?)\]\s(.*)$/
@@ -37,7 +38,12 @@ const formatTimestamp = (timestamp: number) => {
 }
 
 const formatClipboardText = (lines: ParsedCodexAppServerLogLine[]) =>
-  lines.map((line) => `${formatTimestamp(line.timestamp)} ${line.text}`).join('\n')
+  lines
+    .map(
+      (line) =>
+        `${formatTimestamp(line.timestamp)} [${line.level}] [${line.stream}] ${line.text}`
+    )
+    .join('\n')
 
 const getLevelClass = (level: ParsedCodexAppServerLogLine['level']) => {
   switch (level) {
@@ -58,14 +64,17 @@ type AppServerRuntimeLogsProps = {
   codexRuntimeLogsLength: number
   runtimeLogsText: string
   onClearCodexRuntimeLogs: () => void
+  isCodexProtoTransport?: boolean
 }
 
 export function AppServerRuntimeLogs({
   codexRuntimeLogsLength,
   runtimeLogsText,
   onClearCodexRuntimeLogs,
+  isCodexProtoTransport,
 }: AppServerRuntimeLogsProps) {
   const [streamFilter, setStreamFilter] = useState<StreamFilter>('all')
+  const [levelFilter, setLevelFilter] = useState<LevelFilter>('all')
   const [searchText, setSearchText] = useState('')
 
   const parsedLines = useMemo(() => {
@@ -111,12 +120,14 @@ export function AppServerRuntimeLogs({
     return parsedLines.filter((entry) => {
       const matchesStream =
         streamFilter === 'all' ? true : entry.stream === streamFilter
+      const matchesLevel =
+        levelFilter === 'all' ? true : entry.level === levelFilter
       const matchesSearch = normalizedSearch
         ? `${entry.line}`.toLowerCase().includes(normalizedSearch)
         : true
-      return matchesStream && matchesSearch
+      return matchesStream && matchesLevel && matchesSearch
     })
-  }, [parsedLines, searchText, streamFilter])
+  }, [levelFilter, parsedLines, searchText, streamFilter])
 
   const counts = useMemo(
     () => ({
@@ -125,6 +136,10 @@ export function AppServerRuntimeLogs({
       stderr: parsedLines.filter((line) => line.stream === 'stderr').length,
       system: parsedLines.filter((line) => line.stream === 'system').length,
       errors: parsedLines.filter((line) => line.level === 'error').length,
+      warnings: parsedLines.filter((line) => line.level === 'warn').length,
+      info: parsedLines.filter((line) => line.level === 'info').length,
+      debug: parsedLines.filter((line) => line.level === 'debug').length,
+      systemLevel: parsedLines.filter((line) => line.level === 'system').length,
     }),
     [parsedLines]
   )
@@ -150,6 +165,7 @@ export function AppServerRuntimeLogs({
           type="button"
           className="text-[9px] underline"
           onClick={onClearCodexRuntimeLogs}
+          disabled={!!isCodexProtoTransport}
         >
           Clear
         </button>
@@ -176,6 +192,21 @@ export function AppServerRuntimeLogs({
             system ({counts.system})
           </option>
         </select>
+        <select
+          className="h-5 rounded border border-border bg-background px-1"
+          value={levelFilter}
+          onChange={(event) =>
+            setLevelFilter(event.target.value as LevelFilter)
+          }
+          aria-label="Filter by severity"
+        >
+          <option value="all">level: all</option>
+          <option value="error">error ({counts.errors})</option>
+          <option value="warn">warn ({counts.warnings})</option>
+          <option value="info">info ({counts.info})</option>
+          <option value="debug">debug ({counts.debug})</option>
+          <option value="system">system ({counts.systemLevel})</option>
+        </select>
         <input
           className="h-5 min-w-28 flex-1 rounded border border-border bg-background px-1"
           placeholder="Filter text"
@@ -185,14 +216,14 @@ export function AppServerRuntimeLogs({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={filteredLines.length === 0}
+          disabled={filteredLines.length === 0 || !!isCodexProtoTransport}
           onClick={() => void handleCopyVisibleLogs()}
         >
           Copy visible
         </button>
       </div>
       <div className="text-muted-foreground mb-1 text-[9px]">
-        {counts.errors} error-like entries
+        {counts.errors} error-like, {counts.warnings} warning-like entries
       </div>
       <div className="rounded border border-border/50 p-1 max-h-28 overflow-auto font-mono">
         {filteredLines.length === 0 ? (

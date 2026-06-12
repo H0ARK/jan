@@ -34,6 +34,7 @@ type RemoteControlPanelProps = {
   onDisableCodexRemoteControl: (janThreadId: string) => Promise<unknown>
   onListCodexRemoteControlClients: (janThreadId: string, params?: Record<string, unknown>) => Promise<unknown>
   onRevokeCodexRemoteControlClient: (janThreadId: string, clientId: string) => Promise<unknown>
+  isCodexProtoTransport?: boolean
 }
 
 export function RemoteControlPanel({
@@ -55,6 +56,7 @@ export function RemoteControlPanel({
   onDisableCodexRemoteControl,
   onListCodexRemoteControlClients,
   onRevokeCodexRemoteControlClient,
+  isCodexProtoTransport,
 }: RemoteControlPanelProps) {
   const [showAdvancedPairingParams, setShowAdvancedPairingParams] =
     useState(false)
@@ -108,7 +110,7 @@ export function RemoteControlPanel({
           <button
             type="button"
             className="text-[9px] underline disabled:opacity-50"
-            disabled={!currentThreadIdForCaps || remoteBusy}
+            disabled={!currentThreadIdForCaps || remoteBusy || !!isCodexProtoTransport}
             onClick={() => void onRefreshRemoteControlStatus()}
           >
             Status
@@ -116,7 +118,7 @@ export function RemoteControlPanel({
           <button
             type="button"
             className="text-[9px] underline disabled:opacity-50"
-            disabled={!currentThreadIdForCaps || remoteBusy}
+            disabled={!currentThreadIdForCaps || remoteBusy || !!isCodexProtoTransport}
             onClick={() =>
               void onRunRemoteControlAction(
                 () => onEnableCodexRemoteControl(currentThreadIdForCaps!),
@@ -129,7 +131,7 @@ export function RemoteControlPanel({
           <button
             type="button"
             className="text-[9px] underline disabled:opacity-50"
-            disabled={!currentThreadIdForCaps || remoteBusy}
+            disabled={!currentThreadIdForCaps || remoteBusy || !!isCodexProtoTransport}
             onClick={() =>
               void onRunRemoteControlAction(
                 () => onDisableCodexRemoteControl(currentThreadIdForCaps!),
@@ -142,7 +144,7 @@ export function RemoteControlPanel({
           <button
             type="button"
             className="text-[9px] underline disabled:opacity-50"
-            disabled={!currentThreadIdForCaps || remoteBusy}
+            disabled={!currentThreadIdForCaps || remoteBusy || !!isCodexProtoTransport}
             onClick={() =>
               void onRunRemoteControlAction(
                 () =>
@@ -171,7 +173,7 @@ export function RemoteControlPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || remoteBusy}
+          disabled={!currentThreadIdForCaps || remoteBusy || !!isCodexProtoTransport}
           onClick={() => setShowAdvancedPairingParams((previous) => !previous)}
         >
           {showAdvancedPairingParams
@@ -218,7 +220,7 @@ export function RemoteControlPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || remoteBusy}
+          disabled={!currentThreadIdForCaps || remoteBusy || !!isCodexProtoTransport}
           onClick={() => void onStartRemoteControlPairing()}
         >
           Start pairing
@@ -243,7 +245,8 @@ export function RemoteControlPanel({
             remoteBusy ||
             (!statusPairingCode.trim() &&
               !statusManualPairingCode.trim() &&
-              !remotePairingCode.trim())
+              !remotePairingCode.trim()) ||
+            !!isCodexProtoTransport
           }
           onClick={() => readPairingStatus()}
         >
@@ -253,7 +256,7 @@ export function RemoteControlPanel({
           type="button"
           className="text-[9px] underline disabled:opacity-50"
           disabled={
-            !currentThreadIdForCaps || remoteBusy || !remoteClientId.trim()
+            !currentThreadIdForCaps || remoteBusy || !remoteClientId.trim() || !!isCodexProtoTransport
           }
           onClick={() => {
             void onRunRemoteControlAction(

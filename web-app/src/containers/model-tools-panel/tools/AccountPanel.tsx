@@ -36,6 +36,7 @@ type AccountPanelProps = {
   onSendCodexAddCreditsNudgeEmail: (janThreadId: string, creditType: 'credits' | 'usage_limit') => Promise<unknown>
   onSetAccountRateLimits: (value: unknown) => void
   onSetAccountUsage: (value: unknown) => void
+  isCodexProtoTransport?: boolean
 }
 
 export function AccountPanel({
@@ -63,6 +64,7 @@ export function AccountPanel({
   onSendCodexAddCreditsNudgeEmail,
   onSetAccountRateLimits,
   onSetAccountUsage,
+  isCodexProtoTransport,
 }: AccountPanelProps) {
   const [showAdvancedLoginParams, setShowAdvancedLoginParams] = useState(false)
   const [showAdvancedUsageParams, setShowAdvancedUsageParams] = useState(false)
@@ -127,7 +129,7 @@ export function AccountPanel({
           <button
             type="button"
             className="text-[9px] underline disabled:opacity-50"
-            disabled={!currentThreadIdForCaps || accountBusy}
+            disabled={!currentThreadIdForCaps || accountBusy || !!isCodexProtoTransport}
             onClick={() => void onRefreshCodexAccount(true)}
           >
             Refresh
@@ -135,7 +137,7 @@ export function AccountPanel({
           <button
             type="button"
             className="text-[9px] underline disabled:opacity-50"
-            disabled={!currentThreadIdForCaps || accountBusy}
+            disabled={!currentThreadIdForCaps || accountBusy || !!isCodexProtoTransport}
             onClick={() => void onStartDeviceCodeLogin()}
           >
             Login
@@ -143,7 +145,7 @@ export function AccountPanel({
           <button
             type="button"
             className="text-[9px] underline disabled:opacity-50"
-            disabled={!currentThreadIdForCaps || accountBusy || ! (accountLogin as any)?.loginId}
+            disabled={!currentThreadIdForCaps || accountBusy || ! (accountLogin as any)?.loginId || !!isCodexProtoTransport}
             onClick={() => void onCancelDeviceCodeLogin()}
           >
             Cancel
@@ -151,7 +153,7 @@ export function AccountPanel({
           <button
             type="button"
             className="text-[9px] underline disabled:opacity-50"
-            disabled={!currentThreadIdForCaps || accountBusy}
+            disabled={!currentThreadIdForCaps || accountBusy || !!isCodexProtoTransport}
             onClick={() => void onLogoutCodex()}
           >
             Logout
@@ -198,7 +200,7 @@ export function AccountPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={accountBusy}
+          disabled={accountBusy || !!isCodexProtoTransport}
           onClick={() =>
             setShowAdvancedLoginParams((previous) => !previous)
           }
@@ -208,7 +210,7 @@ export function AccountPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={accountBusy}
+          disabled={accountBusy || !!isCodexProtoTransport}
           onClick={() =>
             setShowAdvancedUsageParams((previous) => !previous)
           }
@@ -244,7 +246,7 @@ export function AccountPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || accountBusy}
+          disabled={!currentThreadIdForCaps || accountBusy || !!isCodexProtoTransport}
           onClick={async () => {
             if (!currentThreadIdForCaps) return
             onSetAccountBusy(true)
@@ -280,7 +282,7 @@ export function AccountPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || accountBusy}
+          disabled={!currentThreadIdForCaps || accountBusy || !!isCodexProtoTransport}
           onClick={async () => {
             if (!currentThreadIdForCaps) return
             try {

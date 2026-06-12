@@ -195,8 +195,6 @@ export class CodexAppServerClient {
   rollbackThread(threadId: string, numTurns = 1) {
     return this.session.rollbackThread(threadId, numTurns)
   }
-
-
   startReview(
     threadId: string,
     target: CodexReviewTarget,

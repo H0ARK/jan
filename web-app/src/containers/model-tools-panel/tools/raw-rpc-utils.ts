@@ -158,14 +158,14 @@ export function buildCodexRawRpcCatalog({
     {
       group: 'Runtime',
       method: 'fuzzyFileSearch/sessionStart',
-      params: { sessionId: '<sessionId>' },
-      description: 'Start or resume a fuzzy file search session.',
+      params: { sessionId: '<sessionId>', query: '<query>', limit: 50 },
+      description: 'Start or resume a fuzzy file search session with a query.',
     },
     {
       group: 'Runtime',
       method: 'fuzzyFileSearch/sessionUpdate',
-      params: { sessionId: '<sessionId>' },
-      description: 'Update a fuzzy file search session.',
+      params: { sessionId: '<sessionId>', query: '<query>', limit: 50 },
+      description: 'Update a fuzzy file search session query.',
     },
     {
       group: 'Runtime',
@@ -189,8 +189,10 @@ export function buildCodexRawRpcCatalog({
       method: 'review/start',
       params: {
         threadId: threadId,
-        type: 'branch',
-        base: '<branchName>',
+        target: {
+          type: 'baseBranch',
+          branch: '<branchName>',
+        },
         delivery: 'detached',
       },
       description: 'Start branch-based thread review for a configured thread.',

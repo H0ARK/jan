@@ -32,6 +32,7 @@ type ConfigAdminPanelProps = {
   onStartCodexWindowsSandbox: (janThreadId: string, params: any) => Promise<unknown>
   onImportCodexExternalAgentConfig: (janThreadId: string, params: any) => Promise<unknown>
   onSetCodexAdminSnapshot: (updater: (prev: any) => any) => void
+  isCodexProtoTransport?: boolean
 }
 
 export function ConfigAdminPanel({
@@ -58,6 +59,7 @@ export function ConfigAdminPanel({
   onStartCodexWindowsSandbox,
   onImportCodexExternalAgentConfig,
   onSetCodexAdminSnapshot,
+  isCodexProtoTransport,
 }: ConfigAdminPanelProps) {
   const [showAdvancedConfigValueJson, setShowAdvancedConfigValueJson] =
     useState(false)
@@ -66,6 +68,8 @@ export function ConfigAdminPanel({
   const [showAdvancedWindowsJson, setShowAdvancedWindowsJson] = useState(false)
   const [showAdvancedExternalImportJson, setShowAdvancedExternalImportJson] =
     useState(false)
+  const [batchKeyPath, setBatchKeyPath] = useState('')
+  const [batchValue, setBatchValue] = useState('')
 
   const isPlainObject = (value: unknown): value is Record<string, unknown> => {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -139,29 +143,38 @@ export function ConfigAdminPanel({
     onSetCodexConfigValueJson(stringifyCodexJson(value, codexConfigValueJson))
   }
 
-  const onSetBatchKeyPath = (nextPath: string) => {
+  const parseSimpleValue = (value: string) => {
+    const trimmed = value.trim()
+    if (!trimmed) return ''
+    return parseCodexJson<unknown>(trimmed, value)
+  }
+
+  const appendBatchEdit = (nextPath: string, nextValue: string) => {
+    const keyPath = nextPath.trim()
+    if (!keyPath) return
     const edits = Array.isArray(parsedConfigBatch.edits)
       ? parsedConfigBatch.edits
           .filter(
             (item) =>
               item &&
               typeof item === 'object' &&
-              !Array.isArray(item) &&
-              typeof (item as { keyPath?: unknown }).keyPath === 'string'
+              !Array.isArray(item)
           )
-          .slice(0, 3)
+          .slice(0, 8)
       : []
     const nextPayload = {
-      ...(Array.isArray(parsedConfigBatch.edits) ? { edits } : {}),
+      ...parsedConfigBatch,
       edits: [
         ...edits,
         {
-          keyPath: nextPath.trim(),
-          value: '',
+          keyPath,
+          value: parseSimpleValue(nextValue),
         },
       ],
     }
     onSetCodexConfigBatchJson(stringifyCodexJson(nextPayload, codexConfigBatchJson))
+    setBatchKeyPath('')
+    setBatchValue('')
   }
 
   return (
@@ -171,7 +184,7 @@ export function ConfigAdminPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || adminBusy}
+          disabled={!currentThreadIdForCaps || adminBusy || !!isCodexProtoTransport}
           onClick={() => void onRefreshCodexAdminSnapshot()}
         >
           {adminBusy ? 'Loading' : 'Refresh'}
@@ -235,20 +248,44 @@ export function ConfigAdminPanel({
           onChange={(event) => onSetCodexConfigBatchJson(event.target.value)}
         />
       ) : (
-        <div className="mb-1 flex flex-wrap gap-2">
+        <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-[1fr_1fr_auto_auto]">
           <Input
             className="h-6 px-2 text-[10px]"
-            placeholder="Batch first key path"
-            onChange={(event) => onSetBatchKeyPath(event.target.value)}
+            placeholder="Batch key path"
+            value={batchKeyPath}
+            onChange={(event) => setBatchKeyPath(event.target.value)}
+          />
+          <Input
+            className="h-6 px-2 text-[10px]"
+            placeholder="Batch value"
+            value={batchValue}
+            onChange={(event) => setBatchValue(event.target.value)}
           />
           <button
             type="button"
             className="text-[9px] underline disabled:opacity-50"
-            disabled={adminBusy}
-            onClick={() => onSetBatchKeyPath(codexConfigKeyPath)}
+            disabled={adminBusy || !batchKeyPath.trim() || !!isCodexProtoTransport}
+            onClick={() => appendBatchEdit(batchKeyPath, batchValue)}
           >
-            seed batch from key path
+            add batch edit
           </button>
+          <button
+            type="button"
+            className="text-[9px] underline disabled:opacity-50"
+            disabled={adminBusy || !codexConfigKeyPath.trim() || !!isCodexProtoTransport}
+            onClick={() => {
+              setBatchKeyPath(codexConfigKeyPath)
+              setBatchValue(singleConfigValue)
+            }}
+          >
+            seed from config
+          </button>
+          <div className="text-[9px] text-muted-foreground md:col-span-4">
+            Batch edits:{' '}
+            {Array.isArray(parsedConfigBatch.edits)
+              ? parsedConfigBatch.edits.length
+              : 0}
+          </div>
         </div>
       )}
       <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
@@ -257,7 +294,7 @@ export function ConfigAdminPanel({
             <button
               type="button"
               className="text-[9px] underline disabled:opacity-50"
-              disabled={adminBusy}
+              disabled={adminBusy || !!isCodexProtoTransport}
               onClick={() =>
                 setShowAdvancedWindowsJson((previous) => !previous)
               }
@@ -306,7 +343,7 @@ export function ConfigAdminPanel({
             <button
               type="button"
               className="text-[9px] underline disabled:opacity-50"
-              disabled={adminBusy}
+              disabled={adminBusy || !!isCodexProtoTransport}
               onClick={() =>
                 setShowAdvancedExternalImportJson((previous) => !previous)
               }
@@ -326,8 +363,8 @@ export function ConfigAdminPanel({
               }
             />
           ) : (
-            <Input
-              className="h-6 px-2 text-[10px]"
+            <textarea
+              className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 text-[10px]"
               placeholder="External migration items (one per line)"
               value={externalMigrationItems}
               onChange={(event) => onSetMigrationItems(event.target.value)}
@@ -339,7 +376,7 @@ export function ConfigAdminPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || adminBusy}
+          disabled={!currentThreadIdForCaps || adminBusy || !!isCodexProtoTransport}
           onClick={async () => {
             if (!currentThreadIdForCaps) return
             const keyPath = codexConfigKeyPath.trim()
@@ -368,10 +405,10 @@ export function ConfigAdminPanel({
         >
           Write config value
         </button>
-        <button
+        <button 
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || adminBusy}
+          disabled={!currentThreadIdForCaps || adminBusy || !!isCodexProtoTransport}
           onClick={async () => {
             if (!currentThreadIdForCaps) return
             onSetAdminBusy(true)
@@ -400,10 +437,10 @@ export function ConfigAdminPanel({
         >
           Batch config
         </button>
-        <button
+        <button 
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || adminBusy}
+          disabled={!currentThreadIdForCaps || adminBusy || !!isCodexProtoTransport}
           onClick={async () => {
             if (!currentThreadIdForCaps) return
             onSetAdminBusy(true)
@@ -427,10 +464,10 @@ export function ConfigAdminPanel({
         >
           Upload feedback
         </button>
-        <button
+        <button 
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || adminBusy}
+          disabled={!currentThreadIdForCaps || adminBusy || !!isCodexProtoTransport}
           onClick={async () => {
             if (!currentThreadIdForCaps) return
             onSetAdminBusy(true)
@@ -455,10 +492,10 @@ export function ConfigAdminPanel({
         >
           Windows sandbox
         </button>
-        <button
+        <button 
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || adminBusy}
+          disabled={!currentThreadIdForCaps || adminBusy || !!isCodexProtoTransport}
           onClick={async () => {
             if (!currentThreadIdForCaps) return
             onSetAdminBusy(true)
@@ -489,7 +526,7 @@ export function ConfigAdminPanel({
         >
           Import external agent
         </button>
-      </div>
+      </div> 
       <pre className="whitespace-pre-wrap break-words max-h-32 overflow-auto">
         {codexAdminSnapshot
           ? JSON.stringify(codexAdminSnapshot, null, 2)

@@ -71,6 +71,7 @@ import { useServiceHub } from '@/hooks/useServiceHub'
 
 import { useThreads } from '@/hooks/useThreads'
 import { mergeButtonRefs } from '@/lib/merge-button-refs'
+import type { CodexReviewTarget } from '@/lib/codex-app-server/api'
 import { rafThrottle, throttle } from '@/lib/throttle'
 import { cn } from '@/lib/utils'
 import {
@@ -262,6 +263,64 @@ const ANSI_ESCAPE_PATTERN = new RegExp(
   `${String.fromCharCode(27)}(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])`,
   'g'
 )
+
+const toReviewString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
+
+const normalizeLegacyCodexReviewParams = (
+  params: Record<string, unknown>
+): Record<string, unknown> => {
+  const next: Record<string, unknown> = { ...params }
+
+  if (next.target && typeof next.target === 'object' && !Array.isArray(next.target)) {
+    const target = next.target as Record<string, unknown>
+    const type = toReviewString(target.type)
+    if (type === 'branch') {
+      const branch = toReviewString(target.base) || toReviewString(target.branch) || 'main'
+      next.target = { type: 'baseBranch', branch }
+    }
+  }
+
+  if (!next.target) {
+    const type = toReviewString(next.type)
+
+    if (type === 'uncommittedChanges') {
+      next.target = { type: 'uncommittedChanges' }
+    }
+
+    if (type === 'baseBranch' || type === 'branch') {
+      const branch = toReviewString(next.base) || toReviewString(next.branch) || 'main'
+      next.target = { type: 'baseBranch', branch }
+    }
+
+    if (type === 'commit') {
+      const sha = toReviewString(next.sha)
+      if (sha) {
+        const title = toReviewString(next.title)
+        next.target = title ? { type: 'commit', sha, title } : { type: 'commit', sha }
+      }
+    }
+
+    if (type === 'custom') {
+      const instructions = toReviewString(next.instructions)
+      if (instructions) {
+        next.target = { type: 'custom', instructions }
+      }
+    }
+
+    delete next.branch
+    delete next.base
+    delete next.sha
+    delete next.title
+    delete next.instructions
+    delete next.type
+  }
+
+  const delivery = toReviewString(next.delivery)
+  next.delivery = delivery === 'inline' || delivery === 'detached' ? delivery : 'detached'
+
+  return next
+}
 
 type DirectoryTreeEntry = {
   path: string
@@ -1145,12 +1204,13 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const [codexEnvironmentId, setCodexEnvironmentId] = useState('')
   const [codexEnvironmentExecUrl, setCodexEnvironmentExecUrl] = useState('')
   const [codexAdvancedReviewJson, setCodexAdvancedReviewJson] = useState(
-    '{"type":"uncommittedChanges","delivery":"detached"}'
+    '{"target":{"type":"uncommittedChanges"},"delivery":"detached"}'
   )
-  const [codexThreadReviewType, setCodexThreadReviewType] =
-    useState('uncommittedChanges')
+  const [codexThreadReviewType, setCodexThreadReviewType] = useState<
+    CodexReviewTarget['type']
+  >('uncommittedChanges')
   const [codexThreadReviewDelivery, setCodexThreadReviewDelivery] =
-    useState('detached')
+    useState<'detached' | 'inline'>('detached')
   const [codexThreadReviewBranch, setCodexThreadReviewBranch] =
     useState('main')
   const [codexThreadMetadataJson, setCodexThreadMetadataJson] =
@@ -3077,15 +3137,35 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   }
 
   const parseCodexThreadActionParams = () => {
-    const params = parseCodexJson<Record<string, unknown>>(
-      codexThreadActionParamsJson || '{}',
-      {}
-    )
-    if (typeof params !== 'object' || params === null || Array.isArray(params)) {
+    const paramsText = codexThreadActionParamsJson.trim() || '{}'
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(paramsText)
+    } catch {
+      setCapError('Thread action params JSON parse failed: invalid JSON.')
+      return null
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       setCapError('Thread action params JSON parse failed: must be an object.')
       return null
     }
-    return params
+    return parsed as Record<string, unknown>
+  }
+
+  const parseCodexThreadInjectItems = (): unknown[] | null => {
+    const injectText = codexInjectItemsJson.trim() || '[]'
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(injectText)
+    } catch {
+      setCapError('Thread inject items JSON parse failed: invalid JSON.')
+      return null
+    }
+    if (!Array.isArray(parsed)) {
+      setCapError('Thread inject items JSON parse failed: must be an array.')
+      return null
+    }
+    return parsed
   }
 
   const runCodexThreadAction = async (
@@ -3280,11 +3360,8 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
         ) : null}
         {capError && <div className="text-destructive text-[10px] mb-1">{capError}</div>}
         <fieldset
+          className={cn('contents', isCodexProtoTransport ? 'opacity-60' : undefined)}
           disabled={isCodexProtoTransport}
-          className={cn(
-            'contents',
-            isCodexProtoTransport && 'pointer-events-none opacity-60'
-          )}
         >
         <ThreadsPanel
           codexInjectItemsJson={codexInjectItemsJson}
@@ -3345,11 +3422,8 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
             )
           }
           onInjectItems={() => {
-            const items = parseCodexJson<unknown[]>(codexInjectItemsJson || '[]', [])
-            if (!Array.isArray(items)) {
-              setCapError('Injected items JSON parse failed: must be an array.')
-              return
-            }
+            const items = parseCodexThreadInjectItems()
+            if (!items) return
             void withTargetCodexThread(
               (threadId) => injectCodexThreadItems(currentThreadIdForCaps!, threadId, items),
               'Codex thread items injected'
@@ -3576,13 +3650,14 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
               setCapError('Review params JSON parse failed: must be an object.')
               return
             }
+
+            const normalizedParams = normalizeLegacyCodexReviewParams(
+              mergedParams
+            )
+
             void withTargetCodexThread(
               (threadId) =>
-                startCodexThreadReview(
-                  currentThreadIdForCaps!,
-                  threadId,
-                  mergedParams
-                ),
+                startCodexThreadReview(currentThreadIdForCaps!, threadId, normalizedParams),
               'Codex review requested'
             )
           }}
@@ -3663,12 +3738,26 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           }
           onTemplateReviewBranch={() =>
             setCodexAdvancedReviewJson(
-              JSON.stringify({ type: 'branch', base: 'main', delivery: 'detached' }, null, 2)
+              JSON.stringify(
+                {
+                  target: { type: 'baseBranch', branch: 'main' },
+                  delivery: 'detached',
+                },
+                null,
+                2
+              )
             )
           }
           onTemplateReviewUncommitted={() =>
             setCodexAdvancedReviewJson(
-              JSON.stringify({ type: 'uncommittedChanges', delivery: 'detached' }, null, 2)
+              JSON.stringify(
+                {
+                  target: { type: 'uncommittedChanges' },
+                  delivery: 'detached',
+                },
+                null,
+                2
+              )
             )
           }
           onTemplateSettings={() =>
@@ -3797,7 +3886,6 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           codexRawRpcParams={codexRawRpcParams}
           codexRawRpcSnapshot={codexRawRpcSnapshot}
           codexTurnItemsLimit={codexTurnItemsLimit}
-          currentThreadIdForCaps={currentThreadIdForCaps}
           filteredCodexRawRpcCatalog={filteredCodexRawRpcCatalog}
           parseCodexRawRpcPresetJson={parseCodexRawRpcPresetJson}
           rawRpcBusy={rawRpcBusy}

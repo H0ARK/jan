@@ -10,6 +10,7 @@ type CodexSummaryCardsProps = {
   hooks: unknown
   currentThreadIdForCaps: string | null | undefined
   onSetSkillExtraRoots: () => Promise<void> | void
+  isCodexProtoTransport?: boolean
 }
 
 type HooksSummary = {
@@ -67,6 +68,7 @@ export function CodexSummaryCards({
   hooks,
   currentThreadIdForCaps,
   onSetSkillExtraRoots,
+  isCodexProtoTransport,
 }: CodexSummaryCardsProps) {
   const skillDescriptors = collectCodexSkillDescriptors(skills)
   const normalizedSkillDescriptors = skillDescriptors
@@ -129,7 +131,7 @@ export function CodexSummaryCards({
           type="button"
           className="mt-1 text-[9px] underline"
           onClick={() => void onSetSkillExtraRoots()}
-          disabled={!currentThreadIdForCaps}
+          disabled={!currentThreadIdForCaps || !!isCodexProtoTransport}
         >
           Set extra roots for workspace
         </button>

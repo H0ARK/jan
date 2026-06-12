@@ -287,7 +287,6 @@ class ScriptedCodexProcess implements CodexProcess {
       'mcpServer/oauth/login': {
         authorization_url: 'https://example.com/oauth',
       },
-      'tool/requestUserInput': { answers: { confirm: 'yes' } },
       'mcpServerStatus/list': { servers: [] },
       'mcpServer/status/list': { servers: [] },
       'mcpServer/resource/read': { contents: [] },

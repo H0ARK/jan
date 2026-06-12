@@ -31,6 +31,8 @@ export function MarketplaceSelectionDetails({
     return null
   }
 
+  const selectedPluginInstalled = Boolean(selectedCodexPluginDescriptor?.installed)
+
   return (
     <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
       {selectedCodexPluginDescriptor ? (
@@ -90,15 +92,19 @@ export function MarketplaceSelectionDetails({
             <button
               type="button"
               className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || marketplaceBusy}
+              disabled={
+                !currentThreadIdForCaps || marketplaceBusy || selectedPluginInstalled
+              }
               onClick={onInstallPlugin}
             >
-              Install
+              {selectedPluginInstalled ? 'Installed' : 'Install'}
             </button>
             <button
               type="button"
               className="text-[9px] underline disabled:opacity-50"
-              disabled={!currentThreadIdForCaps || marketplaceBusy}
+              disabled={
+                !currentThreadIdForCaps || marketplaceBusy || !selectedPluginInstalled
+              }
               onClick={onUninstallPlugin}
             >
               Uninstall

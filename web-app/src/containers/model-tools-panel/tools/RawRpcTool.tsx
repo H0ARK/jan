@@ -5,6 +5,7 @@ import {
   parseCodexJson,
   stringifyCodexJson,
 } from '../shared/codex-helpers'
+import type { CodexReviewTarget } from '@/lib/codex-app-server/api'
 
 import {
   RawRpcMethodCatalog,
@@ -15,6 +16,9 @@ type RawRpcParamField = {
   key: string
   value: string
 }
+
+type ReviewDeliveryMode = 'detached' | 'inline'
+type ReviewTargetMode = CodexReviewTarget['type']
 
 type RawRpcToolProps = {
   codexConfigKeyPath: string
@@ -30,7 +34,6 @@ type RawRpcToolProps = {
   codexRawRpcParams: string
   codexRawRpcSnapshot: unknown
   codexTurnItemsLimit: string
-  currentThreadIdForCaps: string | null | undefined
   filteredCodexRawRpcCatalog: RawRpcCatalogItem[]
   parseCodexRawRpcPresetJson: (value: string, fallback: unknown) => unknown
   rawRpcBusy: boolean
@@ -43,9 +46,27 @@ type RawRpcToolProps = {
 }
 
 function parseTargets(value: string) {
+  const raw = value.trim()
+  if (!raw) return []
+
   const parsed = parseCodexJson<unknown>(value || '[]', [])
   if (!Array.isArray(parsed)) return []
-  return parsed.filter((entry): entry is string => typeof entry === 'string')
+  const fromJson = parsed.filter((entry): entry is string => typeof entry === 'string')
+  if (fromJson.length) return fromJson
+
+  const byLines = raw
+    .split('\n')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+  if (byLines.length > 1) return byLines
+
+  const byCommas = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+  if (byCommas.length > 1) return byCommas
+
+  return [raw]
 }
 
 export function RawRpcTool({
@@ -62,7 +83,6 @@ export function RawRpcTool({
   codexRawRpcParams,
   codexRawRpcSnapshot,
   codexTurnItemsLimit,
-  currentThreadIdForCaps,
   filteredCodexRawRpcCatalog,
   parseCodexRawRpcPresetJson,
   rawRpcBusy,
@@ -77,9 +97,18 @@ export function RawRpcTool({
   const [pluginSharePluginPath, setPluginSharePluginPath] = useState('')
   const [pluginShareTargets, setPluginShareTargets] = useState('[]')
   const [fuzzySessionId, setFuzzySessionId] = useState('')
-  const [reviewType, setReviewType] = useState('uncommittedChanges')
-  const [reviewDelivery, setReviewDelivery] = useState('detached')
+  const [fuzzyQuery, setFuzzyQuery] = useState('')
+  const [fuzzyLimit, setFuzzyLimit] = useState('50')
+  const [reviewType, setReviewType] = useState<ReviewTargetMode>(
+    'uncommittedChanges'
+  )
+  const [reviewDelivery, setReviewDelivery] = useState<ReviewDeliveryMode>(
+    'detached'
+  )
   const [reviewBranch, setReviewBranch] = useState('main')
+  const [reviewCommitSha, setReviewCommitSha] = useState('')
+  const [reviewCommitTitle, setReviewCommitTitle] = useState('')
+  const [reviewCustomInstructions, setReviewCustomInstructions] = useState('')
   const [showAdvancedRawRpcJson, setShowAdvancedRawRpcJson] = useState(false)
   const [rawRpcParamFields, setRawRpcParamFields] = useState<RawRpcParamField[]>([
     { key: '', value: '' },
@@ -96,6 +125,8 @@ export function RawRpcTool({
   const rawRpcParamsMessage = hasRawRpcParamsError
     ? 'Raw RPC params must be a valid JSON object.'
     : null
+  const canCallRawRpc =
+    !rawRpcBusy && Boolean(codexRawRpcMethod.trim()) && !hasRawRpcParamsError
 
   const parseRawRpcValue = (value: string): unknown => {
     const trimmed = value.trim()
@@ -183,6 +214,56 @@ export function RawRpcTool({
     }
   }, [codexRawRpcParams, showAdvancedRawRpcJson, parsedRawRpcParams])
 
+  const buildReviewTarget = (): CodexReviewTarget | null => {
+    if (reviewType === 'baseBranch') {
+      const branch = reviewBranch.trim() || 'main'
+      return {
+        type: 'baseBranch',
+        branch,
+      }
+    }
+
+    if (reviewType === 'commit') {
+      const sha = reviewCommitSha.trim()
+      if (!sha) return null
+      const title = reviewCommitTitle.trim()
+      return {
+        type: 'commit',
+        sha,
+        ...(title ? { title } : {}),
+      }
+    }
+
+    if (reviewType === 'custom') {
+      const instructions = reviewCustomInstructions.trim()
+      if (!instructions) return null
+      return {
+        type: 'custom',
+        instructions,
+      }
+    }
+
+    return { type: 'uncommittedChanges' }
+  }
+
+  const reviewTarget = buildReviewTarget()
+  const canApplyReviewParams =
+    Boolean(targetCodexThreadId) && !rawRpcBusy && reviewTarget !== null
+
+  const buildFuzzyParams = () => {
+    const params: Record<string, unknown> = {
+      sessionId: fuzzySessionId.trim(),
+    }
+    if (fuzzyQuery.trim()) {
+      params.query = fuzzyQuery.trim()
+    }
+    const limit = Number.parseInt(fuzzyLimit, 10)
+    if (Number.isFinite(limit) && limit > 0) {
+      params.limit = limit
+    }
+    return params
+  }
+
   return (
     <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
       <div className="font-mono mb-1 flex items-center justify-between gap-2">
@@ -190,10 +271,7 @@ export function RawRpcTool({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={
-            !currentThreadIdForCaps || rawRpcBusy || !codexRawRpcMethod.trim()
-            || hasRawRpcParamsError
-          }
+          disabled={!canCallRawRpc}
           onClick={() => void runCodexRawRpc()}
         >
           {rawRpcBusy ? 'Calling' : 'Call'}
@@ -388,12 +466,12 @@ export function RawRpcTool({
             value={pluginSharePluginPath}
             onChange={(event) => setPluginSharePluginPath(event.target.value)}
           />
-          <Input
-            className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-            placeholder="plugin share targets JSON array"
-            value={pluginShareTargets}
-            onChange={(event) => setPluginShareTargets(event.target.value)}
-          />
+        <textarea
+          className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+          placeholder='plugin share targets (JSON array or one per line)'
+          value={pluginShareTargets}
+          onChange={(event) => setPluginShareTargets(event.target.value)}
+        />
         </div>
         <button
           type="button"
@@ -419,9 +497,10 @@ export function RawRpcTool({
           className="text-[9px] underline disabled:opacity-50"
           disabled={!fuzzySessionId.trim()}
           onClick={() =>
-            setCodexRawRpcPreset('fuzzyFileSearch/sessionStart', {
-              sessionId: fuzzySessionId.trim(),
-            })
+            setCodexRawRpcPreset(
+              'fuzzyFileSearch/sessionStart',
+              buildFuzzyParams()
+            )
           }
         >
           preset: fuzzy session start
@@ -431,9 +510,10 @@ export function RawRpcTool({
           className="text-[9px] underline disabled:opacity-50"
           disabled={!fuzzySessionId.trim()}
           onClick={() =>
-            setCodexRawRpcPreset('fuzzyFileSearch/sessionUpdate', {
-              sessionId: fuzzySessionId.trim(),
-            })
+            setCodexRawRpcPreset(
+              'fuzzyFileSearch/sessionUpdate',
+              buildFuzzyParams()
+            )
           }
         >
           preset: fuzzy session update
@@ -456,6 +536,18 @@ export function RawRpcTool({
           value={fuzzySessionId}
           onChange={(event) => setFuzzySessionId(event.target.value)}
         />
+        <Input
+          className="h-6 min-w-0 px-2 text-[10px]"
+          placeholder="fuzzy query"
+          value={fuzzyQuery}
+          onChange={(event) => setFuzzyQuery(event.target.value)}
+        />
+        <Input
+          className="h-6 w-20 px-2 text-[10px]"
+          placeholder="limit"
+          value={fuzzyLimit}
+          onChange={(event) => setFuzzyLimit(event.target.value)}
+        />
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
@@ -463,8 +555,8 @@ export function RawRpcTool({
           onClick={() =>
             setCodexRawRpcPreset('review/start', {
               threadId: targetCodexThreadId,
-              type: 'uncommittedChanges',
-              delivery: reviewDelivery.trim() || 'detached',
+              target: { type: 'uncommittedChanges' },
+              delivery: reviewDelivery,
             })
           }
         >
@@ -477,46 +569,88 @@ export function RawRpcTool({
           onClick={() =>
             setCodexRawRpcPreset('review/start', {
               threadId: targetCodexThreadId,
-              type: 'branch',
-              base: reviewBranch.trim() || 'main',
-              delivery: reviewDelivery.trim() || 'detached',
+              target: {
+                type: 'baseBranch',
+                branch: reviewBranch.trim() || 'main',
+              },
+              delivery: reviewDelivery,
             })
           }
         >
           preset: review start branch
         </button>
-        <Input
-          className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-          placeholder="review type"
-          value={reviewType}
-          onChange={(event) => setReviewType(event.target.value)}
-        />
-        <Input
-          className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-          placeholder="review branch (for branch type)"
-          value={reviewBranch}
-          onChange={(event) => setReviewBranch(event.target.value)}
-        />
-        <Input
-          className="h-6 min-w-0 flex-1 px-2 text-[10px]"
-          placeholder="review delivery"
-          value={reviewDelivery}
-          onChange={(event) => setReviewDelivery(event.target.value)}
-        />
+        <label className="flex min-w-0 flex-1 items-center gap-1">
+          <span className="text-[9px] text-muted-foreground">review target</span>
+          <select
+            className="h-6 flex-1 rounded border bg-background px-2 text-[10px]"
+            value={reviewType}
+            onChange={(event) =>
+              setReviewType(event.target.value as ReviewTargetMode)
+            }
+          >
+            <option value="uncommittedChanges">uncommitted</option>
+            <option value="baseBranch">base branch</option>
+            <option value="commit">commit</option>
+            <option value="custom">custom</option>
+          </select>
+        </label>
+        {reviewType === 'baseBranch' ? (
+          <Input
+            className="h-6 min-w-0 flex-1 px-2 text-[10px]"
+            placeholder="review branch"
+            value={reviewBranch}
+            onChange={(event) => setReviewBranch(event.target.value)}
+          />
+        ) : null}
+        {reviewType === 'commit' ? (
+          <>
+            <Input
+              className="h-6 min-w-0 flex-1 px-2 text-[10px]"
+              placeholder="review commit SHA"
+              value={reviewCommitSha}
+              onChange={(event) => setReviewCommitSha(event.target.value)}
+            />
+            <Input
+              className="h-6 min-w-0 flex-1 px-2 text-[10px]"
+              placeholder="optional commit title"
+              value={reviewCommitTitle}
+              onChange={(event) => setReviewCommitTitle(event.target.value)}
+            />
+          </>
+        ) : null}
+        {reviewType === 'custom' ? (
+          <textarea
+            className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+            placeholder="custom review instructions"
+            value={reviewCustomInstructions}
+            onChange={(event) => setReviewCustomInstructions(event.target.value)}
+          />
+        ) : null}
+        <label className="flex min-w-0 flex-1 items-center gap-1">
+          <span className="text-[9px] text-muted-foreground">delivery</span>
+          <select
+            className="h-6 flex-1 rounded border bg-background px-2 text-[10px]"
+            value={reviewDelivery}
+            onChange={(event) =>
+              setReviewDelivery(event.target.value as ReviewDeliveryMode)
+            }
+          >
+            <option value="detached">detached</option>
+            <option value="inline">inline</option>
+          </select>
+        </label>
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!targetCodexThreadId}
-          onClick={() =>
+          disabled={!canApplyReviewParams}
+          onClick={() => {
+            if (!reviewTarget) return
             setCodexRawRpcPreset('review/start', {
               threadId: targetCodexThreadId,
-              type: reviewType.trim() || 'uncommittedChanges',
-              delivery: reviewDelivery.trim() || 'detached',
-              ...(reviewType.trim() === 'branch'
-                ? { base: reviewBranch.trim() || 'main' }
-                : {}),
+              target: reviewTarget,
+              delivery: reviewDelivery,
             })
-          }
+          }}
         >
           apply review params
         </button>

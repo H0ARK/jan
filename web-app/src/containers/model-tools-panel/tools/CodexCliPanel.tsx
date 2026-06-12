@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Input } from '@/components/ui/input'
-import { parseCodexJson } from '../shared/codex-helpers'
+import {
+  parseCodexArgTokens,
+} from '@/containers/model-tools-panel/shared/codex-helpers'
 import {
   runCodexApply,
   runCodexCompletion,
@@ -33,19 +35,29 @@ import {
 } from '@/lib/codex-app-server'
 
 type CodexCliPanelProps = {
+  isCodexProtoTransport?: boolean
   cwd: string
-}
-
-function parseCodexCliArgs(value: string, fallback: string[] | null) {
-  const parsed = parseCodexJson<unknown>(value, fallback)
-  if (!Array.isArray(parsed)) {
-    return fallback
-  }
-  return parsed.map((arg) => String(arg))
 }
 
 function describeCodexCliError(error: unknown) {
   return `Codex CLI command failed: ${String(error)}`
+}
+
+function parseCodexCliArgs(value: string, fallback: string[] | null) {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return fallback ?? []
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!Array.isArray(parsed)) {
+      return null
+    }
+    return parsed.map((arg) => String(arg))
+  } catch {
+    return parseCodexArgTokens(trimmed)
+  }
 }
 
 export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
@@ -167,7 +179,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
       </div>
       <textarea
         className="mb-1 min-h-10 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='codex command args JSON array (e.g. ["--uncommitted"] )'
+        placeholder='codex command args JSON array or command tokens (e.g. ["--uncommitted"] )'
         value={commandArgs}
         onChange={(event) => setCommandArgs(event.target.value)}
       />
@@ -180,7 +192,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
         />
         <textarea
           className="min-h-8 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-          placeholder='help args JSON array (e.g. [])'
+          placeholder='help args JSON array or command tokens (e.g. [])'
           value={helpArgs}
           onChange={(event) => setHelpArgs(event.target.value)}
         />
@@ -193,7 +205,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(commandArgs, null)
             if (args === null) {
-              setErrorMessage('Codex CLI args must be a JSON array.')
+              setErrorMessage('Codex CLI args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction(`codex ${command.trim()}`, () =>
@@ -214,7 +226,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(helpArgs, [])
             if (args === null) {
-              setErrorMessage('Help args must be a JSON array.')
+              setErrorMessage('Help args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('help', () =>
@@ -286,13 +298,13 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
       />
       <textarea
         className="mb-1 min-h-8 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='exec addDirs JSON array (e.g. ["~/project"])'
+        placeholder='exec addDirs JSON array or command tokens (e.g. ["~/project"])'
         value={execAddDirs}
         onChange={(event) => setExecAddDirs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-8 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='exec extra args JSON array (e.g. ["--no-gpu"])'
+        placeholder='exec extra args JSON array or command tokens (e.g. ["--no-gpu"])'
         value={execExtraArgs}
         onChange={(event) => setExecExtraArgs(event.target.value)}
       />
@@ -336,7 +348,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder="raw Codex CLI args JSON array"
+        placeholder='raw Codex CLI args (JSON array or tokens)'
         value={rawArgs}
         onChange={(event) => setRawArgs(event.target.value)}
       />
@@ -349,11 +361,11 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
             const addDirs = parseCodexCliArgs(execAddDirs, null)
             const extraArgs = parseCodexCliArgs(execExtraArgs, null)
             if (addDirs === null) {
-              setErrorMessage('exec addDirs must be a JSON array.')
+              setErrorMessage('exec addDirs must be a JSON array or command tokens.')
               return
             }
             if (extraArgs === null) {
-              setErrorMessage('exec extra args must be a JSON array.')
+              setErrorMessage('exec extra args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('exec', () =>
@@ -407,7 +419,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(rawArgs, null)
             if (args === null) {
-              setErrorMessage('Codex CLI args must be a JSON array.')
+              setErrorMessage('Codex CLI args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('raw', () =>
@@ -428,7 +440,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(rawArgs, null)
             if (args === null) {
-              setErrorMessage('Codex CLI args must be a JSON array.')
+              setErrorMessage('Codex CLI args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('app-server', () =>
@@ -448,7 +460,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(appArgs, null)
             if (args === null) {
-              setErrorMessage('App args must be a JSON array.')
+              setErrorMessage('App args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('app', () =>
@@ -468,7 +480,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(rawArgs, null)
             if (args === null) {
-              setErrorMessage('Codex CLI args must be a JSON array.')
+              setErrorMessage('Codex CLI args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('proto', () =>
@@ -488,7 +500,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(rawArgs, null)
             if (args === null) {
-              setErrorMessage('Codex CLI args must be a JSON array.')
+              setErrorMessage('Codex CLI args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('mcp', () =>
@@ -508,7 +520,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(mcpServerArgs, null)
             if (args === null) {
-              setErrorMessage('MCP server args must be a JSON array.')
+              setErrorMessage('MCP server args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('mcp-server', () =>
@@ -528,7 +540,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(archiveArgs, null)
             if (args === null) {
-              setErrorMessage('Archive args must be a JSON array.')
+              setErrorMessage('Archive args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('archive', () =>
@@ -548,7 +560,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(unarchiveArgs, null)
             if (args === null) {
-              setErrorMessage('Unarchive args must be a JSON array.')
+              setErrorMessage('Unarchive args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('unarchive', () =>
@@ -568,7 +580,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(forkArgs, null)
             if (args === null) {
-              setErrorMessage('Fork args must be a JSON array.')
+              setErrorMessage('Fork args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('fork', () =>
@@ -588,7 +600,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(resumeArgs, null)
             if (args === null) {
-              setErrorMessage('Resume args must be a JSON array.')
+              setErrorMessage('Resume args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('resume', () =>
@@ -608,7 +620,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(sandboxArgs, null)
             if (args === null) {
-              setErrorMessage('Sandbox args must be a JSON array.')
+              setErrorMessage('Sandbox args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('sandbox', () =>
@@ -628,7 +640,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(updateArgs, null)
             if (args === null) {
-              setErrorMessage('Update args must be a JSON array.')
+              setErrorMessage('Update args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('update', () =>
@@ -648,7 +660,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(execServerArgs, null)
             if (args === null) {
-              setErrorMessage('Exec-server args must be a JSON array.')
+              setErrorMessage('Exec-server args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('exec-server', () =>
@@ -668,7 +680,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(rawArgs, null)
             if (args === null) {
-              setErrorMessage('Codex CLI args must be a JSON array.')
+              setErrorMessage('Codex CLI args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('debug', () =>
@@ -688,7 +700,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(reviewArgs, null)
             if (args === null) {
-              setErrorMessage('Review args must be a JSON array.')
+              setErrorMessage('Review args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('review', () =>
@@ -709,7 +721,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(doctorArgs, null)
             if (args === null) {
-              setErrorMessage('Doctor args must be a JSON array.')
+              setErrorMessage('Doctor args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('doctor', () =>
@@ -729,7 +741,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(featuresArgs, null)
             if (args === null) {
-              setErrorMessage('Features args must be a JSON array.')
+              setErrorMessage('Features args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('features', () =>
@@ -749,7 +761,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(pluginArgs, null)
             if (args === null) {
-              setErrorMessage('Plugin args must be a JSON array.')
+              setErrorMessage('Plugin args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('plugin', () =>
@@ -769,7 +781,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(cloudArgs, null)
             if (args === null) {
-              setErrorMessage('Cloud args must be a JSON array.')
+              setErrorMessage('Cloud args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('cloud', () =>
@@ -789,7 +801,7 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onClick={() => {
             const args = parseCodexCliArgs(remoteControlArgs, null)
             if (args === null) {
-              setErrorMessage('Remote-control args must be a JSON array.')
+              setErrorMessage('Remote-control args must be a JSON array or command tokens.')
               return
             }
             void runCodexCliAction('remote-control', () =>
@@ -811,91 +823,91 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='review args JSON array (e.g. ["--uncommitted"])'
+        placeholder='review args JSON array or command tokens (e.g. ["--uncommitted"])'
         value={reviewArgs}
         onChange={(event) => setReviewArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='doctor args JSON array (e.g. [])'
+        placeholder='doctor args JSON array or command tokens (e.g. [])'
         value={doctorArgs}
         onChange={(event) => setDoctorArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='features args JSON array (e.g. [])'
+        placeholder='features args JSON array or command tokens (e.g. [])'
         value={featuresArgs}
         onChange={(event) => setFeaturesArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='plugin args JSON array (e.g. ["list"])'
+        placeholder='plugin args JSON array or command tokens (e.g. ["list"])'
         value={pluginArgs}
         onChange={(event) => setPluginArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='archive args JSON array (e.g. [])'
+        placeholder='archive args JSON array or command tokens (e.g. [])'
         value={archiveArgs}
         onChange={(event) => setArchiveArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='unarchive args JSON array (e.g. [])'
+        placeholder='unarchive args JSON array or command tokens (e.g. [])'
         value={unarchiveArgs}
         onChange={(event) => setUnarchiveArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='fork args JSON array (e.g. ["<session-id>"])'
+        placeholder='fork args JSON array or command tokens (e.g. ["<session-id>"])'
         value={forkArgs}
         onChange={(event) => setForkArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='resume args JSON array (e.g. ["--last"])'
+        placeholder='resume args JSON array or command tokens (e.g. ["--last"])'
         value={resumeArgs}
         onChange={(event) => setResumeArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='sandbox args JSON array (e.g. ["run","--help"])'
+        placeholder='sandbox args JSON array or command tokens (e.g. ["run","--help"])'
         value={sandboxArgs}
         onChange={(event) => setSandboxArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='update args JSON array (e.g. [])'
+        placeholder='update args JSON array or command tokens (e.g. [])'
         value={updateArgs}
         onChange={(event) => setUpdateArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='exec-server args JSON array (e.g. ["--help"])'
+        placeholder='exec-server args JSON array or command tokens (e.g. ["--help"])'
         value={execServerArgs}
         onChange={(event) => setExecServerArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='app args JSON array (e.g. [])'
+        placeholder='app args JSON array or command tokens (e.g. [])'
         value={appArgs}
         onChange={(event) => setAppArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='mcp-server args JSON array (e.g. ["--stdio"])'
+        placeholder='mcp-server args JSON array or command tokens (e.g. ["--stdio"])'
         value={mcpServerArgs}
         onChange={(event) => setMcpServerArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='cloud args JSON array (e.g. ["--help"])'
+        placeholder='cloud args JSON array or command tokens (e.g. ["--help"])'
         value={cloudArgs}
         onChange={(event) => setCloudArgs(event.target.value)}
       />
       <textarea
         className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='remote-control args JSON array (e.g. ["status"])'
+        placeholder='remote-control args JSON array or command tokens (e.g. ["status"])'
         value={remoteControlArgs}
         onChange={(event) => setRemoteControlArgs(event.target.value)}
       />

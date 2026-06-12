@@ -21,8 +21,11 @@ const REQUEST_TIMEOUT_MS = 8_000
 const CLIENT_METHOD_SOURCES = [
   'web-app/src/lib/codex-app-server/client.ts',
   'web-app/src/lib/codex-app-server/chat-backend.ts',
+  'web-app/src/lib/codex-app-server/api.ts',
   'web-app/src/lib/codex-app-server/method-aliases.ts',
 ]
+const RAW_RPC_CATALOG_SOURCE =
+  'web-app/src/containers/model-tools-panel/tools/raw-rpc-utils.ts'
 
 function stripComments(text) {
   return text
@@ -71,6 +74,22 @@ function collectMethodsFromMethodAliases(sourceFile) {
   return aliasEntries
 }
 
+function collectMethodsFromRawRpcCatalog(sourceFile) {
+  const rawText = readFileSync(resolve(process.cwd(), sourceFile), 'utf8')
+  const methods = new Set()
+  const methodRegex = /method:\s*['"]([^'"]+)['"]/g
+
+  let match
+  while ((match = methodRegex.exec(rawText)) !== null) {
+    const method = match[1].trim()
+    if (method.includes('/')) {
+      methods.add(method)
+    }
+  }
+
+  return Array.from(methods).sort()
+}
+
 function collectJanMethodSurface() {
   const methodSet = new Set()
   const aliases = collectMethodsFromMethodAliases(
@@ -92,6 +111,31 @@ function collectJanMethodSurface() {
   }
 }
 
+function compareRawRpcCatalogMethods(catalogMethods, upstream, methodAliasMap) {
+  const upstreamSet = new Set(upstream.map((method) => method.trim()))
+  const missing = []
+  const fallbackCovered = []
+
+  for (const method of catalogMethods) {
+    if (upstreamSet.has(method)) {
+      continue
+    }
+
+    const fallback = methodAliasMap.get(method)
+    if (fallback && upstreamSet.has(fallback)) {
+      fallbackCovered.push({ method, fallback })
+      continue
+    }
+
+    missing.push(method)
+  }
+
+  return {
+    missing,
+    fallbackCovered,
+  }
+}
+
 function normalizeCode(methods) {
   return methods.filter(Boolean).map((value) => value.trim())
 }
@@ -100,8 +144,33 @@ function parseMethodsFromResponsePayload(payload) {
   const candidates = []
   if (!payload) return []
 
-  const error = payload.error
-  if (!error) return []
+  const collectFromValue = (value) => {
+    if (!value) return
+    if (Array.isArray(value)) {
+      value.forEach((method) => {
+        if (typeof method === 'string' && method.includes('/')) {
+          candidates.push(method)
+        }
+      })
+      return
+    }
+    if (typeof value === 'string') {
+      for (const match of value.matchAll(
+        /[\"'`]?([a-z][A-Za-z0-9_]*\/[A-Za-z0-9_\/]*)[\"'`]?/g
+      )) {
+        candidates.push(match[1])
+      }
+      return
+    }
+    if (typeof value === 'object') {
+      for (const method of Object.values(value)) {
+        if (typeof method === 'string' && method.includes('/')) {
+          candidates.push(method)
+        }
+      }
+      return
+    }
+  }
 
   const collectFromText = (text) => {
     if (!text) return
@@ -126,6 +195,12 @@ function parseMethodsFromResponsePayload(payload) {
       }
     }
   }
+
+  const result = payload.result
+  collectFromValue(result)
+
+  const error = payload.error
+  if (!error) return normalizeCode(Array.from(new Set(candidates)))
 
   collectFromText(typeof error === 'string' ? error : JSON.stringify(error))
   collectFromText(typeof error.data === 'string' ? error.data : '')
@@ -298,14 +373,34 @@ export async function runCodexMethodSurfaceCheck(binary = CODEX_BINARY) {
   result.initialize = appServerResult.initialize
   result.probe = appServerResult.probe
   result.upstreamMethods = appServerResult.upstreamMethods
+  result.rawRpcCatalogMethods = collectMethodsFromRawRpcCatalog(
+    RAW_RPC_CATALOG_SOURCE
+  )
 
   result.comparison = compareMethodSurfaces(janMethodSurface, result.upstreamMethods)
+  result.rawRpcCatalogComparison = compareRawRpcCatalogMethods(
+    result.rawRpcCatalogMethods,
+    result.upstreamMethods,
+    methodAliasMap
+  )
 
   const missing = result.comparison.missing.length
-  const hasProbeError =
-    result.probe && typeof result.probe === 'object' && result.probe.error
+  const catalogMissing = result.rawRpcCatalogComparison.missing.length
+  const hasProbeMethodSurface =
+    result.probe &&
+    typeof result.probe === 'object' &&
+    ((result.upstreamMethods && result.upstreamMethods.length > 0) ||
+      (result.probe.result !== undefined || result.probe.error))
+  const initializeSucceeded =
+    result.initialize &&
+    typeof result.initialize === 'object' &&
+    result.initialize.result !== undefined &&
+    !result.initialize.error
   result.overall =
-    missing === 0 && hasProbeError && result.initialize.result !== undefined
+    missing === 0 &&
+    catalogMissing === 0 &&
+    hasProbeMethodSurface &&
+    initializeSucceeded
       ? 'passed'
       : 'failed'
 
@@ -322,6 +417,16 @@ export async function runCodexMethodSurfaceCheckCli() {
   for (const fallback of result.comparison.fallbackCovered) {
     console.error(
       `[alias] ${fallback.method} now falls back to ${fallback.fallback}`
+    )
+  }
+  for (const catalogMissing of result.rawRpcCatalogComparison.missing) {
+    console.error(
+      `[catalog] raw-RPC catalog method not supported upstream: ${catalogMissing}`
+    )
+  }
+  for (const catalogFallback of result.rawRpcCatalogComparison.fallbackCovered) {
+    console.error(
+      `[catalog alias] ${catalogFallback.method} now falls back to ${catalogFallback.fallback}`
     )
   }
   if (result.comparison.extras.length) {

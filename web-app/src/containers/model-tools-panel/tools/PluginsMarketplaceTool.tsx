@@ -203,6 +203,20 @@ export function PluginsMarketplaceTool({
     setSkillConfigFields(parsedSkillConfigEntries)
   }, [showAdvancedSkillConfigJson, parsedSkillConfigEntries])
 
+  const marketplaceSummary = useMemo(() => {
+    const installedPlugins = codexPluginDescriptors.filter(
+      (plugin) => plugin.installed
+    ).length
+    const availablePlugins = codexPluginDescriptors.length - installedPlugins
+    const enabledSkills = codexSkillDescriptors.filter((skill) => skill.enabled).length
+    return {
+      installedPlugins,
+      availablePlugins,
+      enabledSkills,
+      disabledSkills: codexSkillDescriptors.length - enabledSkills,
+    }
+  }, [codexPluginDescriptors, codexSkillDescriptors])
+
   return (
     <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
       <div className="font-mono mb-1 flex items-center justify-between gap-2">
@@ -220,6 +234,33 @@ export function PluginsMarketplaceTool({
         Manages app-server plugin install state, plugin metadata,
         marketplaces, app descriptors, and skill config without leaving the
         Codex-backed workspace.
+      </div>
+      <div className="mb-1 grid grid-cols-2 gap-1 md:grid-cols-4">
+        <div className="rounded border bg-background/40 px-2 py-1">
+          <div className="font-mono text-[9px]">Installed</div>
+          <div className="text-[10px]">
+            {marketplaceSummary.installedPlugins} plugins
+          </div>
+        </div>
+        <div className="rounded border bg-background/40 px-2 py-1">
+          <div className="font-mono text-[9px]">Available</div>
+          <div className="text-[10px]">
+            {marketplaceSummary.availablePlugins} plugins
+          </div>
+        </div>
+        <div className="rounded border bg-background/40 px-2 py-1">
+          <div className="font-mono text-[9px]">Skills</div>
+          <div className="text-[10px]">
+            {marketplaceSummary.enabledSkills} enabled /{' '}
+            {marketplaceSummary.disabledSkills} other
+          </div>
+        </div>
+        <div className="rounded border bg-background/40 px-2 py-1">
+          <div className="font-mono text-[9px]">Sources</div>
+          <div className="text-[10px]">
+            {codexMarketplaceDescriptors.length} marketplaces
+          </div>
+        </div>
       </div>
       <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-2">
         <Input

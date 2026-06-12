@@ -273,8 +273,6 @@ export class CodexAppServerSession {
       numTurns: normalizePositiveTurnCount(numTurns),
     })
   }
-
-
   async startReview(
     appThreadId: string,
     target: CodexReviewTarget,

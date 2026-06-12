@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import type { CodexReviewTarget } from '@/lib/codex-app-server/api'
 
 import {
   parseCodexJson,
@@ -8,6 +10,14 @@ import {
 } from '../shared/codex-helpers'
 
 type JsonObject = Record<string, unknown>
+type ReviewDeliveryMode = 'detached' | 'inline'
+type ThreadActionParamField = {
+  key: string
+  value: string
+}
+type ThreadInjectItemField = {
+  value: string
+}
 
 function buildMetadataJson(previous: JsonObject, source: string, workspace: string): string {
   const next: JsonObject = {
@@ -49,6 +59,94 @@ function buildSettingsJson(previous: JsonObject, approvalPolicy: string, sandbox
   return stringifyCodexJson(next, '{}')
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseThreadActionParams(value: string): Record<string, unknown> | null {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return {}
+  }
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!isPlainObject(parsed)) {
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function parseThreadActionParamValue(value: string): unknown {
+  const trimmed = value.trim()
+  if (!trimmed) return value
+  if (trimmed === 'true') return true
+  if (trimmed === 'false') return false
+  if (trimmed === 'null') return null
+  if (!Number.isNaN(Number(trimmed))) return Number(trimmed)
+  if (
+    (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']'))
+  ) {
+    try {
+      return JSON.parse(trimmed)
+    } catch {
+      return value
+    }
+  }
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1)
+  }
+  return value
+}
+
+function parseThreadInjectItems(value: string): unknown[] | null {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return []
+  }
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!Array.isArray(parsed)) {
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function parseThreadInjectItemValue(value: string): unknown {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  if (trimmed === 'true') return true
+  if (trimmed === 'false') return false
+  if (trimmed === 'null') return null
+  if (!Number.isNaN(Number(trimmed))) return Number(trimmed)
+  if (
+    (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']'))
+  ) {
+    try {
+      return JSON.parse(trimmed)
+    } catch {
+      return value
+    }
+  }
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1)
+  }
+  return value
+}
+
 type CodexThreadSummary = {
   id: string
   name?: string
@@ -87,8 +185,8 @@ type ThreadsPanelProps = {
   codexThreadTurns: unknown
   codexThreadActionParamsJson: string
   codexThreadReviewBranch: string
-  codexThreadReviewDelivery: string
-  codexThreadReviewType: string
+  codexThreadReviewDelivery: ReviewDeliveryMode
+  codexThreadReviewType: CodexReviewTarget['type']
   codexTurnItemsLimit: string
   currentThreadIdForCaps: string | null | undefined
   cwd?: string
@@ -143,8 +241,8 @@ type ThreadsPanelProps = {
   onSetCodexTurnItemsLimit: (value: string) => void
   onSetCodexThreadActionParamsJson: (value: string) => void
   onSetCodexThreadReviewBranch: (value: string) => void
-  onSetCodexThreadReviewDelivery: (value: string) => void
-  onSetCodexThreadReviewType: (value: string) => void
+  onSetCodexThreadReviewDelivery: (value: 'detached' | 'inline') => void
+  onSetCodexThreadReviewType: (value: CodexReviewTarget['type']) => void
   onSettings: () => void
   onSetGoal: () => void
   onTemplateInjectText: () => void
@@ -306,6 +404,197 @@ export function ThreadsPanel({
     )
   }
 
+  const reviewTypeValue = codexThreadReviewType
+  const reviewDeliveryValue: ReviewDeliveryMode =
+    codexThreadReviewDelivery.trim() === 'inline' ? 'inline' : 'detached'
+  const [reviewCommitSha, setReviewCommitSha] = useState('')
+  const [reviewCommitTitle, setReviewCommitTitle] = useState('')
+  const [reviewCustomInstructions, setReviewCustomInstructions] = useState('')
+  const [showAdvancedThreadActionParams, setShowAdvancedThreadActionParams] =
+    useState(false)
+  const [threadActionParamFields, setThreadActionParamFields] = useState<
+    ThreadActionParamField[]
+  >([{ key: '', value: '' }])
+  const [showAdvancedInjectItemsJson, setShowAdvancedInjectItemsJson] =
+    useState(false)
+  const [threadInjectItemFields, setThreadInjectItemFields] = useState<
+    ThreadInjectItemField[]
+  >([{ value: '' }])
+  const reviewTargetMode =
+    reviewTypeValue === 'baseBranch'
+      ? 'baseBranch'
+      : reviewTypeValue === 'commit'
+        ? 'commit'
+        : reviewTypeValue === 'custom'
+          ? 'custom'
+          : reviewTypeValue === 'uncommittedChanges'
+            ? 'uncommittedChanges'
+            : 'uncommittedChanges'
+
+  const buildThreadReviewTarget = (): CodexReviewTarget | null => {
+    if (reviewTargetMode === 'baseBranch') {
+      return {
+        type: 'baseBranch',
+        branch: codexThreadReviewBranch.trim() || 'main',
+      }
+    }
+
+    if (reviewTargetMode === 'commit') {
+      const sha = reviewCommitSha.trim()
+      if (!sha) return null
+      const title = reviewCommitTitle.trim()
+      return {
+        type: 'commit',
+        sha,
+        ...(title ? { title } : {}),
+      }
+    }
+
+    if (reviewTargetMode === 'custom') {
+      const instructions = reviewCustomInstructions.trim()
+      if (!instructions) return null
+      return {
+        type: 'custom',
+        instructions,
+      }
+    }
+
+    return { type: 'uncommittedChanges' }
+  }
+
+  const parsedThreadActionParams = parseThreadActionParams(
+    codexThreadActionParamsJson || '{}'
+  )
+  const threadActionParamsMessage = parsedThreadActionParams === null
+    ? 'Thread action params JSON must be a valid JSON object.'
+    : null
+
+  const setThreadActionParamFieldsFromValue = (
+    fields: ThreadActionParamField[] = threadActionParamFields
+  ) => {
+    const nextPayload = fields.reduce<Record<string, unknown>>((acc, field) => {
+      const nextKey = field.key.trim()
+      if (!nextKey) return acc
+      if (Object.prototype.hasOwnProperty.call(acc, nextKey)) return acc
+      acc[nextKey] = parseThreadActionParamValue(field.value)
+      return acc
+    }, {})
+    onSetCodexThreadActionParamsJson(stringifyCodexJson(nextPayload, '{}'))
+  }
+
+  const setThreadActionParamField = (
+    index: number,
+    field: ThreadActionParamField
+  ) => {
+    const nextFields = threadActionParamFields.map((nextField, nextIndex) =>
+      nextIndex === index ? field : nextField
+    )
+    setThreadActionParamFields(nextFields)
+    if (!showAdvancedThreadActionParams) {
+      setThreadActionParamFieldsFromValue(nextFields)
+    }
+  }
+
+  const addThreadActionParamField = () => {
+    setThreadActionParamFields([...threadActionParamFields, { key: '', value: '' }])
+  }
+
+  const removeThreadActionParamField = (index: number) => {
+    const nextFields = threadActionParamFields.filter((_, nextIndex) => {
+      return nextIndex !== index
+    })
+    const fallbackFields = nextFields.length ? nextFields : [{ key: '', value: '' }]
+    setThreadActionParamFields(fallbackFields)
+    if (!showAdvancedThreadActionParams) {
+      setThreadActionParamFieldsFromValue(fallbackFields)
+    }
+  }
+  const setThreadInjectItemFieldsFromValue = (
+    fields: ThreadInjectItemField[] = threadInjectItemFields
+  ) => {
+    const nextItems = fields.reduce<unknown[]>((acc, field) => {
+      const nextValue = field.value.trim()
+      if (!nextValue) return acc
+      acc.push(parseThreadInjectItemValue(field.value))
+      return acc
+    }, [])
+    onSetCodexInjectItemsJson(stringifyCodexJson(nextItems, '[]'))
+  }
+
+  const setThreadInjectItemField = (
+    index: number,
+    value: string
+  ) => {
+    const nextFields = threadInjectItemFields.map((nextField, nextIndex) =>
+      nextIndex === index ? { ...nextField, value } : nextField
+    )
+    setThreadInjectItemFields(nextFields)
+    if (!showAdvancedInjectItemsJson) {
+      setThreadInjectItemFieldsFromValue(nextFields)
+    }
+  }
+
+  const addThreadInjectItem = () => {
+    setThreadInjectItemFields([...threadInjectItemFields, { value: '' }])
+  }
+
+  const removeThreadInjectItem = (index: number) => {
+    const nextFields = threadInjectItemFields.filter((_, nextIndex) => {
+      return nextIndex !== index
+    })
+    const fallbackFields = nextFields.length ? nextFields : [{ value: '' }]
+    setThreadInjectItemFields(fallbackFields)
+    if (!showAdvancedInjectItemsJson) {
+      setThreadInjectItemFieldsFromValue(fallbackFields)
+    }
+  }
+
+  useEffect(() => {
+    if (showAdvancedThreadActionParams) return
+    const nextParsedThreadActionParams = parseThreadActionParams(
+      codexThreadActionParamsJson || '{}'
+    )
+    if (!nextParsedThreadActionParams) {
+      setThreadActionParamFields([{ key: '', value: '' }])
+      return
+    }
+    const nextFields = Object.entries(nextParsedThreadActionParams).map(
+      ([fieldKey, fieldValue]) => ({
+        key: fieldKey,
+        value:
+          typeof fieldValue === 'string'
+            ? fieldValue
+            : stringifyCodexJson(fieldValue, String(fieldValue ?? '')),
+      })
+    )
+    setThreadActionParamFields(nextFields.length ? nextFields : [{ key: '', value: '' }])
+  }, [showAdvancedThreadActionParams, codexThreadActionParamsJson])
+
+  useEffect(() => {
+    if (showAdvancedInjectItemsJson) return
+    const nextParsedInjectItems = parseThreadInjectItems(codexInjectItemsJson || '[]')
+    if (!nextParsedInjectItems) {
+      setThreadInjectItemFields([{ value: '' }])
+      return
+    }
+    const nextFields = nextParsedInjectItems.map((item) => {
+      if (typeof item === 'string') return { value: item }
+      return { value: stringifyCodexJson(item, '') }
+    })
+    setThreadInjectItemFields(nextFields.length ? nextFields : [{ value: '' }])
+  }, [showAdvancedInjectItemsJson, codexInjectItemsJson])
+
+  const reviewTarget = buildThreadReviewTarget()
+  const canRunTypedReview =
+    Boolean(targetCodexThreadId) && !threadBusy && reviewTarget !== null
+  const buildThreadReviewParams = () => {
+    if (!reviewTarget) return null
+    return {
+      delivery: reviewDeliveryValue,
+      target: reviewTarget,
+    }
+  }
+
   return (
     <div className="mb-2 border rounded p-1 bg-background/50 text-[10px]">
       <div className="font-mono mb-1 flex items-center justify-between gap-2">
@@ -400,12 +689,68 @@ export function ThreadsPanel({
             />
           </details>
         </div>
-        <textarea
-          className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-          placeholder="Items JSON array to inject"
-          value={codexInjectItemsJson}
-          onChange={(event) => onSetCodexInjectItemsJson(event.target.value)}
-        />
+        <div className="min-h-12 grid grid-cols-1 gap-1">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="text-[9px] underline disabled:opacity-50"
+              onClick={() =>
+                setShowAdvancedInjectItemsJson((previous) => !previous)
+              }
+            >
+              {showAdvancedInjectItemsJson
+                ? 'Use item rows'
+                : 'Advanced inject items JSON'}
+            </button>
+          </div>
+          {showAdvancedInjectItemsJson ? (
+            <textarea
+              className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+              placeholder="Inject items JSON array"
+              value={codexInjectItemsJson}
+              onChange={(event) =>
+                onSetCodexInjectItemsJson(event.target.value)
+              }
+            />
+          ) : (
+            <div className="space-y-1">
+              {threadInjectItemFields.map((field, index) => (
+                <div
+                  key={`${field.value || 'item'}-${index}`}
+                  className="grid grid-cols-[1fr_auto] gap-1"
+                >
+                  <textarea
+                    className="min-h-8 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+                    placeholder="Inject item (JSON value/object or plain text)"
+                    value={field.value}
+                    onChange={(event) =>
+                      setThreadInjectItemField(index, event.target.value)
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="text-[9px] underline disabled:opacity-50"
+                    onClick={() => removeThreadInjectItem(index)}
+                  >
+                    remove
+                  </button>
+                </div>
+              ))}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[9px] text-muted-foreground">
+                  Add one inject item per row.
+                </span>
+                <button
+                  type="button"
+                  className="text-[9px] underline disabled:opacity-50"
+                  onClick={addThreadInjectItem}
+                >
+                  + add item
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
       <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
         <button type="button" className="text-[9px] underline" onClick={() => onTemplateMetadata()}>Metadata template</button>
@@ -415,32 +760,141 @@ export function ThreadsPanel({
         <button type="button" className="text-[9px] underline" onClick={() => onTemplateReviewBranch()}>Review branch template</button>
       </div>
       <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-3">
-        <Input
-          className="h-6 px-2 text-[10px]"
-          placeholder="Review type (uncommittedChanges / branch)"
-          value={codexThreadReviewType}
-          onChange={(event) => onSetCodexThreadReviewType(event.target.value)}
-        />
-        <Input
-          className="h-6 px-2 text-[10px]"
-          placeholder="Review branch (for branch type)"
-          value={codexThreadReviewBranch}
-          onChange={(event) => onSetCodexThreadReviewBranch(event.target.value)}
-        />
-        <Input
-          className="h-6 px-2 text-[10px]"
-          placeholder="Review delivery (detached)"
-          value={codexThreadReviewDelivery}
-          onChange={(event) => onSetCodexThreadReviewDelivery(event.target.value)}
-        />
+        <select
+          className="h-6 rounded border bg-background px-2 text-[10px]"
+          value={reviewTargetMode}
+          onChange={(event) =>
+            onSetCodexThreadReviewType(
+              event.target.value as 'uncommittedChanges' | 'baseBranch' | 'commit' | 'custom'
+            )
+          }
+        >
+          <option value="uncommittedChanges">Uncommitted changes</option>
+          <option value="baseBranch">Base branch</option>
+          <option value="commit">Commit</option>
+          <option value="custom">Custom instructions</option>
+        </select>
+        {reviewTargetMode === 'baseBranch' ? (
+          <Input
+            className="h-6 px-2 text-[10px]"
+            placeholder="Review branch (for base branch mode)"
+            value={codexThreadReviewBranch}
+            onChange={(event) => onSetCodexThreadReviewBranch(event.target.value)}
+          />
+        ) : null}
+        {reviewTargetMode === 'commit' ? (
+          <>
+            <Input
+              className="h-6 px-2 text-[10px]"
+              placeholder="Review commit SHA"
+              value={reviewCommitSha}
+              onChange={(event) => setReviewCommitSha(event.target.value)}
+            />
+            <Input
+              className="h-6 px-2 text-[10px]"
+              placeholder="Optional commit title"
+              value={reviewCommitTitle}
+              onChange={(event) => setReviewCommitTitle(event.target.value)}
+            />
+          </>
+        ) : null}
+        {reviewTargetMode === 'custom' ? (
+          <textarea
+            className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+            placeholder="Custom review instructions"
+            value={reviewCustomInstructions}
+            onChange={(event) => setReviewCustomInstructions(event.target.value)}
+          />
+        ) : null}
+        <select
+          className="h-6 rounded border bg-background px-2 text-[10px]"
+          value={reviewDeliveryValue === 'inline' ? 'inline' : 'detached'}
+          onChange={(event) =>
+            onSetCodexThreadReviewDelivery(event.target.value as 'detached' | 'inline')
+          }
+        >
+          <option value="detached">Detached</option>
+          <option value="inline">Inline</option>
+        </select>
       </div>
       <div className="mb-1">
-        <textarea
-          className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-          placeholder="Thread action params JSON"
-          value={codexThreadActionParamsJson}
-          onChange={(event) => onSetCodexThreadActionParamsJson(event.target.value)}
-        />
+        <div className="mb-1 flex gap-2">
+          <button
+            type="button"
+            className="text-[9px] underline"
+            onClick={() =>
+              setShowAdvancedThreadActionParams((previous) => !previous)
+            }
+          >
+            {showAdvancedThreadActionParams
+              ? 'Use params form'
+              : 'Advanced action params JSON'}
+          </button>
+        </div>
+        {showAdvancedThreadActionParams ? (
+          <textarea
+            className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+            placeholder="Thread action params JSON"
+            value={codexThreadActionParamsJson}
+            onChange={(event) =>
+              onSetCodexThreadActionParamsJson(event.target.value)
+            }
+          />
+        ) : (
+          <div className="mb-1 space-y-1">
+            {threadActionParamFields.map((field, index) => (
+              <div
+                key={`${field.key || 'param'}-${index}`}
+                className="grid grid-cols-[1.2fr_1.8fr_auto] gap-1"
+              >
+                <Input
+                  className="h-6 px-2 text-[10px]"
+                  placeholder="param key"
+                  value={field.key}
+                  onChange={(event) =>
+                    setThreadActionParamField(index, {
+                      ...field,
+                      key: event.target.value,
+                    })
+                  }
+                />
+                <Input
+                  className="h-6 px-2 text-[10px]"
+                  placeholder="param value"
+                  value={field.value}
+                  onChange={(event) =>
+                    setThreadActionParamField(index, {
+                      ...field,
+                      value: event.target.value,
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  className="text-[9px] underline disabled:opacity-50"
+                  onClick={() => removeThreadActionParamField(index)}
+                >
+                  remove
+                </button>
+              </div>
+            ))}
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[9px] text-muted-foreground">
+                Add top-level params for thread action payload.
+              </span>
+              <button
+                type="button"
+                className="text-[9px] underline disabled:opacity-50"
+                onClick={addThreadActionParamField}
+              >
+                + add param
+              </button>
+            </div>
+          </div>
+        )}
+        {threadActionParamsMessage ? (
+          <div className="mb-1 text-destructive">{threadActionParamsMessage}</div>
+        ) : null}
         <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1">
           <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onSearchThreads()}>Search</button>
           <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!currentThreadIdForCaps || threadBusy} onClick={() => onStartThread()}>Start</button>
@@ -510,8 +964,10 @@ export function ThreadsPanel({
           disabled={!targetCodexThreadId || threadBusy}
           onClick={() =>
             onReview({
-              type: 'uncommittedChanges',
-              delivery: codexThreadReviewDelivery.trim() || 'detached',
+              delivery: reviewDeliveryValue,
+              target: {
+                type: 'uncommittedChanges',
+              },
             })
           }
         >
@@ -523,9 +979,11 @@ export function ThreadsPanel({
           disabled={!targetCodexThreadId || threadBusy}
           onClick={() =>
             onReview({
-              type: 'branch',
-              base: codexThreadReviewBranch.trim() || 'main',
-              delivery: codexThreadReviewDelivery.trim() || 'detached',
+              delivery: reviewDeliveryValue,
+              target: {
+                type: 'baseBranch',
+                branch: codexThreadReviewBranch.trim() || 'main',
+              },
             })
           }
         >
@@ -534,15 +992,12 @@ export function ThreadsPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!targetCodexThreadId || threadBusy}
-          onClick={() =>
-            onReview({
-              type: codexThreadReviewType.trim() || 'uncommittedChanges',
-              ...(codexThreadReviewType.trim() === 'branch' &&
-              { base: codexThreadReviewBranch.trim() || 'main' }),
-              delivery: codexThreadReviewDelivery.trim() || 'detached',
-            })
-          }
+          disabled={!canRunTypedReview}
+          onClick={() => {
+            const params = buildThreadReviewParams()
+            if (!params) return
+            onReview(params)
+          }}
         >
           Review with typed params
         </button>
@@ -553,14 +1008,23 @@ export function ThreadsPanel({
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onRealtimeAudio()}>Realtime audio</button>
         <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onRealtimeStop()}>Realtime stop</button>
       </div>
-      <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
-        <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words">
-          {codexLoadedThreads ? JSON.stringify(codexLoadedThreads, null, 2) : '— loaded threads'}
-        </pre>
-        <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words">
-          {codexStoredThreads ? JSON.stringify(codexStoredThreads, null, 2) : '— stored threads'}
-        </pre>
+      <div className="mb-0.5 flex items-center gap-2 text-[8px] text-muted-foreground">
+        <span>Thread data sources</span>
+        <span className="text-blue-300">L:{codexThreadDescriptors.filter((t) => t.source === 'loaded').length}</span>
+        <span className="text-amber-300">S:{codexThreadDescriptors.filter((t) => t.source === 'stored').length}</span>
+        <span className="text-[7px]">(table is the primary readable view; raw below for diagnostics)</span>
       </div>
+      <details className="mb-1 text-[8px]">
+        <summary className="cursor-pointer text-muted-foreground">Raw loaded / stored responses (JSON)</summary>
+        <div className="mt-0.5 grid grid-cols-1 gap-1 md:grid-cols-2">
+          <pre className="max-h-16 overflow-auto whitespace-pre-wrap break-words border rounded p-0.5">
+            {codexLoadedThreads ? JSON.stringify(codexLoadedThreads, null, 2) : '— loaded threads'}
+          </pre>
+          <pre className="max-h-16 overflow-auto whitespace-pre-wrap break-words border rounded p-0.5">
+            {codexStoredThreads ? JSON.stringify(codexStoredThreads, null, 2) : '— stored threads'}
+          </pre>
+        </div>
+      </details>
       {codexThreadDescriptors.length ? (
         <div className="mt-1 grid grid-cols-1 gap-1 md:grid-cols-3">
           <Input className="h-6 px-2 text-[10px]" placeholder="Search threads" value={codexThreadFilter} onChange={(event) => onSetCodexThreadFilter(event.target.value)} />
@@ -579,46 +1043,54 @@ export function ThreadsPanel({
       {codexThreadDescriptors.length ? (
         <div className="mt-1">
           <div className="text-[9px] text-muted-foreground mb-0.5">
-            {filteredCodexThreadDescriptors.length}/{codexThreadDescriptors.length} threads (click row to select)
+            {filteredCodexThreadDescriptors.length}/{codexThreadDescriptors.length} threads — loaded: {filteredCodexThreadDescriptors.filter((t) => t.source === 'loaded').length}/{codexThreadDescriptors.filter((t) => t.source === 'loaded').length} • stored: {filteredCodexThreadDescriptors.filter((t) => t.source === 'stored').length}/{codexThreadDescriptors.filter((t) => t.source === 'stored').length} (click row to select)
           </div>
-          <table className="w-full text-[9px] font-mono border-collapse">
+          <table className="w-full text-[8px] font-mono border-collapse">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
-                <th className="px-1 py-0.5">Id / Name</th>
-                <th className="px-1 py-0.5">Status</th>
-                <th className="px-1 py-0.5">Source</th>
-                <th className="px-1 py-0.5">Updated</th>
-                <th className="px-1 py-0.5">Turns</th>
-                <th className="px-1 py-0.5">Items</th>
-                <th className="px-1 py-0.5">Goal</th>
+                <th className="px-0.5 py-px">Id / Name</th>
+                <th className="px-0.5 py-px">Status</th>
+                <th className="px-0.5 py-px">Source</th>
+                <th className="px-0.5 py-px">Updated</th>
+                <th className="px-0.5 py-px">Turns</th>
+                <th className="px-0.5 py-px">Items</th>
+                <th className="px-0.5 py-px">Goal</th>
               </tr>
             </thead>
             <tbody>
               {filteredCodexThreadDescriptors.map((thread) => {
                 const isSelected = targetCodexThreadId === thread.id
+                const sourceBadge = thread.source === 'loaded' ? 'L' : 'S'
+                const sourceClass = thread.source === 'loaded' ? 'bg-blue-500/30 text-blue-200' : 'bg-amber-500/30 text-amber-200'
                 return (
                   <tr
                     key={thread.id}
                     className={cn(
                       'border-b hover:bg-accent cursor-pointer',
-                      isSelected && 'bg-accent'
+                      isSelected && 'bg-accent',
+                      thread.source === 'loaded' ? 'border-l-2 border-l-blue-500/40' : 'border-l-2 border-l-amber-500/40'
                     )}
                     title={thread.id}
                     onClick={() => onSetCodexThreadId(thread.id)}
                   >
-                    <td className="px-1 py-0.5 truncate max-w-[12em]">{thread.name ?? thread.id}</td>
-                    <td className="px-1 py-0.5 truncate text-muted-foreground">{thread.status ?? '—'}</td>
-                    <td className="px-1 py-0.5 text-muted-foreground">{thread.source}</td>
-                    <td className="px-1 py-0.5 truncate text-muted-foreground">{thread.updatedAt ?? '—'}</td>
-                    <td className="px-1 py-0.5">{(thread as any).turns ?? '—'}</td>
-                    <td className="px-1 py-0.5">{(thread as any).turnItems ?? '—'}</td>
-                    <td className="px-1 py-0.5 truncate max-w-[10em] text-muted-foreground">{(thread as any).goal ?? '—'}</td>
+                    <td className="px-0.5 py-px truncate max-w-[12em]">
+                      <span className={cn('inline-block w-3 text-center rounded text-[6px] mr-0.5 font-sans', sourceClass)}>{sourceBadge}</span>
+                      {thread.name ?? thread.id}
+                    </td>
+                    <td className="px-0.5 py-px truncate text-muted-foreground">{thread.status ?? '—'}</td>
+                    <td className="px-0.5 py-px">
+                      <span className={cn('rounded px-0.5 text-[6px] font-sans', sourceClass)}>{thread.source}</span>
+                    </td>
+                    <td className="px-0.5 py-px truncate text-muted-foreground">{thread.updatedAt ?? '—'}</td>
+                    <td className="px-0.5 py-px">{(thread as any).turns ?? '—'}</td>
+                    <td className="px-0.5 py-px">{(thread as any).turnItems ?? '—'}</td>
+                    <td className="px-0.5 py-px truncate max-w-[10em] text-muted-foreground">{(thread as any).goal ?? '—'}</td>
                   </tr>
                 )
               })}
               {!filteredCodexThreadDescriptors.length ? (
                 <tr>
-                  <td colSpan={7} className="px-1 py-1 text-muted-foreground">No matching Codex threads.</td>
+                  <td colSpan={7} className="px-0.5 py-1 text-muted-foreground">No matching Codex threads.</td>
                 </tr>
               ) : null}
             </tbody>
@@ -664,25 +1136,26 @@ export function ThreadsPanel({
             <span>{selectedCodexThreadSummary.turnItems ?? '—'}</span>
             <span className="text-muted-foreground">goal</span>
             <span className="truncate md:col-span-3">{selectedCodexThreadSummary.goal || '—'}</span>
-            <span className="text-muted-foreground">snapshot</span>
-            <span className="truncate md:col-span-3">{selectedCodexThreadSummary.snapshot || '—'}</span>
           </div>
         </div>
       ) : null}
-      <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words">
-        {codexThreadSnapshot || codexThreadTurns || codexThreadTurnItems || codexThreadGoal
-          ? JSON.stringify(
-              {
-                thread: codexThreadSnapshot,
-                turns: codexThreadTurns,
-                turnItems: codexThreadTurnItems,
-                goal: codexThreadGoal,
-              },
-              null,
-              2
-            )
-          : '— selected thread'}
-      </pre>
+      <details className="mt-1 text-[8px]">
+        <summary className="cursor-pointer text-muted-foreground">Selected thread raw data (snapshot / turns / items / goal JSON — reduced prominence for readable summaries)</summary>
+        <pre className="mt-0.5 max-h-28 overflow-auto whitespace-pre-wrap break-words border rounded p-0.5">
+          {codexThreadSnapshot || codexThreadTurns || codexThreadTurnItems || codexThreadGoal
+            ? JSON.stringify(
+                {
+                  thread: codexThreadSnapshot,
+                  turns: codexThreadTurns,
+                  turnItems: codexThreadTurnItems,
+                  goal: codexThreadGoal,
+                },
+                null,
+                2
+              )
+            : '— selected thread'}
+        </pre>
+      </details>
       {selectableCodexTurnIds.length ? (
         <div className="mt-1 flex flex-wrap gap-1">
           {selectableCodexTurnIds.map((turnId) => (

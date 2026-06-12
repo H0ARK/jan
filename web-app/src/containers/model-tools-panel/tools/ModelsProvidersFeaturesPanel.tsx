@@ -20,6 +20,7 @@ type ModelsProvidersFeaturesPanelProps = {
   onSetCapError: (message: string | null) => void
   onRefreshCodexModelSnapshot: () => Promise<void> | void
   onRunCodexModelAction: (method: string, params: any, success?: any) => Promise<unknown | null> | void
+  isCodexProtoTransport?: boolean
 }
 
 export function ModelsProvidersFeaturesPanel({
@@ -35,6 +36,7 @@ export function ModelsProvidersFeaturesPanel({
   onSetCapError,
   onRefreshCodexModelSnapshot,
   onRunCodexModelAction,
+  isCodexProtoTransport,
 }: ModelsProvidersFeaturesPanelProps) {
   const [showAdvancedFeatureJson, setShowAdvancedFeatureJson] = useState(false)
   const [featureName, setFeatureName] = useState('remoteControl')
@@ -81,7 +83,7 @@ export function ModelsProvidersFeaturesPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || modelAdminBusy}
+          disabled={!currentThreadIdForCaps || modelAdminBusy || !!isCodexProtoTransport}
           onClick={() => void onRefreshCodexModelSnapshot()}
         >
           {modelAdminBusy ? 'Loading' : 'Refresh'}
@@ -96,7 +98,7 @@ export function ModelsProvidersFeaturesPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={modelAdminBusy}
+          disabled={modelAdminBusy || !!isCodexProtoTransport}
           onClick={() =>
             setShowAdvancedFeatureJson((previous) => !previous)
           }
@@ -157,7 +159,7 @@ export function ModelsProvidersFeaturesPanel({
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!currentThreadIdForCaps || modelAdminBusy}
+          disabled={!currentThreadIdForCaps || modelAdminBusy || !!isCodexProtoTransport}
           onClick={() => {
             const features = parsedFeaturePayload.features
             const nextFeatures =
@@ -186,7 +188,8 @@ export function ModelsProvidersFeaturesPanel({
             !currentThreadIdForCaps ||
             modelAdminBusy ||
             !codexEnvironmentId.trim() ||
-            !codexEnvironmentExecUrl.trim()
+            !codexEnvironmentExecUrl.trim() ||
+            !!isCodexProtoTransport
           }
           onClick={() => {
             void onRunCodexModelAction(
