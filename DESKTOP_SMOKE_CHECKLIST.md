@@ -1,20 +1,21 @@
 # Jan Codex Runtime — Desktop Smoke Checklist
 
 **Date anchor**: 2026-06-12  
-**Branch**: `feature/codex-runtime-preview` (commit 98b02f3d4)  
+**Source**: run from the current repo worktree; do not use the installed `/Applications/Jan.app` as evidence.  
 **Purpose**: Verify real end-to-end Codex app-server behavior in the built Tauri desktop app (things browser preview and unit tests cannot cover).
 
 ## Prerequisites (run once)
-- `git checkout feature/codex-runtime-preview && git pull origin feature/codex-runtime-preview`
 - Ensure Codex desktop binary is at `/Applications/Codex.app/Contents/Resources/codex` (or update your profile)
 - Run `yarn install` and any `download:bin` / `build:cli` / `build:mlx-server` if needed for the Tauri side
 - Run `yarn codex:desktop:preflight`
 - Start a structured report with `yarn codex:desktop:smoke:report`; fill the generated file in `reports/codex-desktop-smoke/` as this checklist is executed
 - After filling the report, run `yarn codex:desktop:smoke:validate`; the goal is not v1-complete until this validator passes on the filled report. If multiple report templates exist, pass the specific report path directly to the validator.
-- Final v1 readiness gate: run `yarn codex:desktop:ready`; this enforces preflight plus a validated filled desktop-smoke report. To avoid validating the wrong latest template, run `yarn codex:desktop:ready reports/codex-desktop-smoke/<filled-report>.md`.
+- Final v1 readiness gate: run `yarn codex:desktop:ready`; this enforces preflight, a validated filled desktop-smoke report, and a live Jan debug bridge snapshot with `clientErrors=0`. To avoid validating the wrong latest template, run `yarn codex:desktop:ready reports/codex-desktop-smoke/<filled-report>.md`.
 - Build or launch the desktop app:
-  - Dev: `yarn tauri dev` (or via Makefile)
+  - Dev: `yarn dev:tauri`
   - Or full build: `yarn build:tauri:darwin` (universal) then run the .app
+- After the repo-local desktop app is running, run `yarn jan:debug:mcp:smoke` and paste the fresh output into the report. This is the app-state source of truth for avoiding accidental validation against the installed `/Applications` Jan app or a stale window.
+- For an enforced live bridge preflight during the interactive pass, run `REQUIRE_JAN_DEBUG_BRIDGE=1 yarn codex:desktop:preflight`; this must pass with `clientErrors=0` before the manual smoke result can count toward v1.
 - In the app, make sure you have at least one Codex-capable model/profile configured (or let it default to the built-in codex path).
 - Have a git repo open for review testing (the /review panel).
 
@@ -92,6 +93,8 @@
   - Review panel after Codex edit
   - Runtime terminal/process panel
 - Console / log excerpts for process start + events
+- Fresh `yarn jan:debug:mcp:smoke` output showing the route and selected provider/model
+- The same bridge output must show `clientErrors=0`
 - Any error messages or unexpected behaviors
 - The exact Codex binary version shown (`-V`)
 

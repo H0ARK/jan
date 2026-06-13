@@ -159,36 +159,30 @@ export function SamplerPopover({
 
   return (
     <Popover>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <PopoverTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              aria-label="Sampling parameters"
-              className="relative"
-              disabled={assistantsLoading}
-            >
-              <IconAdjustmentsHorizontal
-                size={18}
-                className={cn(
-                  'text-muted-foreground',
-                  hasOverrides && 'text-primary'
-                )}
-              />
-              {hasOverrides && (
-                <span
-                  aria-hidden
-                  className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary"
-                />
-              )}
-            </Button>
-          </PopoverTrigger>
-        </TooltipTrigger>
-        <TooltipContent>
-          <p>{triggerLabel}</p>
-        </TooltipContent>
-      </Tooltip>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Sampling parameters"
+          title={triggerLabel}
+          className="relative"
+          disabled={assistantsLoading}
+        >
+          <IconAdjustmentsHorizontal
+            size={18}
+            className={cn(
+              'text-muted-foreground',
+              hasOverrides && 'text-primary'
+            )}
+          />
+          {hasOverrides && (
+            <span
+              aria-hidden
+              className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary"
+            />
+          )}
+        </Button>
+      </PopoverTrigger>
 
       <PopoverContent
         align="start"

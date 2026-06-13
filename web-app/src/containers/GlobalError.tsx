@@ -1,12 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 interface GlobalErrorProps {
   error: Error | unknown
 }
 
 export default function GlobalError({ error }: GlobalErrorProps) {
-  console.error('Error in root route:', error)
   const [showFull, setShowFull] = useState(false)
+
+  useEffect(() => {
+    console.error('Error in root route:', error)
+  }, [error])
 
   return (
     <div className="flex h-screen w-full items-center justify-center overflow-auto bg-red-50 p-5">

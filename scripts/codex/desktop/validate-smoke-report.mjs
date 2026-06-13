@@ -79,8 +79,71 @@ function findLatestReport() {
   return latest ? join(reportsDir, latest) : null
 }
 
+function parseFirstJsonObject(text, startIndex = 0) {
+  const objectStart = text.indexOf('{', startIndex)
+  if (objectStart < 0) return null
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = objectStart; index < text.length; index += 1) {
+    const char = text[index]
+
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (char === '"') {
+      inString = true
+      continue
+    }
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(objectStart, index + 1))
+        } catch {
+          return null
+        }
+      }
+    }
+  }
+
+  return null
+}
+
+function parseJanDebugBridgeSnapshot(text) {
+  const labelIndex = text.indexOf('- Jan debug bridge snapshot:')
+  if (labelIndex < 0) return null
+  return parseFirstJsonObject(text, labelIndex)
+}
+
+function parseDesktopRuntimeSnapshot(text) {
+  const labelIndex = text.indexOf('- Desktop runtime process snapshot:')
+  if (labelIndex < 0) return null
+  return parseFirstJsonObject(text, labelIndex)
+}
+
+function parseDevFocusEvidence(text) {
+  const labelIndex = text.indexOf('- Dev focus evidence:')
+  if (labelIndex < 0) return null
+  return parseFirstJsonObject(text, labelIndex)
+}
+
 function validateReportText(text, context = {}) {
   const checks = []
+  const janDebugBridgeSnapshot = parseJanDebugBridgeSnapshot(text)
+  const desktopRuntimeSnapshot = parseDesktopRuntimeSnapshot(text)
+  const devFocusEvidence = parseDevFocusEvidence(text)
+  const launchMode = text.match(/- App launch mode:\s*([^\n]+)/i)?.[1]?.trim() ?? ''
   const checkboxLines = text
     .split('\n')
     .map((line, index) => ({ line, number: index + 1 }))
@@ -165,9 +228,112 @@ function validateReportText(text, context = {}) {
       : fail('App launch mode is missing or unsupported')
   )
   checks.push(
+    desktopRuntimeSnapshot &&
+      Array.isArray(desktopRuntimeSnapshot.repoLocalJanProcesses) &&
+      Array.isArray(desktopRuntimeSnapshot.otherJanProcesses) &&
+      Array.isArray(desktopRuntimeSnapshot.localApiPort1337)
+      ? pass('Desktop runtime process snapshot is filled')
+      : fail('Desktop runtime process snapshot is missing')
+  )
+  checks.push(
+    /^dev:tauri\b/i.test(launchMode)
+      ? desktopRuntimeSnapshot?.repoLocalJanProcesses?.length === 1
+        ? pass('dev:tauri runtime has exactly one repo-local Jan process')
+        : fail(
+            'dev:tauri runtime does not prove exactly one repo-local Jan process',
+            desktopRuntimeSnapshot?.repoLocalJanProcesses ?? null
+          )
+      : pass('repo-local Jan process count is not required for built app mode')
+  )
+  checks.push(
+    /^dev:tauri\b/i.test(launchMode)
+      ? desktopRuntimeSnapshot?.otherJanProcesses?.length === 0
+        ? pass('dev:tauri runtime has no other Jan GUI/runtime processes')
+        : fail(
+            'dev:tauri runtime has other Jan GUI/runtime processes',
+            desktopRuntimeSnapshot?.otherJanProcesses ?? null
+          )
+      : pass('other Jan process check is not required for built app mode')
+  )
+  checks.push(
+    /^dev:tauri\b/i.test(launchMode)
+      ? devFocusEvidence?.ok === true &&
+        devFocusEvidence?.focused === true &&
+        typeof devFocusEvidence?.pid === 'number'
+        ? pass('dev:tauri focus evidence proves repo-local Jan was focused')
+        : fail('dev:tauri focus evidence is missing or did not focus Jan')
+      : pass('dev focus evidence is not required for built app mode')
+  )
+  checks.push(
+    desktopRuntimeSnapshot?.localApiPort1337?.some((line) =>
+      /TCP\s+127\.0\.0\.1:1337\s+\(LISTEN\)/.test(line)
+    )
+      ? pass('Desktop runtime snapshot includes Local API port owner')
+      : fail('Desktop runtime snapshot does not include 127.0.0.1:1337 listener owner')
+  )
+  checks.push(
     /- Screenshots or recordings:\s*(?!TODO)\S/i.test(text)
       ? pass('Screenshots or recordings are filled')
       : fail('Screenshots or recordings are missing')
+  )
+  checks.push(
+    janDebugBridgeSnapshot &&
+      janDebugBridgeSnapshot.route &&
+      janDebugBridgeSnapshot.selectedProvider &&
+      janDebugBridgeSnapshot.selectedModel
+      ? pass('Jan debug bridge snapshot evidence is filled')
+      : fail('Jan debug bridge snapshot evidence is missing')
+  )
+  checks.push(
+    janDebugBridgeSnapshot?.selectedProvider === 'codex'
+      ? pass('Jan debug bridge snapshot proves Codex provider is selected')
+      : fail(
+          'Jan debug bridge snapshot does not prove Codex provider is selected',
+          janDebugBridgeSnapshot?.selectedProvider ?? null
+        )
+  )
+  checks.push(
+    janDebugBridgeSnapshot?.ok === true
+      ? pass('Jan debug bridge smoke succeeded')
+      : fail('Jan debug bridge snapshot does not prove ok=true')
+  )
+  checks.push(
+    janDebugBridgeSnapshot?.clientErrors === 0
+      ? pass('Jan debug bridge snapshot has zero client errors')
+      : fail('Jan debug bridge snapshot does not prove clientErrors=0')
+  )
+  checks.push(
+    typeof janDebugBridgeSnapshot?.responseCount === 'number' &&
+      janDebugBridgeSnapshot.responseCount > 0
+      ? pass('Jan debug bridge snapshot includes tool response evidence')
+      : fail('Jan debug bridge snapshot does not include responseCount evidence')
+  )
+  checks.push(
+    janDebugBridgeSnapshot?.smokeEvidence?.routeReady === true &&
+      janDebugBridgeSnapshot?.smokeEvidence?.selectedModelReady === true
+      ? pass('Jan smoke evidence proves route/model readiness')
+      : fail('Jan smoke evidence does not prove route/model readiness')
+  )
+  checks.push(
+    janDebugBridgeSnapshot?.smokeEvidence?.selectedModelInProviderCatalog === true
+      ? pass('Jan smoke evidence proves selected model is in provider catalog')
+      : fail('Jan smoke evidence does not prove selected model is in provider catalog')
+  )
+  checks.push(
+    janDebugBridgeSnapshot?.smokeEvidence?.serverStatus === 'running'
+      ? pass('Jan smoke evidence proves app server status is running')
+      : fail('Jan smoke evidence does not prove app server status is running')
+  )
+  checks.push(
+    janDebugBridgeSnapshot?.smokeEvidence?.hasCodexAppServerLogs === true &&
+      Number(janDebugBridgeSnapshot?.smokeEvidence?.codexRuntimeLogCount ?? 0) > 0
+      ? pass('Jan smoke evidence proves Codex app-server logs are present')
+      : fail('Jan smoke evidence does not prove Codex app-server logs are present')
+  )
+  checks.push(
+    janDebugBridgeSnapshot?.smokeEvidence?.clientErrorCount === 0
+      ? pass('Jan smoke evidence proves zero client errors')
+      : fail('Jan smoke evidence does not prove zero client errors')
   )
   checks.push(
     /- \[[xX]\] Ready to mark Codex clone v1 complete/.test(text)
@@ -257,6 +423,11 @@ function runSelfTest() {
 - Tester: conrad
 - App launch mode: dev:tauri
 - Screenshots or recordings: reports/codex-desktop-smoke/screenshots/pass.png
+- Dev focus evidence: captured automatically; focused=true
+
+{"ok":true,"pid":12345,"repoLocalJanProcesses":["12345 target/debug/Jan"],"otherJanProcesses":[],"focused":true}
+- Jan debug bridge snapshot: {"ok":true,"route":"/","selectedProvider":"codex","selectedModel":"gpt-5.5","clientErrors":0,"responseCount":5,"snapshotGeneratedAt":"2026-06-12T21:00:00.000Z","smokeEvidence":{"routeReady":true,"selectedModelReady":true,"selectedModelInProviderCatalog":true,"serverStatus":"running","hasCodexAppServerLogs":true,"codexRuntimeLogCount":5,"clientErrorCount":0}}
+- Desktop runtime process snapshot: {"repoLocalJanProcesses":["12345 target/debug/Jan"],"otherJanProcesses":[],"localApiPort1337":["COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME","Jan 12345 conrad 25u IPv4 0xabc 0t0 TCP 127.0.0.1:1337 (LISTEN)"]}
 
 - [x] App launches cleanly
   Evidence: screenshot app.png
@@ -280,6 +451,11 @@ function runSelfTest() {
     '- Codex version: codex-cli 0.140.0-alpha.2',
     '- Codex version: codex-cli 0.139.0'
   )
+  const badBridgeReport = passingReport.replace('"ok":true', '"ok":false')
+  const nonCodexReport = passingReport.replace(
+    '"selectedProvider":"codex"',
+    '"selectedProvider":"xai"'
+  )
   const context = {
     branch: 'feature-codex-runtime-preview',
     commit: 'abc1234',
@@ -296,18 +472,24 @@ function runSelfTest() {
   const staleResult = validateReportText(staleReport, context)
   const staleVersionResult = validateReportText(staleVersionReport, context)
   const dirtyResult = validateReportText(passingReport, dirtyContext)
+  const badBridgeResult = validateReportText(badBridgeReport, context)
+  const nonCodexResult = validateReportText(nonCodexReport, context)
   if (
     passResult.overall !== 'passed' ||
     failResult.overall !== 'failed' ||
     staleResult.overall !== 'failed' ||
     staleVersionResult.overall !== 'failed' ||
-    dirtyResult.overall !== 'failed'
+    dirtyResult.overall !== 'failed' ||
+    badBridgeResult.overall !== 'failed' ||
+    nonCodexResult.overall !== 'failed'
   ) {
     printReport('self-test-pass', passResult)
     printReport('self-test-fail', failResult)
     printReport('self-test-stale', staleResult)
     printReport('self-test-stale-version', staleVersionResult)
     printReport('self-test-dirty-source', dirtyResult)
+    printReport('self-test-bad-bridge', badBridgeResult)
+    printReport('self-test-non-codex-provider', nonCodexResult)
     process.exitCode = 1
     return
   }

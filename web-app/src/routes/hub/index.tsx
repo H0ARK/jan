@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { invoke } from '@tauri-apps/api/core'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { route } from '@/constants/routes'
@@ -27,6 +28,7 @@ import {
   IconDownload,
   IconFileCode,
   IconEye,
+  IconPuzzle,
   IconSearch,
   IconTool,
 } from '@tabler/icons-react'
@@ -46,7 +48,7 @@ import {
 import { useServiceHub } from '@/hooks/useServiceHub'
 import type { CatalogModel } from '@/services/models/types'
 import HeaderPage from '@/containers/HeaderPage'
-import { ChevronsUpDown, Loader } from 'lucide-react'
+import { Boxes, ChevronsUpDown, Loader, RefreshCw, Store } from 'lucide-react'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import Fuse from 'fuse.js'
 import { useGeneralSetting } from '@/hooks/useGeneralSetting'
@@ -57,6 +59,32 @@ import { MlxModelDownloadAction } from '@/containers/MlxModelDownloadAction'
 import { DEFAULT_MODEL_QUANTIZATIONS } from '@/constants/models'
 import { Button } from '@/components/ui/button'
 import { RenderMarkdown } from '@/containers/RenderMarkdown'
+import {
+  installCodexPlugin,
+  listCodexApps,
+  listCodexHooks,
+  listCodexPlugins,
+  listInstalledCodexPlugins,
+  listCodexSkills,
+  addCodexMarketplace,
+  prepareCodexCapabilitySession,
+  upgradeCodexMarketplace,
+  uninstallCodexPlugin,
+} from '@/lib/codex-app-server'
+import {
+  collectCodexMarketplaceDescriptors,
+  collectCodexPluginDescriptors,
+  collectCodexSkillDescriptors,
+  type CodexPluginDescriptor,
+} from '@/containers/model-tools-panel/shared/codex-helpers'
+import { toast } from 'sonner'
+import {
+  ModelHubFilters,
+  type ModelCapabilityFilter,
+  type ModelFormatFilter,
+} from './components/ModelHubFilters'
+import { FeaturedModelGrid } from './components/FeaturedModelGrid'
+import { PluginMarketplaceSection } from './components/PluginMarketplaceSection'
 
 type SearchParams = {
   repo: string
@@ -65,6 +93,122 @@ type SearchParams = {
 type QuantTier = {
   label: string
   className: string
+}
+
+type HubSection = 'models' | 'plugins'
+
+type HubPluginSnapshot = {
+  pluginList: unknown
+  installedPlugins: unknown
+  skills: unknown
+  hooks: unknown
+  apps: unknown
+}
+
+const HUB_CODEX_THREAD_ID = 'hub-codex-marketplace'
+const OPENAI_PLUGINS_MARKETPLACE_SOURCE = 'openai/plugins'
+const OPENAI_PLUGINS_MARKETPLACE_REF = 'main'
+const OPENAI_PLUGINS_MARKETPLACE_SPARSE_PATHS = [
+  '.agents',
+  '.claude-plugin',
+  'plugins',
+]
+
+const isOpenAiPluginsMarketplaceSource = (source: string): boolean => {
+  const normalized = source
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^git@github\.com:/, 'github.com/')
+    .replace(/^api\.github\.com\/repos\//, 'github.com/')
+    .replace(/^www\./, '')
+    .replace(/^github\.com\//, '')
+    .replace(/\.git$/, '')
+    .replace(/\/+$/u, '')
+  return (
+    normalized === OPENAI_PLUGINS_MARKETPLACE_SOURCE ||
+    normalized.endsWith(`/${OPENAI_PLUGINS_MARKETPLACE_SOURCE}`)
+  )
+}
+
+const getOpenAiPluginsSparsePaths = (source: string) =>
+  isOpenAiPluginsMarketplaceSource(source)
+    ? OPENAI_PLUGINS_MARKETPLACE_SPARSE_PATHS
+    : undefined
+
+const normalizeErrorText = (error: unknown): string => {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  if (
+    error !== null &&
+    typeof error === 'object' &&
+    'message' in error &&
+    typeof (error as Record<string, unknown>).message === 'string'
+  ) {
+    return (error as Record<string, unknown>).message as string
+  }
+  if (
+    error !== null &&
+    typeof error === 'object' &&
+    'error' in error &&
+    typeof (error as Record<string, unknown>).error === 'string'
+  ) {
+    return (error as Record<string, unknown>).error as string
+  }
+  if (error !== null && typeof error === 'object') {
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return String(error)
+    }
+  }
+  return String(error ?? '')
+}
+
+const isMissingMarketplaceManifestError = (error: unknown): boolean => {
+  const normalized = normalizeErrorText(error).toLowerCase()
+  return (
+    normalized.includes('marketplace root does not contain a supported manifest') ||
+    normalized.includes('marketplace root does not contain')
+  )
+}
+
+const addCodexMarketplaceWithRetry = async (
+  threadId: string,
+  params: Record<string, unknown>
+): Promise<unknown> => {
+  try {
+    return await addCodexMarketplace(threadId, params)
+  } catch (error) {
+    const source = typeof params.source === 'string' ? params.source : ''
+    const supportsSparsePaths =
+      Boolean(source) && Boolean(getOpenAiPluginsSparsePaths(source)?.length)
+    const hasSparsePaths = Boolean(params.sparsePaths)
+    if (
+      !isMissingMarketplaceManifestError(error) ||
+      !supportsSparsePaths ||
+      !hasSparsePaths
+    ) {
+      throw error
+    }
+
+    const fullCloneParams: Record<string, unknown> = { ...params }
+    delete fullCloneParams.sparsePaths
+    return await addCodexMarketplace(threadId, fullCloneParams)
+  }
+}
+
+async function resolveHubCodexCwd() {
+  const dataFolder = await invoke<string>('get_jan_data_folder_path').catch(
+    async () => {
+      const configuration = await invoke<{ data_folder?: string }>(
+        'get_app_configurations'
+      ).catch(() => null)
+      return configuration?.data_folder
+    }
+  )
+  const trimmed = typeof dataFolder === 'string' ? dataFolder.trim() : ''
+  return trimmed || '/'
 }
 
 function getQuantTier(modelId: string): QuantTier | null {
@@ -92,6 +236,25 @@ function getQuantTier(modelId: string): QuantTier | null {
   return null
 }
 
+function getPluginText(plugin: CodexPluginDescriptor) {
+  return [plugin.id, plugin.name, plugin.description, plugin.version]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+}
+
+function describePluginMarketplaceError(error: unknown) {
+  const message = normalizeErrorText(error)
+  if (
+    message.includes('No codex app-server process') ||
+    message.includes('Codex app-server') ||
+    message.includes('CODEX_NOT_RUNNING')
+  ) {
+    return 'Codex app-server is not running. Start or restart a Codex-backed session, then refresh the marketplace.'
+  }
+  return message
+}
+
 export const Route = createFileRoute(route.hub.index as any)({
   component: HubContent,
   validateSearch: (search: Record<string, unknown>): SearchParams => ({
@@ -110,12 +273,6 @@ function HubContent() {
   const sortOptions = [
     { value: 'newest', name: t('hub:sortNewest') },
     { value: 'most-downloaded', name: t('hub:sortMostDownloaded') },
-    ...(IS_MACOS
-      ? [
-          { value: 'mlx', name: 'MLX' },
-          { value: 'gguf', name: 'GGUF' },
-        ]
-      : []),
   ]
   const searchOptions = useMemo(
     () => ({
@@ -136,6 +293,10 @@ function HubContent() {
 
   const [searchValue, setSearchValue] = useState('')
   const [sortSelected, setSortSelected] = useState('newest')
+  const [modelFormatFilter, setModelFormatFilter] =
+    useState<ModelFormatFilter>('all')
+  const [modelCapabilityFilter, setModelCapabilityFilter] =
+    useState<ModelCapabilityFilter>('all')
   const [expandedModels, setExpandedModels] = useState<Record<string, boolean>>(
     {}
   )
@@ -145,8 +306,125 @@ function HubContent() {
     null
   )
   const [isInitialLoad, setIsInitialLoad] = useState(true)
+  const [activeHubSection, setActiveHubSection] = useState<HubSection>('models')
+  const [pluginSearchValue, setPluginSearchValue] = useState('')
+  const [showInstalledPluginsOnly, setShowInstalledPluginsOnly] = useState(false)
+  const [pluginDescriptors, setPluginDescriptors] = useState<CodexPluginDescriptor[]>([])
+  const [pluginSnapshot, setPluginSnapshot] = useState<HubPluginSnapshot | null>(null)
+  const [pluginsLoading, setPluginsLoading] = useState(false)
+  const [pluginsError, setPluginsError] = useState<string | null>(null)
+  const [pluginsLoadAttempted, setPluginsLoadAttempted] = useState(false)
   const addModelSourceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
+  )
+
+  const prepareHubCodexSession = useCallback(async () => {
+    const cwd = await resolveHubCodexCwd()
+    await prepareCodexCapabilitySession(HUB_CODEX_THREAD_ID, { cwd })
+  }, [])
+
+  const refreshPlugins = useCallback(async () => {
+    setPluginsLoadAttempted(true)
+    setPluginsLoading(true)
+    setPluginsError(null)
+    try {
+      await prepareHubCodexSession()
+      const [pluginList, installedPlugins, skills, hooks, apps] = await Promise.all([
+        listCodexPlugins(HUB_CODEX_THREAD_ID, {
+          includeDisabled: true,
+        }),
+        listInstalledCodexPlugins(HUB_CODEX_THREAD_ID, {
+          suggestions: [],
+        }),
+        listCodexSkills(HUB_CODEX_THREAD_ID),
+        listCodexHooks(HUB_CODEX_THREAD_ID),
+        listCodexApps(HUB_CODEX_THREAD_ID),
+      ])
+      const snapshot = { pluginList, installedPlugins, skills, hooks, apps }
+      setPluginSnapshot(snapshot)
+      setPluginDescriptors(
+        collectCodexPluginDescriptors(snapshot).sort((a, b) => {
+          if (Boolean(a.installed) !== Boolean(b.installed)) {
+            return a.installed ? -1 : 1
+          }
+          return (a.name ?? a.id).localeCompare(b.name ?? b.id)
+        })
+      )
+    } catch (error) {
+      setPluginsError(describePluginMarketplaceError(error))
+      setPluginSnapshot(null)
+      setPluginDescriptors([])
+    } finally {
+      setPluginsLoading(false)
+    }
+  }, [prepareHubCodexSession])
+
+  const addOpenAiPluginsMarketplace = useCallback(async () => {
+    setPluginsLoadAttempted(true)
+    setPluginsLoading(true)
+    setPluginsError(null)
+    try {
+      await prepareHubCodexSession()
+      const source = OPENAI_PLUGINS_MARKETPLACE_SOURCE
+      const sparsePaths = getOpenAiPluginsSparsePaths(source)
+      const result = await addCodexMarketplaceWithRetry(HUB_CODEX_THREAD_ID, {
+        source: OPENAI_PLUGINS_MARKETPLACE_SOURCE,
+        refName: OPENAI_PLUGINS_MARKETPLACE_REF,
+        ...(sparsePaths ? { sparsePaths } : {}),
+      })
+      const resultRecord =
+        result && typeof result === 'object'
+          ? (result as Record<string, unknown>)
+          : {}
+      const marketplaceName =
+        typeof resultRecord.marketplaceName === 'string'
+          ? resultRecord.marketplaceName
+          : OPENAI_PLUGINS_MARKETPLACE_SOURCE
+      if (resultRecord.alreadyAdded) {
+        await upgradeCodexMarketplace(HUB_CODEX_THREAD_ID, { marketplaceName })
+        toast.success('OpenAI plugins marketplace refreshed')
+      } else {
+        toast.success('OpenAI plugins marketplace added')
+      }
+      await refreshPlugins()
+    } catch (error) {
+      const message = describePluginMarketplaceError(error)
+      setPluginsError(message)
+      toast.error(`Marketplace add failed: ${message}`)
+    } finally {
+      setPluginsLoading(false)
+    }
+  }, [prepareHubCodexSession, refreshPlugins])
+
+  const runPluginAction = useCallback(
+    async (plugin: CodexPluginDescriptor, action: 'install' | 'uninstall') => {
+      setPluginsLoading(true)
+      setPluginsError(null)
+      try {
+        await prepareHubCodexSession()
+        if (action === 'install') {
+          await installCodexPlugin(HUB_CODEX_THREAD_ID, {
+            plugin: plugin.id,
+            pluginId: plugin.id,
+          })
+          toast.success(`Installed ${plugin.name ?? plugin.id}`)
+        } else {
+          await uninstallCodexPlugin(HUB_CODEX_THREAD_ID, {
+            plugin: plugin.id,
+            pluginId: plugin.id,
+          })
+          toast.success(`Uninstalled ${plugin.name ?? plugin.id}`)
+        }
+        await refreshPlugins()
+      } catch (error) {
+        const message = describePluginMarketplaceError(error)
+        setPluginsError(message)
+        toast.error(`Plugin ${action} failed: ${message}`)
+      } finally {
+        setPluginsLoading(false)
+      }
+    },
+    [prepareHubCodexSession, refreshPlugins]
   )
 
   const toggleModelExpansion = useCallback((modelId: string) => {
@@ -158,14 +436,7 @@ function HubContent() {
 
   // Sorting functionality
   const sortedModels = useMemo(() => {
-    let sorted = [...sources]
-
-    // Apply MLX/GGUF filter first (only on Mac)
-    if (sortSelected === 'mlx') {
-      sorted = sorted.filter((m) => m.is_mlx)
-    } else if (sortSelected === 'gguf') {
-      sorted = sorted.filter((m) => !m.is_mlx)
-    }
+    const sorted = [...sources]
 
     // Apply sorting
     if (sortSelected === 'most-downloaded') {
@@ -188,6 +459,11 @@ function HubContent() {
     return () => clearTimeout(handler)
   }, [searchValue])
 
+  const isRecommendedModel = useCallback((modelId: string) => {
+    return (extractModelName(modelId)?.toLowerCase() ===
+      'jan-nano-gguf') as boolean
+  }, [])
+
   const filteredModels = useMemo(() => {
     let filtered = sortedModels
     // Apply search filter
@@ -199,6 +475,16 @@ function HubContent() {
         ''
       )
       filtered = fuse.search(cleanedSearchValue).map((result) => result.item)
+    }
+    if (modelFormatFilter === 'mlx') {
+      filtered = filtered.filter((model) => model.is_mlx)
+    } else if (modelFormatFilter === 'gguf') {
+      filtered = filtered.filter((model) => !model.is_mlx)
+    }
+    if (modelCapabilityFilter === 'tools') {
+      filtered = filtered.filter((model) => Boolean(model.tools))
+    } else if (modelCapabilityFilter === 'vision') {
+      filtered = filtered.filter((model) => (model.num_mmproj ?? 0) > 0)
     }
     // Apply downloaded filter
     if (showOnlyDownloaded) {
@@ -238,9 +524,120 @@ function HubContent() {
   }, [
     sortedModels,
     debouncedSearchValue,
+    modelFormatFilter,
+    modelCapabilityFilter,
     showOnlyDownloaded,
     huggingFaceRepo,
     searchOptions,
+  ])
+
+  const modelFilterCounts = useMemo(
+    () => ({
+      all: sources.length,
+      gguf: sources.filter((model) => !model.is_mlx).length,
+      mlx: sources.filter((model) => model.is_mlx).length,
+      tools: sources.filter((model) => Boolean(model.tools)).length,
+      vision: sources.filter((model) => (model.num_mmproj ?? 0) > 0).length,
+    }),
+    [sources]
+  )
+
+  const featuredModels = useMemo(
+    () =>
+      [...filteredModels]
+        .sort((a, b) => {
+          const aScore =
+            (isRecommendedModel(a.model_name) ? 1000000 : 0) +
+            (a.tools ? 200000 : 0) +
+            ((a.num_mmproj ?? 0) > 0 ? 100000 : 0) +
+            (a.downloads ?? 0)
+          const bScore =
+            (isRecommendedModel(b.model_name) ? 1000000 : 0) +
+            (b.tools ? 200000 : 0) +
+            ((b.num_mmproj ?? 0) > 0 ? 100000 : 0) +
+            (b.downloads ?? 0)
+          return bScore - aScore
+        })
+        .slice(0, 6),
+    [filteredModels, isRecommendedModel]
+  )
+
+  const filteredPlugins = useMemo(() => {
+    const query = pluginSearchValue.trim().toLowerCase()
+    return pluginDescriptors.filter((plugin) => {
+      if (showInstalledPluginsOnly && !plugin.installed) return false
+      if (!query) return true
+      return getPluginText(plugin).includes(query)
+    })
+  }, [pluginDescriptors, pluginSearchValue, showInstalledPluginsOnly])
+
+  const marketplaceDescriptors = useMemo(
+    () =>
+      pluginSnapshot
+        ? collectCodexMarketplaceDescriptors(pluginSnapshot)
+        : [],
+    [pluginSnapshot]
+  )
+
+  const skillDescriptors = useMemo(
+    () =>
+      pluginSnapshot
+        ? collectCodexSkillDescriptors(pluginSnapshot)
+        : [],
+    [pluginSnapshot]
+  )
+
+  const hubStats = useMemo(() => {
+    const installedPlugins = pluginDescriptors.filter(
+      (plugin) => plugin.installed
+    ).length
+    const llamaModels =
+      useModelProvider.getState().getProviderByName('llamacpp')?.models ?? []
+    const mlxModels =
+      useModelProvider.getState().getProviderByName('mlx')?.models ?? []
+    const localModels = [...llamaModels, ...mlxModels]
+    const downloadedModels = sources.reduce((count, model) => {
+      const hasDownloadedQuant = model.quants?.some((variant) => {
+        const normalized = `${model.developer}/${sanitizeModelId(variant.model_id)}`
+        return localModels.some(
+          (entry: { id: string }) =>
+            entry.id === variant.model_id || entry.id === normalized
+        )
+      })
+      return hasDownloadedQuant ? count + 1 : count
+    }, 0)
+    return {
+      totalModels: sources.length,
+      downloadedModels,
+      totalPlugins: pluginDescriptors.length,
+      installedPlugins,
+      totalMarketplaces: marketplaceDescriptors.length,
+      totalSkills: skillDescriptors.length,
+      appsCount: pluginSnapshot
+        ? collectCodexPluginDescriptors(pluginSnapshot.apps).length
+        : 0,
+    }
+  }, [
+    marketplaceDescriptors.length,
+    pluginDescriptors,
+    pluginSnapshot,
+    skillDescriptors.length,
+    sources,
+  ])
+
+  useEffect(() => {
+    if (
+      activeHubSection === 'plugins' &&
+      !pluginsLoadAttempted &&
+      !pluginsLoading
+    ) {
+      void refreshPlugins()
+    }
+  }, [
+    activeHubSection,
+    pluginsLoadAttempted,
+    pluginsLoading,
+    refreshPlugins,
   ])
 
   // Dynamic estimate size based on model state
@@ -341,11 +738,6 @@ function HubContent() {
 
   const navigate = useNavigate()
 
-  const isRecommendedModel = useCallback((modelId: string) => {
-    return (extractModelName(modelId)?.toLowerCase() ===
-      'jan-nano-gguf') as boolean
-  }, [])
-
   const handleUseModel = useCallback(
     (modelId: string) => {
       navigate({
@@ -356,6 +748,18 @@ function HubContent() {
             id: modelId,
             provider: 'llamacpp',
           },
+        },
+      })
+    },
+    [navigate]
+  )
+
+  const handleOpenModel = useCallback(
+    (model: CatalogModel) => {
+      navigate({
+        to: route.hub.model,
+        params: {
+          modelId: model.model_name,
         },
       })
     },
@@ -420,9 +824,41 @@ function HubContent() {
     <div className="flex flex-col h-svh w-full">
       <div className="flex flex-col h-full w-full ">
         <HeaderPage>
-          <div className={cn("pr-3 py-3  h-10 w-full flex items-center justify-between relative z-20", !IS_MACOS && "pr-30")}>
-            <div className="flex items-center gap-2 w-full">
-              {isSearching ? (
+          <div className={cn("pr-3 py-3 min-h-12 w-full flex items-center justify-between gap-3 relative z-20", !IS_MACOS && "pr-30")}>
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <Store className="size-4" />
+              </div>
+              <div className="hidden sm:block text-sm font-semibold text-foreground">
+                Hub
+              </div>
+            </div>
+            <div className="flex h-8 shrink-0 rounded-md border border-border/70 bg-muted/20 p-0.5">
+              {(['models', 'plugins'] as HubSection[]).map((section) => (
+                <button
+                  key={section}
+                  type="button"
+                  className={cn(
+                    'flex items-center gap-1.5 rounded px-3 text-xs font-medium transition-colors',
+                    activeHubSection === section
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                  onClick={() => setActiveHubSection(section)}
+                >
+                  {section === 'models' ? (
+                    <Boxes className="size-3.5" />
+                  ) : (
+                    <IconPuzzle size={14} />
+                  )}
+                  <span className="capitalize">{section}</span>
+                </button>
+              ))}
+            </div>
+            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-border/60 bg-background px-2 py-1.5">
+              {activeHubSection === 'models' && isSearching ? (
+                <Loader className="shrink-0 size-4 animate-spin text-muted-foreground" />
+              ) : activeHubSection === 'plugins' && pluginsLoading ? (
                 <Loader className="shrink-0 size-4 animate-spin text-muted-foreground" />
               ) : (
                 <IconSearch
@@ -431,19 +867,89 @@ function HubContent() {
                 />
               )}
               <input
-                placeholder={t('hub:searchPlaceholder')}
-                value={searchValue}
-                onChange={handleSearchChange}
-                className="w-full focus:outline-none"
+                placeholder={activeHubSection === 'models' ? 'Search models' : 'Search plugins'}
+                value={activeHubSection === 'models' ? searchValue : pluginSearchValue}
+                onChange={activeHubSection === 'models' ? handleSearchChange : (event) => setPluginSearchValue(event.target.value)}
+                className="w-full bg-transparent text-sm focus:outline-none"
               />
             </div>
-            <div className="sm:flex items-center gap-2 shrink-0 hidden">
-              {renderFilter()}
+            <div className="hidden shrink-0 items-center gap-2 sm:flex">
+              {activeHubSection === 'models' ? (
+                renderFilter()
+              ) : (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={pluginsLoading}
+                    onClick={() => void refreshPlugins()}
+                  >
+                    <RefreshCw className={cn('mr-2 size-3.5', pluginsLoading && 'animate-spin')} />
+                    Refresh
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={showInstalledPluginsOnly}
+                      onCheckedChange={setShowInstalledPluginsOnly}
+                    />
+                    <span className="whitespace-nowrap text-xs font-medium text-foreground">
+                      Installed
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </HeaderPage>
         <div ref={parentRef} className="p-4 w-full h-[calc(100%-60px)] overflow-y-auto! first-step-setup-local-provider">
-          <div className="flex flex-col h-full justify-between gap-4 gap-y-3 w-full md:w-4/5 xl:w-4/6 mx-auto">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>{filteredModels.length} models</span>
+              <span className="text-border">/</span>
+              <span>{hubStats.downloadedModels} local</span>
+              <span className="text-border">/</span>
+              <span>{hubStats.totalPlugins || 0} plugins</span>
+              <span className="text-border">/</span>
+              <span>
+                {pluginSnapshot
+                  ? `${hubStats.totalMarketplaces} sources`
+                  : 'marketplace idle'}
+              </span>
+            </div>
+            {activeHubSection === 'plugins' ? (
+              <PluginMarketplaceSection
+                plugins={pluginDescriptors}
+                visiblePlugins={filteredPlugins}
+                marketplaces={marketplaceDescriptors}
+                skills={skillDescriptors}
+                pluginsLoading={pluginsLoading}
+                pluginsError={pluginsError}
+                showInstalledOnly={showInstalledPluginsOnly}
+                searchValue={pluginSearchValue}
+                onInstalledOnlyChange={setShowInstalledPluginsOnly}
+                onRefresh={() => void refreshPlugins()}
+                onAddOpenAiPluginsMarketplace={() =>
+                  void addOpenAiPluginsMarketplace()
+                }
+                onPluginAction={(plugin, action) =>
+                  void runPluginAction(plugin, action)
+                }
+              />
+            ) : (
+              <>
+            <ModelHubFilters
+              formatFilter={modelFormatFilter}
+              capabilityFilter={modelCapabilityFilter}
+              counts={modelFilterCounts}
+              onFormatFilterChange={(value) => {
+                setIsInitialLoad(true)
+                setModelFormatFilter(value)
+              }}
+              onCapabilityFilterChange={(value) => {
+                setIsInitialLoad(true)
+                setModelCapabilityFilter(value)
+              }}
+            />
             {/* Show skeleton immediately on navigation, then show actual content when loaded */}
             {(isInitialLoad || (loading && !filteredModels.length)) ? (
               // Skeleton loading state for better perceived performance
@@ -478,10 +984,14 @@ function HubContent() {
             ) : (
               <div
                 className={cn(
-                  'flex flex-col pb-2 mb-2 transition-opacity duration-200',
+                  'flex flex-col gap-4 pb-2 mb-2 transition-opacity duration-200',
                   isPending ? 'opacity-70' : 'opacity-100'
                 )}
               >
+                <FeaturedModelGrid
+                  models={featuredModels}
+                  onOpenModel={handleOpenModel}
+                />
                 <div className="flex items-center gap-2 justify-end sm:hidden">
                   {renderFilter()}
                 </div>
@@ -776,6 +1286,8 @@ function HubContent() {
                   ))}
                 </div>
               </div>
+            )}
+              </>
             )}
           </div>
         </div>

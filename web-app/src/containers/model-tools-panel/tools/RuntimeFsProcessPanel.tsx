@@ -248,7 +248,7 @@ type CommandExecExtraField = {
   value: string
 }
 
-type RuntimeFsProcessPanelProps = {
+type RuntimeFsProcessPanelState = {
   codexCommandExecParams: string
   codexProcessHandle: string
   codexProcessTerminalCols: string
@@ -268,6 +268,12 @@ type RuntimeFsProcessPanelProps = {
   cwd: string
   filteredCodexProcessTerminalLines: string[]
   isCodexProtoTransport?: boolean
+  runtimeBusy: boolean
+  selectableCodexProcessHandles: string[]
+  selectedCodexProcessTerminal: CodexProcessTerminalSession | null
+}
+
+type RuntimeFsProcessPanelActions = {
   onAppendCodexTerminalLines: (
     handle: string,
     lines: string[],
@@ -285,7 +291,9 @@ type RuntimeFsProcessPanelProps = {
   onSetCodexCommandExecParams: (value: string) => void
   onSetCodexProcessHandle: (value: string) => void
   onSetCodexProcessTerminalCols: (value: string) => void
-  onSetCodexProcessTerminalExpanded: (value: boolean | ((value: boolean) => boolean)) => void
+  onSetCodexProcessTerminalExpanded: (
+    value: boolean | ((value: boolean) => boolean)
+  ) => void
   onSetCodexProcessTerminalFilter: (value: string) => void
   onSetCodexProcessTerminalRows: (value: string) => void
   onSetCodexRuntimeCopyDestination: (value: string) => void
@@ -298,57 +306,62 @@ type RuntimeFsProcessPanelProps = {
   onSetCodexRuntimeWatchId: (value: string) => void
   onSpawnCodexRuntimeProcess: (command?: string) => Promise<void>
   onWriteCodexRuntimeFile: () => void
-  runtimeBusy: boolean
-  selectableCodexProcessHandles: string[]
-  selectedCodexProcessTerminal: CodexProcessTerminalSession | null
 }
 
-export function RuntimeFsProcessPanel({
-  codexCommandExecParams,
-  codexProcessHandle,
-  codexProcessTerminalCols,
-  codexProcessTerminalExpanded,
-  codexProcessTerminalFilter,
-  codexProcessTerminalRows,
-  codexProcessTerminals,
-  codexRuntimeCopyDestination,
-  codexRuntimeFileText,
-  codexRuntimePath,
-  codexRuntimePtySize,
-  codexRuntimeSnapshot,
-  codexRuntimeSpawnCommand,
-  codexRuntimeStdin,
-  codexRuntimeWatchId,
-  currentThreadIdForCaps,
-  cwd,
-  filteredCodexProcessTerminalLines,
-  onAppendCodexTerminalLines,
-  onClearCodexProcessEvents,
-  onClearCodexProcessTerminals,
-  onReadCodexRuntimeFile,
-  onRunCodexRuntimeAction,
-  onSetCapError,
-  onSetCodexCommandExecParams,
-  onSetCodexProcessHandle,
-  onSetCodexProcessTerminalCols,
-  onSetCodexProcessTerminalExpanded,
-  onSetCodexProcessTerminalFilter,
-  onSetCodexProcessTerminalRows,
-  onSetCodexRuntimeCopyDestination,
-  onSetCodexRuntimeFileText,
-  onSetCodexRuntimePath,
-  onSetCodexRuntimePtySize,
-  isCodexProtoTransport,
-  onSetCodexRuntimeSnapshot,
-  onSetCodexRuntimeSpawnCommand,
-  onSetCodexRuntimeStdin,
-  onSetCodexRuntimeWatchId,
-  onSpawnCodexRuntimeProcess,
-  onWriteCodexRuntimeFile,
-  runtimeBusy,
-  selectableCodexProcessHandles,
-  selectedCodexProcessTerminal,
-}: RuntimeFsProcessPanelProps) {
+type RuntimeFsProcessPanelProps = {
+  state: RuntimeFsProcessPanelState
+  actions: RuntimeFsProcessPanelActions
+}
+
+export function RuntimeFsProcessPanel({ state, actions }: RuntimeFsProcessPanelProps) {
+  const {
+    codexCommandExecParams,
+    codexProcessHandle,
+    codexProcessTerminalCols,
+    codexProcessTerminalExpanded,
+    codexProcessTerminalFilter,
+    codexProcessTerminalRows,
+    codexProcessTerminals,
+    codexRuntimeCopyDestination,
+    codexRuntimeFileText,
+    codexRuntimePath,
+    codexRuntimePtySize,
+    codexRuntimeSnapshot,
+    codexRuntimeSpawnCommand,
+    codexRuntimeStdin,
+    codexRuntimeWatchId,
+    currentThreadIdForCaps,
+    cwd,
+    filteredCodexProcessTerminalLines,
+    isCodexProtoTransport,
+    runtimeBusy,
+    selectableCodexProcessHandles,
+    selectedCodexProcessTerminal,
+  } = state
+  const {
+    onAppendCodexTerminalLines,
+    onClearCodexProcessEvents,
+    onClearCodexProcessTerminals,
+    onReadCodexRuntimeFile,
+    onRunCodexRuntimeAction,
+    onSetCapError,
+    onSetCodexCommandExecParams,
+    onSetCodexProcessHandle,
+    onSetCodexProcessTerminalCols,
+    onSetCodexProcessTerminalExpanded,
+    onSetCodexProcessTerminalFilter,
+    onSetCodexProcessTerminalRows,
+    onSetCodexRuntimeCopyDestination,
+    onSetCodexRuntimeFileText,
+    onSetCodexRuntimePath,
+    onSetCodexRuntimePtySize,
+    onSetCodexRuntimeSnapshot,
+    onSetCodexRuntimeSpawnCommand,
+    onSetCodexRuntimeStdin,
+    onSetCodexRuntimeWatchId,
+    onSpawnCodexRuntimeProcess,
+    onWriteCodexRuntimeFile,
+  } = actions
   const [spawnCommand, setSpawnCommand] = useState('')
   const [spawnArgs, setSpawnArgs] = useState('[]')
   const [commandExecCommand, setCommandExecCommand] = useState('')

@@ -107,6 +107,25 @@ import {
   getSlashCommandContext,
 } from '@/lib/chat-slash-commands'
 
+const CODEX_DEFAULT_MODEL_ID = 'gpt-5.5'
+const REMOVED_CODEX_DEFAULT_MODELS = new Set([
+  'gpt-5.1-codex-max',
+  'gpt-5.1',
+])
+
+const normalizeChatModelId = (
+  provider: string,
+  modelId: string | undefined
+) => {
+  if (
+    provider === 'codex' &&
+    modelId &&
+    REMOVED_CODEX_DEFAULT_MODELS.has(modelId)
+  ) {
+    return CODEX_DEFAULT_MODEL_ID
+  }
+  return modelId ?? defaultModel(provider)
+}
 
 type ChatInputProps = {
   className?: string
@@ -468,7 +487,7 @@ const ChatInput = memo(function ChatInput({
 
         const newThread = await createThread(
           {
-            id: selectedModel?.id ?? defaultModel(selectedProvider),
+            id: normalizeChatModelId(selectedProvider, selectedModel?.id),
             provider: selectedProvider,
           },
           prompt, // Use prompt as thread title

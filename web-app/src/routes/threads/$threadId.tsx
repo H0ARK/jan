@@ -568,7 +568,7 @@ function ThreadDetail() {
     const model = useModelProvider.getState().selectedModel
     if (!provider || !model) return
     void warmupCodexSession(threadId, provider, model)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [threadId, selectedProvider])
 
   // Load messages on first mount

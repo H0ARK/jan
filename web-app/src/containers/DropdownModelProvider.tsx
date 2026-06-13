@@ -64,6 +64,11 @@ interface SearchableModel {
 }
 
 const DEFAULT_CONTEXT_SIZE = 8192
+const CODEX_DEFAULT_MODEL_ID = 'gpt-5.5'
+const REMOVED_CODEX_DEFAULT_MODELS = new Set([
+  'gpt-5.1-codex-max',
+  'gpt-5.1',
+])
 
 const toFiniteNumber = (value: unknown): number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -179,6 +184,15 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
   const [remoteAuthRevision, setRemoteAuthRevision] = useState(0)
   const [settingsModelValue, setSettingsModelValue] = useState<string | null>(null)
   const useCursorStyleSelector = compact && showReasoning
+  const selectModelProviderIfNeeded = useCallback(
+    (providerName: string, modelId: string) => {
+      if (selectedProvider === providerName && selectedModel?.id === modelId) {
+        return
+      }
+      selectModelProvider(providerName, modelId)
+    },
+    [selectModelProvider, selectedModel?.id, selectedProvider]
+  )
 
   useEffect(() => {
     let unlisten: (() => void) | undefined
@@ -205,6 +219,30 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
     },
     [providers]
   )
+
+  useEffect(() => {
+    if (
+      selectedProvider !== 'codex' ||
+      !selectedModel?.id ||
+      !REMOVED_CODEX_DEFAULT_MODELS.has(selectedModel.id)
+    ) {
+      return
+    }
+
+    const codexProvider = providers.find(
+      (provider) => provider.provider === 'codex' && provider.active
+    )
+    const replacementModel =
+      codexProvider?.models.find((model) => model.id === CODEX_DEFAULT_MODEL_ID) ??
+      codexProvider?.models.find(
+        (model) => !REMOVED_CODEX_DEFAULT_MODELS.has(model.id)
+      )
+
+    if (replacementModel) {
+      selectModelProvider('codex', replacementModel.id)
+      setLastUsedModel('codex', replacementModel.id)
+    }
+  }, [providers, selectModelProvider, selectedModel?.id, selectedProvider])
 
   // Helper function to get context size from model settings
   const getContextSize = useCallback((): number => {
@@ -265,9 +303,9 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
     const initializeModel = async () => {
       // Auto select model when existing thread is passed
       if (model) {
-        selectModelProvider(model?.provider as string, model?.id as string)
+        selectModelProviderIfNeeded(model?.provider as string, model?.id as string)
         if (!checkModelExists(model.provider, model.id)) {
-          selectModelProvider('', '')
+          selectModelProviderIfNeeded('', '')
         }
         // Check mmproj existence for llamacpp models
         if (model?.provider === 'llamacpp') {
@@ -290,12 +328,12 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
           lastUsed?.provider === 'codex' &&
           checkModelExists(lastUsed.provider, lastUsed.model)
         ) {
-          selectModelProvider(lastUsed.provider, lastUsed.model)
+          selectModelProviderIfNeeded(lastUsed.provider, lastUsed.model)
         } else if (codexModel) {
-          selectModelProvider('codex', codexModel.id)
+          selectModelProviderIfNeeded('codex', codexModel.id)
           setLastUsedModel('codex', codexModel.id)
         } else if (lastUsed && checkModelExists(lastUsed.provider, lastUsed.model)) {
-          selectModelProvider(lastUsed.provider, lastUsed.model)
+          selectModelProviderIfNeeded(lastUsed.provider, lastUsed.model)
           if (lastUsed.provider === 'llamacpp') {
             await serviceHub
               .models()
@@ -314,10 +352,10 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
             'llamacpp'
           )
           if (firstModel) {
-            selectModelProvider('llamacpp', firstModel.id)
+            selectModelProviderIfNeeded('llamacpp', firstModel.id)
             setLastUsedModel('llamacpp', firstModel.id)
           } else {
-            selectModelProvider('', '')
+            selectModelProviderIfNeeded('', '')
           }
         }
       }
@@ -327,15 +365,13 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     model,
-    selectModelProvider,
+    selectModelProviderIfNeeded,
     updateCurrentThreadModel,
     providers,
     checkModelExists,
     updateProvider,
     getProviderByName,
     checkAndUpdateModelVisionCapability,
-
-    // selectedModel and selectedProvider intentionally excluded to prevent race conditions
   ])
 
   // Update display model when selection changes
@@ -740,17 +776,15 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>
-        <div
-          className={cn(
-            'border relative z-20 flex items-center gap-1.5',
-            compact
-              ? 'max-w-full rounded-md bg-secondary/40 px-2.5 py-1.5 shadow-sm'
-              : 'max-w-[22rem] rounded-full px-4 py-1.5'
-          )}
-        >
-          <button
-            type="button"
+      <div
+        className={cn(
+          'border relative z-20 flex items-center gap-1.5',
+          compact
+            ? 'max-w-full rounded-md bg-secondary/40 px-2.5 py-1.5 shadow-sm'
+            : 'max-w-[22rem] rounded-full px-4 py-1.5'
+        )}
+      >
+        <PopoverTrigger
             className="font-medium cursor-pointer flex min-w-0 items-center gap-1.5 relative z-20"
             aria-label="Select model"
           >
@@ -759,48 +793,43 @@ const DropdownModelProvider = memo(function DropdownModelProvider({
                 <ProvidersAvatar provider={provider} />
               </div>
             )}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  className={cn(
-                    'text-foreground truncate leading-normal',
-                    compact ? 'text-xs' : 'text-base',
-                    !selectedModel?.id && 'text-muted-foreground'
-                  )}
-                >
-                  {displayModel}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>{displayModel}</TooltipContent>
-            </Tooltip>
+            <span
+              title={displayModel}
+              className={cn(
+                'text-foreground truncate leading-normal',
+                compact ? 'text-xs' : 'text-base',
+                !selectedModel?.id && 'text-muted-foreground'
+              )}
+            >
+              {displayModel}
+            </span>
             <ChevronsUpDown
               className={cn(
                 'shrink-0 text-muted-foreground',
                 compact ? 'size-3.5' : 'size-4'
               )}
             />
-          </button>
-          {currentModel?.settings &&
-            provider &&
-            provider.provider === 'llamacpp' &&
-            showSettings && (
-              <div onClick={(e) => e.stopPropagation()}>
-                <ModelSetting
-                  model={currentModel as Model}
-                  provider={provider}
-                />
-              </div>
-            )}
-          {showSupportStatus && (
-            <ModelSupportStatus
-              modelId={selectedModel?.id}
-              provider={selectedProvider}
-              contextSize={getContextSize()}
-              className="ml-0.5 shrink-0"
-            />
+        </PopoverTrigger>
+        {currentModel?.settings &&
+          provider &&
+          provider.provider === 'llamacpp' &&
+          showSettings && (
+            <div onClick={(e) => e.stopPropagation()}>
+              <ModelSetting
+                model={currentModel as Model}
+                provider={provider}
+              />
+            </div>
           )}
-        </div>
-      </PopoverTrigger>
+        {showSupportStatus && (
+          <ModelSupportStatus
+            modelId={selectedModel?.id}
+            provider={selectedProvider}
+            contextSize={getContextSize()}
+            className="ml-0.5 shrink-0"
+          />
+        )}
+      </div>
 
       <PopoverContent
         className={cn(

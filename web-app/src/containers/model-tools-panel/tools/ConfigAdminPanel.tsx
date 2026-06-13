@@ -12,20 +12,12 @@ type ConfigAdminPanelState = {
   adminBusy: boolean
   currentThreadIdForCaps: string | null | undefined
   codexConfigKeyPath: string
-  codexConfigValueJson: string
-  codexConfigBatchJson: string
-  codexWindowsSandboxJson: string
-  codexExternalAgentImportJson: string
   codexAdminSnapshot: unknown
   cwd: string
 }
 
 type ConfigAdminPanelActions = {
   onSetCodexConfigKeyPath: (value: string) => void
-  onSetCodexConfigValueJson: (value: string) => void
-  onSetCodexConfigBatchJson: (value: string) => void
-  onSetCodexWindowsSandboxJson: (value: string) => void
-  onSetCodexExternalAgentImportJson: (value: string) => void
   onSetCapError: (message: string | null) => void
   onSetAdminBusy: (busy: boolean) => void
   onRefreshCodexAdminSnapshot: () => Promise<void> | void
@@ -52,20 +44,12 @@ export function ConfigAdminPanel({
     adminBusy,
     currentThreadIdForCaps,
     codexConfigKeyPath,
-    codexConfigValueJson,
-    codexConfigBatchJson,
-    codexWindowsSandboxJson,
-    codexExternalAgentImportJson,
     codexAdminSnapshot,
     cwd,
   } = state
 
   const {
     onSetCodexConfigKeyPath,
-    onSetCodexConfigValueJson,
-    onSetCodexConfigBatchJson,
-    onSetCodexWindowsSandboxJson,
-    onSetCodexExternalAgentImportJson,
     onSetCapError,
     onSetAdminBusy,
     onRefreshCodexAdminSnapshot,
@@ -84,6 +68,12 @@ export function ConfigAdminPanel({
   const [showAdvancedWindowsJson, setShowAdvancedWindowsJson] = useState(false)
   const [showAdvancedExternalImportJson, setShowAdvancedExternalImportJson] =
     useState(false)
+  const [codexConfigValueJson, setCodexConfigValueJson] = useState('"gpt-5"')
+  const [codexConfigBatchJson, setCodexConfigBatchJson] =
+    useState('{"edits":[]}')
+  const [codexWindowsSandboxJson, setCodexWindowsSandboxJson] = useState('{}')
+  const [codexExternalAgentImportJson, setCodexExternalAgentImportJson] =
+    useState('{"cwd":""}')
   const [batchKeyPath, setBatchKeyPath] = useState('')
   const [batchValue, setBatchValue] = useState('')
 
@@ -132,7 +122,7 @@ export function ConfigAdminPanel({
       ...parsedWindowsSandbox,
       ...next,
     }
-    onSetCodexWindowsSandboxJson(
+    setCodexWindowsSandboxJson(
       stringifyCodexJson(payload, codexWindowsSandboxJson)
     )
   }
@@ -142,7 +132,7 @@ export function ConfigAdminPanel({
       .split('\n')
       .map((item) => item.trim())
       .filter(Boolean)
-    onSetCodexExternalAgentImportJson(
+    setCodexExternalAgentImportJson(
       stringifyCodexJson(
         {
           ...parsedExternalAgentImport,
@@ -163,7 +153,7 @@ export function ConfigAdminPanel({
       [key]: trimmed || undefined,
     }
     if (!trimmed) delete nextPayload[key]
-    onSetCodexExternalAgentImportJson(
+    setCodexExternalAgentImportJson(
       stringifyCodexJson(nextPayload, codexExternalAgentImportJson)
     )
   }
@@ -177,7 +167,7 @@ export function ConfigAdminPanel({
       [key]: checked || undefined,
     }
     if (!checked) delete nextPayload[key]
-    onSetCodexExternalAgentImportJson(
+    setCodexExternalAgentImportJson(
       stringifyCodexJson(nextPayload, codexExternalAgentImportJson)
     )
   }
@@ -195,7 +185,7 @@ export function ConfigAdminPanel({
             : ''
 
   const onSetConfigValue = (value: string) => {
-    onSetCodexConfigValueJson(stringifyCodexJson(value, codexConfigValueJson))
+    setCodexConfigValueJson(stringifyCodexJson(value, codexConfigValueJson))
   }
 
   const parseSimpleValue = (value: string) => {
@@ -227,7 +217,7 @@ export function ConfigAdminPanel({
         },
       ],
     }
-    onSetCodexConfigBatchJson(stringifyCodexJson(nextPayload, codexConfigBatchJson))
+    setCodexConfigBatchJson(stringifyCodexJson(nextPayload, codexConfigBatchJson))
     setBatchKeyPath('')
     setBatchValue('')
   }
@@ -264,7 +254,9 @@ export function ConfigAdminPanel({
             className="h-6 px-2 text-[10px]"
             placeholder="Config value JSON"
             value={codexConfigValueJson}
-            onChange={(event) => onSetCodexConfigValueJson(event.target.value)}
+            onChange={(event) =>
+              setCodexConfigValueJson(event.target.value)
+            }
           />
         ) : (
           <Input
@@ -302,7 +294,9 @@ export function ConfigAdminPanel({
           className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
           placeholder="Config batch write JSON"
           value={codexConfigBatchJson}
-          onChange={(event) => onSetCodexConfigBatchJson(event.target.value)}
+          onChange={(event) =>
+            setCodexConfigBatchJson(event.target.value)
+          }
         />
       ) : (
         <div className="mb-1 grid grid-cols-1 gap-1 md:grid-cols-[1fr_1fr_auto_auto]">
@@ -367,7 +361,7 @@ export function ConfigAdminPanel({
               placeholder="Windows sandbox setup params JSON"
               value={codexWindowsSandboxJson}
               onChange={(event) =>
-                onSetCodexWindowsSandboxJson(event.target.value)
+                setCodexWindowsSandboxJson(event.target.value)
               }
             />
           ) : (
@@ -416,7 +410,7 @@ export function ConfigAdminPanel({
               placeholder="External agent import params JSON"
               value={codexExternalAgentImportJson}
               onChange={(event) =>
-                onSetCodexExternalAgentImportJson(event.target.value)
+                setCodexExternalAgentImportJson(event.target.value)
               }
             />
           ) : (

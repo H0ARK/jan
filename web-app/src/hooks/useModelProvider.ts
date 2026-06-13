@@ -29,6 +29,91 @@ const REMOVED_XAI_DEFAULT_MODELS = new Set([
   'grok-2-vision-1212',
   'grok-imagine-image',
 ])
+const CODEX_DEFAULT_MODEL_ID = 'gpt-5.5'
+const REMOVED_CODEX_DEFAULT_MODELS = new Set([
+  'gpt-5.1-codex-max',
+  'gpt-5.1',
+])
+const codexDefaultModels = () =>
+  predefinedProviders.find((provider) => provider.provider === 'codex')?.models ??
+  []
+
+const ensureCodexDefaultModels = (provider: ModelProvider) => {
+  if (provider.provider !== 'codex') return
+  const defaults = codexDefaultModels()
+  provider.models = provider.models ?? []
+  provider.models = provider.models.filter(
+    (model) => !REMOVED_CODEX_DEFAULT_MODELS.has(model.id)
+  )
+  for (const model of defaults) {
+    if (!provider.models.some((candidate) => candidate.id === model.id)) {
+      provider.models.push(model)
+    }
+  }
+}
+
+const getCodexDefaultModel = (provider: ModelProvider | undefined) =>
+  provider?.models.find((model) => model.id === CODEX_DEFAULT_MODEL_ID) ?? null
+
+const resolveSelectedProviderState = (
+  providers: ModelProvider[],
+  selectedProvider: string,
+  selectedModel: Model | null
+) => {
+  const existingSelectedProvider = providers.find(
+    (provider) => provider.provider === selectedProvider
+  )
+  const fallbackProvider =
+    existingSelectedProvider ??
+    providers.find(
+      (provider) =>
+        provider.provider !== 'codex' &&
+        provider.active &&
+        provider.models?.length > 0
+    ) ??
+    providers.find(
+      (provider) => provider.provider !== 'codex' && provider.active
+    ) ??
+    providers.find(
+      (provider) =>
+        provider.provider !== 'codex' && provider.models?.length > 0
+    ) ??
+    providers.find((provider) => provider.provider !== 'codex') ??
+    providers.find((provider) => provider.provider === 'codex') ??
+    providers[0]
+
+  if (!fallbackProvider) {
+    return {
+      selectedProvider,
+      selectedModel: null,
+    }
+  }
+
+  const nextSelectedProvider = fallbackProvider.provider
+  const nextSelectedModelId = selectedModel?.id
+  const matchingSelectedModel =
+    fallbackProvider.models?.find((model) => model.id === nextSelectedModelId) ??
+    null
+  const selectedModelStillExists = !!matchingSelectedModel
+  const selectedModelRemoved =
+    fallbackProvider.provider === 'codex' &&
+    REMOVED_CODEX_DEFAULT_MODELS.has(nextSelectedModelId ?? '')
+
+  if (selectedModel && selectedModelStillExists && !selectedModelRemoved) {
+    return {
+      selectedProvider: nextSelectedProvider,
+      selectedModel: matchingSelectedModel,
+    }
+  }
+
+  return {
+    selectedProvider: nextSelectedProvider,
+    selectedModel:
+      fallbackProvider.provider === 'codex'
+        ? getCodexDefaultModel(fallbackProvider)
+        : fallbackProvider.models?.[0] ?? null,
+  }
+}
 
 type ModelProviderState = {
   providers: ModelProvider[]
@@ -53,7 +138,7 @@ export const useModelProvider = create<ModelProviderState>()(
   persist(
     (set, get) => ({
       providers: [],
-      selectedProvider: 'codex',
+      selectedProvider: 'llamacpp',
       selectedModel: null,
       deletedModels: [],
       getModelBy: (modelId: string) => {
@@ -184,11 +269,9 @@ export const useModelProvider = create<ModelProviderState>()(
             })
 
             const mergedSettings = provider.settings.map((setting) => {
-              const existingSetting = provider.persist
-                ? undefined
-                : existingProvider?.settings?.find(
-                    (x) => x.key === setting.key
-                  )
+              const existingSetting = existingProvider?.settings?.find(
+                (x) => x.key === setting.key
+              )
               // Only the user's `value` is carried over from existing state;
               // metadata like `recommended` / `options` must always reflect
               // the fresh extension fetch (otherwise stale recommendations
@@ -256,6 +339,28 @@ export const useModelProvider = create<ModelProviderState>()(
               (e) => !updatedProviders.some((p) => p.provider === e.provider)
             ),
           ]
+          const codexProvider = nextProviders.find(
+            (provider) => provider.provider === 'codex'
+          )
+          if (codexProvider) {
+            ensureCodexDefaultModels(codexProvider)
+          }
+
+          const resolvedSelection = resolveSelectedProviderState(
+            nextProviders,
+            state.selectedProvider,
+            state.selectedModel
+          )
+
+          const nextState = {
+            providers: nextProviders,
+            ...(resolvedSelection.selectedProvider !== state.selectedProvider
+              ? { selectedProvider: resolvedSelection.selectedProvider }
+              : {}),
+            ...(resolvedSelection.selectedModel !== state.selectedModel
+              ? { selectedModel: resolvedSelection.selectedModel }
+              : {}),
+          }
 
           // One-shot migration: persist zustand-only fallback keys to disk
           // via the providers extension so they survive localStorage clears.
@@ -316,9 +421,9 @@ export const useModelProvider = create<ModelProviderState>()(
           }
 
           return effectiveDeletedModels === currentDeletedModels
-            ? { providers: nextProviders }
+            ? nextState
             : {
-                providers: nextProviders,
+                ...nextState,
                 deletedModels: effectiveDeletedModels,
               }
         }),
@@ -334,19 +439,16 @@ export const useModelProvider = create<ModelProviderState>()(
             return provider
           })
 
-          let selectedModel = state.selectedModel
-          if (
-            selectedModel &&
-            state.selectedProvider === providerName &&
-            Array.isArray(data.models)
-          ) {
-            selectedModel =
-              data.models.find((model) => model.id === selectedModel?.id) ?? null
-          }
+          const resolvedSelection = resolveSelectedProviderState(
+            providers,
+            state.selectedProvider,
+            state.selectedModel
+          )
 
           return {
             providers,
-            selectedModel,
+            selectedProvider: resolvedSelection.selectedProvider,
+            selectedModel: resolvedSelection.selectedModel,
           }
         })
       },
@@ -358,21 +460,34 @@ export const useModelProvider = create<ModelProviderState>()(
         return provider
       },
       selectModelProvider: (providerName: string, modelName: string) => {
-        // Find the model object
-        const provider = get().providers.find(
-          (provider) => provider.provider === providerName
-        )
-
+        const requestedModelName =
+          providerName === 'codex' && REMOVED_CODEX_DEFAULT_MODELS.has(modelName)
+            ? CODEX_DEFAULT_MODEL_ID
+            : modelName
         let modelObject: Model | undefined = undefined
 
-        if (provider && provider.models) {
-          modelObject = provider.models.find((model) => model.id === modelName)
-        }
+        set((state) => {
+          const providers = state.providers.map((provider) => {
+            if (provider.provider !== 'codex') return provider
+            const nextProvider = {
+              ...provider,
+              models: [...(provider.models ?? [])],
+            }
+            ensureCodexDefaultModels(nextProvider)
+            return nextProvider
+          })
+          const provider = providers.find(
+            (candidate) => candidate.provider === providerName
+          )
+          modelObject = provider?.models?.find(
+            (model) => model.id === requestedModelName
+          )
 
-        // Update state with provider name and model object
-        set({
-          selectedProvider: providerName,
-          selectedModel: modelObject || null,
+          return {
+            providers,
+            selectedProvider: providerName,
+            selectedModel: modelObject || null,
+          }
         })
 
         return modelObject
@@ -927,9 +1042,48 @@ export const useModelProvider = create<ModelProviderState>()(
           }
         }
 
+        if (version <= 24 && state?.providers) {
+          state.providers.forEach(ensureCodexDefaultModels)
+
+          const resolvedSelection = resolveSelectedProviderState(
+            state.providers,
+            state.selectedProvider,
+            state.selectedModel
+          )
+          state.selectedProvider = resolvedSelection.selectedProvider
+          state.selectedModel = resolvedSelection.selectedModel
+
+          if (
+            state.selectedProvider === 'codex' &&
+            (!state.selectedModel ||
+              REMOVED_CODEX_DEFAULT_MODELS.has(state.selectedModel.id))
+          ) {
+            state.selectedModel =
+              state.providers
+                .find((provider) => provider.provider === 'codex')
+                ?.models.find((model) => model.id === CODEX_DEFAULT_MODEL_ID) ??
+              null
+          }
+        }
+
+        if (
+          version <= 25 &&
+          state?.providers &&
+          state.selectedProvider === 'codex' &&
+          state.selectedModel?.id === CODEX_DEFAULT_MODEL_ID
+        ) {
+          const resolvedSelection = resolveSelectedProviderState(
+            state.providers,
+            '__missing_provider__',
+            null
+          )
+          state.selectedProvider = resolvedSelection.selectedProvider
+          state.selectedModel = resolvedSelection.selectedModel
+        }
+
         return state
       },
-      version: 22,
+      version: 26,
     }
   )
 )

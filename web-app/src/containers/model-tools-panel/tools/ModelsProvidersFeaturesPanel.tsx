@@ -7,13 +7,17 @@ import {
   stringifyCodexJson,
 } from '../shared/codex-helpers'
 
-type ModelsProvidersFeaturesPanelProps = {
+type ModelsProvidersFeaturesPanelState = {
   modelAdminBusy: boolean
   currentThreadIdForCaps: string | null | undefined
   codexFeatureEnablementJson: string
   codexEnvironmentId: string
   codexEnvironmentExecUrl: string
   codexModelSnapshot: unknown
+  isCodexProtoTransport?: boolean
+}
+
+type ModelsProvidersFeaturesPanelActions = {
   onSetCodexFeatureEnablementJson: (value: string) => void
   onSetCodexEnvironmentId: (value: string) => void
   onSetCodexEnvironmentExecUrl: (value: string) => void
@@ -24,24 +28,35 @@ type ModelsProvidersFeaturesPanelProps = {
     params: Record<string, unknown>,
     success: string
   ) => Promise<unknown | null> | void
-  isCodexProtoTransport?: boolean
+}
+
+type ModelsProvidersFeaturesPanelProps = {
+  state: ModelsProvidersFeaturesPanelState
+  actions: ModelsProvidersFeaturesPanelActions
 }
 
 export function ModelsProvidersFeaturesPanel({
-  modelAdminBusy,
-  currentThreadIdForCaps,
-  codexFeatureEnablementJson,
-  codexEnvironmentId,
-  codexEnvironmentExecUrl,
-  codexModelSnapshot,
-  onSetCodexFeatureEnablementJson,
-  onSetCodexEnvironmentId,
-  onSetCodexEnvironmentExecUrl,
-  onSetCapError,
-  onRefreshCodexModelSnapshot,
-  onRunCodexModelAction,
-  isCodexProtoTransport,
+  state,
+  actions,
 }: ModelsProvidersFeaturesPanelProps) {
+  const {
+    modelAdminBusy,
+    currentThreadIdForCaps,
+    codexFeatureEnablementJson,
+    codexEnvironmentId,
+    codexEnvironmentExecUrl,
+    codexModelSnapshot,
+    isCodexProtoTransport,
+  } = state
+  const {
+    onSetCodexFeatureEnablementJson,
+    onSetCodexEnvironmentId,
+    onSetCodexEnvironmentExecUrl,
+    onSetCapError,
+    onRefreshCodexModelSnapshot,
+    onRunCodexModelAction,
+  } = actions
+
   const [showAdvancedFeatureJson, setShowAdvancedFeatureJson] = useState(false)
   const [featureName, setFeatureName] = useState('remoteControl')
   const [featureEnabled, setFeatureEnabled] = useState(true)

@@ -633,8 +633,10 @@ export function ThreadsPanel({ state, actions }: ThreadsPanelProps) {
   }, [showAdvancedInjectItemsJson, codexInjectItemsJson])
 
   const reviewTarget = buildThreadReviewTarget()
+  const hasCurrentThread = Boolean(currentThreadIdForCaps)
+  const canRunTargetedThreadAction = hasCurrentThread && Boolean(targetCodexThreadId) && !threadBusy
   const canRunTypedReview =
-    Boolean(targetCodexThreadId) && !threadBusy && reviewTarget !== null
+    hasCurrentThread && Boolean(targetCodexThreadId) && !threadBusy && reviewTarget !== null
   const buildThreadReviewParams = () => {
     if (!reviewTarget) return null
     return {
@@ -666,7 +668,7 @@ export function ThreadsPanel({ state, actions }: ThreadsPanelProps) {
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!targetCodexThreadId || threadBusy}
+          disabled={!currentThreadIdForCaps || !targetCodexThreadId || threadBusy}
           onClick={() => onRead()}
         >
           Read
@@ -674,7 +676,7 @@ export function ThreadsPanel({ state, actions }: ThreadsPanelProps) {
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!targetCodexThreadId || threadBusy}
+          disabled={!currentThreadIdForCaps || !targetCodexThreadId || threadBusy}
           onClick={() => onReadTurnItems()}
         >
           Read turn items
@@ -998,27 +1000,27 @@ export function ThreadsPanel({ state, actions }: ThreadsPanelProps) {
         <Input className="h-6 px-2 text-[10px]" placeholder="Realtime audio base64" value={codexRealtimeAudioBase64} onChange={(event) => onSetCodexRealtimeAudioBase64(event.target.value)} />
       </div>
       <div className="mb-1 flex flex-wrap gap-x-2 gap-y-1">
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onFork()}>Fork</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onArchive()}>Archive</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onUnarchive()}>Unarchive</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onUnsubscribe()}>Unsubscribe</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy || !codexThreadName.trim()} onClick={() => onName()}>Name</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy || !!threadMetadataMessage} onClick={() => onMetadata()}>Metadata</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy || !!threadSettingsMessage} onClick={() => onSettings()}>Settings</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onSetGoal()}>Set goal</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onGetGoal()}>Get goal</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onClearGoal()}>Clear goal</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onMemoryOn()}>Memory on</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onMemoryOff()}>Memory off</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={threadBusy} onClick={() => onResetMemory()}>Reset memory</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onInterrupt()}>Interrupt</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onCompact()}>Compact</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onReload()}>Reload</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onRollback()}>Rollback</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onFork()}>Fork</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onArchive()}>Archive</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onUnarchive()}>Unarchive</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onUnsubscribe()}>Unsubscribe</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction || !codexThreadName.trim()} onClick={() => onName()}>Name</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction || !!threadMetadataMessage} onClick={() => onMetadata()}>Metadata</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction || !!threadSettingsMessage} onClick={() => onSettings()}>Settings</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onSetGoal()}>Set goal</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onGetGoal()}>Get goal</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onClearGoal()}>Clear goal</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onMemoryOn()}>Memory on</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onMemoryOff()}>Memory off</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onResetMemory()}>Reset memory</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onInterrupt()}>Interrupt</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onCompact()}>Compact</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onReload()}>Reload</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onRollback()}>Rollback</button>
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!targetCodexThreadId || threadBusy}
+          disabled={!canRunTargetedThreadAction}
           onClick={() =>
             onReview({
               delivery: reviewDeliveryValue,
@@ -1033,7 +1035,7 @@ export function ThreadsPanel({ state, actions }: ThreadsPanelProps) {
         <button
           type="button"
           className="text-[9px] underline disabled:opacity-50"
-          disabled={!targetCodexThreadId || threadBusy}
+          disabled={!canRunTargetedThreadAction}
           onClick={() =>
             onReview({
               delivery: reviewDeliveryValue,
@@ -1058,12 +1060,12 @@ export function ThreadsPanel({ state, actions }: ThreadsPanelProps) {
         >
           Review with typed params
         </button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy || !!threadInjectItemsMessage} onClick={() => onInjectItems()}>Inject items</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onCleanTerminals()}>Clean terminals</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onRealtimeStart()}>Realtime start</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onRealtimeText()}>Realtime text</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onRealtimeAudio()}>Realtime audio</button>
-        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!targetCodexThreadId || threadBusy} onClick={() => onRealtimeStop()}>Realtime stop</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction || !!threadInjectItemsMessage} onClick={() => onInjectItems()}>Inject items</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onCleanTerminals()}>Clean terminals</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onRealtimeStart()}>Realtime start</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onRealtimeText()}>Realtime text</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onRealtimeAudio()}>Realtime audio</button>
+        <button type="button" className="text-[9px] underline disabled:opacity-50" disabled={!canRunTargetedThreadAction} onClick={() => onRealtimeStop()}>Realtime stop</button>
       </div>
       <div className="mb-0.5 flex items-center gap-2 text-[8px] text-muted-foreground">
         <span>Thread data sources</span>

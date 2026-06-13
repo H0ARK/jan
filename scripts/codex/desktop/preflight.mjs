@@ -59,10 +59,65 @@ function parseMethodSurfaceReport(output) {
   }
 }
 
+function parseJsonReport(output) {
+  const startIndex = output.indexOf('{')
+  if (startIndex < 0) return null
+  try {
+    return JSON.parse(output.slice(startIndex))
+  } catch {
+    return null
+  }
+}
+
+function inspectRepoLocalJanRuntime() {
+  const processList = run('pgrep', ['-lf', 'target/debug/Jan'], 5_000)
+  const repoLocalJanProcesses = processList.stdout
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => /\btarget\/debug\/Jan\b/.test(line))
+  const janProcessList = run(
+    'ps',
+    ['-axo', 'pid=,comm=,command='],
+    5_000
+  )
+  const otherJanProcesses = janProcessList.stdout
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line =>
+      /\bJan(\.app|$)|target\/universal-apple-darwin\/.*\/Jan|MacOS\/Jan/.test(
+        line
+      )
+    )
+    .filter(line => !/\btarget\/debug\/Jan\b/.test(line))
+    .filter(line => !/\b(?:rg|grep|ps)\b/.test(line))
+
+  const localApiPortOwner = run(
+    'lsof',
+    ['-nP', '-iTCP:1337', '-sTCP:LISTEN'],
+    5_000
+  )
+  const localApiPortOwnerLines = localApiPortOwner.stdout
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+
+  return {
+    repoLocalJanProcesses,
+    otherJanProcesses,
+    localApiPortOwnerLines,
+  }
+}
+
 const packageJson = readJson(join(root, 'package.json'))
 const scripts = packageJson.scripts ?? {}
 const requireSmokeReportValidation = process.env.REQUIRE_SMOKE_REPORT === '1'
+const requireJanDebugBridge = process.env.REQUIRE_JAN_DEBUG_BRIDGE === '1'
 const smokeReportPath = process.env.SMOKE_REPORT_PATH?.trim()
+const repoLocalJanRuntime = requireJanDebugBridge
+  ? inspectRepoLocalJanRuntime()
+  : null
 
 const requiredScripts = [
   'dev:tauri',
@@ -75,6 +130,10 @@ const requiredScripts = [
   'codex:desktop:smoke:report',
   'codex:desktop:smoke:validate',
   'codex:desktop:ready',
+  'codex:desktop:focus-dev',
+  'codex:desktop:capture-dev',
+  'jan:debug:mcp:self-test',
+  'jan:debug:mcp:smoke',
 ]
 
 const codexVersion = run(codexBinary, ['-V'])
@@ -93,6 +152,13 @@ const smokeReportValidatorSelfTest = run(
   [join(root, 'scripts/codex/desktop/validate-smoke-report.mjs'), '--self-test'],
   20_000
 )
+const janDebugMcpSelfTest = run('yarn', ['jan:debug:mcp:self-test'], 10_000)
+const janDebugMcpLiveSmoke = requireJanDebugBridge
+  ? run('yarn', ['jan:debug:mcp:smoke'], 10_000)
+  : null
+const janDebugMcpLiveReport = janDebugMcpLiveSmoke
+  ? parseJsonReport(janDebugMcpLiveSmoke.stdout)
+  : null
 const threadsPanelSource = existsSync(
   join(root, 'web-app/src/containers/model-tools-panel/tools/ThreadsPanel.tsx')
 )
@@ -106,6 +172,24 @@ const modelToolsPanelSource = existsSync(
 )
   ? readFileSync(
       join(root, 'web-app/src/containers/ModelToolsPanel.tsx'),
+      'utf8'
+    )
+  : ''
+const desktopReadySource = existsSync(
+  join(root, 'scripts/codex/desktop/ready.mjs')
+)
+  ? readFileSync(join(root, 'scripts/codex/desktop/ready.mjs'), 'utf8')
+  : ''
+const smokeReportSource = existsSync(
+  join(root, 'scripts/codex/desktop/smoke-report.mjs')
+)
+  ? readFileSync(join(root, 'scripts/codex/desktop/smoke-report.mjs'), 'utf8')
+  : ''
+const smokeReportValidatorSource = existsSync(
+  join(root, 'scripts/codex/desktop/validate-smoke-report.mjs')
+)
+  ? readFileSync(
+      join(root, 'scripts/codex/desktop/validate-smoke-report.mjs'),
       'utf8'
     )
   : ''
@@ -138,6 +222,10 @@ const checks = [
   checkFile('scripts/codex/desktop/smoke-report.mjs'),
   checkFile('scripts/codex/desktop/validate-smoke-report.mjs'),
   checkFile('scripts/codex/desktop/ready.mjs'),
+  checkFile('scripts/codex/desktop/focus-dev.mjs'),
+  checkFile('scripts/codex/desktop/capture-dev.mjs'),
+  checkFile('scripts/jan-debug-mcp.mjs'),
+  checkFile('scripts/jan-debug-mcp-smoke.mjs'),
   checkFile('src-tauri/tauri.conf.json'),
   checkFile('src-tauri/capabilities/default.json'),
   checkFile('src-tauri/capabilities/desktop.json'),
@@ -156,6 +244,11 @@ const checks = [
   {
     label: 'Desktop checklist references final ready gate',
     ok: /codex:desktop:ready/.test(checklistText),
+    detail: 'DESKTOP_SMOKE_CHECKLIST.md',
+  },
+  {
+    label: 'Desktop checklist references Jan debug bridge smoke',
+    ok: /jan:debug:mcp:smoke|Jan debug bridge/.test(checklistText),
     detail: 'DESKTOP_SMOKE_CHECKLIST.md',
   },
   {
@@ -197,6 +290,112 @@ const checks = [
       : smokeReportValidatorSelfTest.stderr ||
         smokeReportValidatorSelfTest.stdout.trim() ||
         'validator self-test failed',
+  },
+  {
+    label: 'Final ready gate requires smoke report validation',
+    ok: /REQUIRE_SMOKE_REPORT:\s*['"]1['"]/.test(desktopReadySource),
+    detail: 'scripts/codex/desktop/ready.mjs',
+  },
+  {
+    label: 'Final ready gate requires live Jan debug bridge validation',
+    ok: /REQUIRE_JAN_DEBUG_BRIDGE:\s*['"]1['"]/.test(desktopReadySource),
+    detail: 'scripts/codex/desktop/ready.mjs',
+  },
+  {
+    label: 'Smoke report generation enforces live Jan debug bridge preflight',
+    ok: /REQUIRE_JAN_DEBUG_BRIDGE:\s*['"]1['"]/.test(smokeReportSource),
+    detail: 'scripts/codex/desktop/smoke-report.mjs',
+  },
+  {
+    label: 'Smoke report validator parses Jan debug bridge JSON evidence',
+    ok:
+      /parseJanDebugBridgeSnapshot/.test(smokeReportValidatorSource) &&
+      /janDebugBridgeSnapshot\?\.ok\s*===\s*true/.test(
+        smokeReportValidatorSource
+      ) &&
+      /janDebugBridgeSnapshot\?\.clientErrors\s*===\s*0/.test(
+        smokeReportValidatorSource
+      ) &&
+      /janDebugBridgeSnapshot\?\.selectedProvider\s*===\s*['"]codex['"]/.test(
+        smokeReportValidatorSource
+      ) &&
+      /responseCount/.test(smokeReportValidatorSource) &&
+      /smokeEvidence\?\.routeReady\s*===\s*true/.test(
+        smokeReportValidatorSource
+      ) &&
+      /smokeEvidence\?\.selectedModelReady\s*===\s*true/.test(
+        smokeReportValidatorSource
+      ) &&
+      /smokeEvidence\?\.selectedModelInProviderCatalog\s*===\s*true/.test(
+        smokeReportValidatorSource
+      ) &&
+      /smokeEvidence\?\.serverStatus\s*===\s*['"]running['"]/.test(
+        smokeReportValidatorSource
+      ) &&
+      /smokeEvidence\?\.hasCodexAppServerLogs\s*===\s*true/.test(
+        smokeReportValidatorSource
+      ) &&
+      /smokeEvidence\?\.clientErrorCount\s*===\s*0/.test(
+        smokeReportValidatorSource
+      ),
+    detail: 'scripts/codex/desktop/validate-smoke-report.mjs',
+  },
+  {
+    label: 'Jan debug MCP self-test passes',
+    ok: janDebugMcpSelfTest.ok,
+    detail: janDebugMcpSelfTest.ok
+      ? janDebugMcpSelfTest.stdout.trim() || 'jan debug MCP self-test passed'
+      : janDebugMcpSelfTest.stderr ||
+        janDebugMcpSelfTest.stdout.trim() ||
+        'jan debug MCP self-test failed',
+  },
+  {
+    label: 'Jan debug bridge live snapshot validates when enforced',
+    ok: requireJanDebugBridge
+      ? janDebugMcpLiveSmoke?.ok === true &&
+        janDebugMcpLiveReport?.clientErrors === 0
+      : true,
+    detail: requireJanDebugBridge
+      ? janDebugMcpLiveSmoke?.ok
+        ? janDebugMcpLiveReport?.clientErrors === 0
+          ? janDebugMcpLiveSmoke.stdout.trim() || 'live Jan debug bridge smoke passed'
+          : `Jan debug bridge reported clientErrors=${janDebugMcpLiveReport?.clientErrors ?? 'unknown'}. Fix webview client errors before desktop smoke.`
+        : janDebugMcpLiveSmoke?.stderr ||
+          janDebugMcpLiveSmoke?.stdout.trim() ||
+          'Run yarn dev:tauri for the repo-local app, then yarn jan:debug:mcp:smoke.'
+      : 'Optional live bridge gate (set REQUIRE_JAN_DEBUG_BRIDGE=1)',
+  },
+  {
+    label: 'Jan debug bridge live snapshot uses Codex provider when enforced',
+    ok: requireJanDebugBridge
+      ? janDebugMcpLiveReport?.selectedProvider === 'codex'
+      : true,
+    detail: requireJanDebugBridge
+      ? janDebugMcpLiveReport?.selectedProvider === 'codex'
+        ? `selectedProvider=${janDebugMcpLiveReport.selectedProvider}, selectedModel=${janDebugMcpLiveReport.selectedModel ?? 'unknown'}`
+        : `selectedProvider=${janDebugMcpLiveReport?.selectedProvider ?? 'unknown'}, selectedModel=${janDebugMcpLiveReport?.selectedModel ?? 'unknown'}. Select or create a Codex-runtime chat before desktop smoke.`
+      : 'Optional Codex-provider gate (set REQUIRE_JAN_DEBUG_BRIDGE=1)',
+  },
+  {
+    label: 'Repo-local Jan runtime is unambiguous when bridge is enforced',
+    ok: requireJanDebugBridge
+      ? (repoLocalJanRuntime?.repoLocalJanProcesses.length ?? 0) === 1 &&
+        (repoLocalJanRuntime?.otherJanProcesses.length ?? 0) === 0
+      : true,
+    detail: requireJanDebugBridge
+      ? JSON.stringify(
+          {
+            repoLocalJanProcesses:
+              repoLocalJanRuntime?.repoLocalJanProcesses ?? [],
+            otherJanProcesses:
+              repoLocalJanRuntime?.otherJanProcesses ?? [],
+            localApiPort1337:
+              repoLocalJanRuntime?.localApiPortOwnerLines ?? [],
+          },
+          null,
+          2
+        )
+      : 'Optional duplicate-process gate (set REQUIRE_JAN_DEBUG_BRIDGE=1)',
   },
   {
     label: 'Thread panel exposes Clean terminals action',

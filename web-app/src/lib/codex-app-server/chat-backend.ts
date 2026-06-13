@@ -10,6 +10,7 @@ import { useCodexAppServerRuntime } from '@/stores/codex-app-server-runtime-stor
 import { useRuntimePermission } from '@/stores/runtime-permission-store'
 import { useModelProvider } from '@/hooks/useModelProvider'
 import { useLocalApiServer } from '@/hooks/useLocalApiServer'
+import { buildLocalApiBaseUrl } from '@/lib/local-api-gateway'
 import { getServiceHub } from '@/hooks/useServiceHub'
 import { providerRemoteAuthKeyChain } from '@/lib/provider-api-keys'
 import {
@@ -25,6 +26,7 @@ import type {
   CodexFileSystemCopyParams,
   CodexFileSystemRemoveParams,
   CodexMcpToolCallParams,
+  CodexProcessSpawnParams,
 } from './api'
 import { CODEX_APP_SERVER_METHOD_FALLBACKS } from './method-aliases'
 import {
@@ -34,6 +36,7 @@ import {
   ensureGlobalCodexAppServer,
   getGlobalCodexClientOrNull,
   resetGlobalCodexRuntimeForTests,
+  shutdownGlobalCodexAppServer,
 } from './global-codex-runtime'
 import {
   persistCodexThreadId,
@@ -63,6 +66,9 @@ type CodexChatBackendRequest = {
 
 const JAN_HOSTED_LOCAL_PROVIDERS = new Set(['llamacpp', 'mlx'])
 const GLOBAL_CODEX_THREAD_PLACEHOLDER = '__global__'
+const CODEX_FALLBACK_MODEL_ID = 'gpt-5.5'
+const CODEX_JAN_GATEWAY_PROVIDER_ID = 'jan-gateway'
+const CODEX_JAN_GATEWAY_API_KEY_ENV = 'JAN_LOCAL_API_SERVER_API_KEY'
 
 const CODEX_NOT_RUNNING_ERROR =
   'Codex app-server is not running yet. Wait for app startup to finish.'
@@ -97,9 +103,11 @@ export async function sendCodexAppServerChatMessage({
     }
   }
 
-  await ensureCodexTargetProviderReady(threadId, provider, model)
+  const resolvedModel = resolveCodexStartupModel(provider, model)
 
-  const client = await prepareThreadCodexRuntime(threadId, provider, model)
+  await ensureCodexTargetProviderReady(threadId, provider, resolvedModel)
+
+  const client = await prepareThreadCodexRuntime(threadId, provider, resolvedModel)
   const events = bridgeCodexApprovalRequests(
     client.sendToCodex(threadId, messageText, {
       clientUserMessageId: messageId,
@@ -137,13 +145,30 @@ export async function sendCodexAppServerChatMessage({
 export function approveCodexAppServerAction(
   threadId: string,
   requestId: string | number,
-  decision: { approved: boolean; rememberForSession?: boolean }
+  decision: {
+    approved: boolean
+    rememberForSession?: boolean
+    method?: string
+    params?: Record<string, unknown>
+    availableDecisions?: unknown[]
+  }
 ) {
   const client = requireCodexSession(threadId)
+  const params = {
+    ...(decision.params ?? {}),
+    ...(decision.availableDecisions
+      ? { availableDecisions: decision.availableDecisions }
+      : {}),
+  }
+  const request = {
+    id: requestId,
+    method: decision.method ?? 'item/commandExecution/requestApproval',
+    ...(Object.keys(params).length ? { params } : {}),
+  }
   client.approveAction(
     requestId,
     codexApprovalResponse(
-      { id: requestId, method: 'item/commandExecution/requestApproval' },
+      request,
       decision.approved,
       decision.rememberForSession
     )
@@ -214,9 +239,14 @@ function requireCodexSession(janThreadId: string) {
 async function prepareThreadCodexRuntime(
   threadId: string,
   provider: ModelProvider,
-  model: Model
+  model: Model,
+  runtimeOverrides: { cwd?: string } = {}
 ): Promise<CodexAppServerClient> {
-  const options = await resolveCodexSessionOptions(threadId, provider, model)
+  const resolvedOptions = await resolveCodexSessionOptions(threadId, provider, model)
+  const options = {
+    ...resolvedOptions,
+    ...(runtimeOverrides.cwd ? { cwd: runtimeOverrides.cwd } : {}),
+  }
   const spawnOptions = toGlobalSpawnOptions(options)
   const client = await ensureGlobalCodexAppServer(spawnOptions)
   client.setThreadOptions(threadId, options)
@@ -240,18 +270,16 @@ function toGlobalSpawnOptions(options: CodexSessionOptions): CodexSessionOptions
 
 export function buildGlobalCodexSpawnOptions(): CodexSessionOptions {
   const modelProviderState = useModelProvider.getState()
-  const provider =
-    modelProviderState.getProviderByName(CODEX_APP_SERVER_PROVIDER_ID) ??
-    modelProviderState.providers.find((candidate) => candidate.active) ??
-    modelProviderState.providers[0]
-  const model =
-    modelProviderState.selectedModel ??
+  const provider = modelProviderState.getProviderByName(CODEX_APP_SERVER_PROVIDER_ID)
+  const selectedModel =
+    provider?.models.find((candidate) => candidate.id === CODEX_FALLBACK_MODEL_ID) ??
     provider?.models.find((candidate) => candidate.active) ??
-    provider?.models[0]
+    provider?.models[0] ??
+    { id: CODEX_FALLBACK_MODEL_ID }
 
-  if (provider && model) {
+  if (provider) {
     return toGlobalSpawnOptions(
-      buildCodexSessionOptions(GLOBAL_CODEX_THREAD_PLACEHOLDER, provider, model)
+      buildCodexSessionOptions(GLOBAL_CODEX_THREAD_PLACEHOLDER, provider, selectedModel)
     )
   }
 
@@ -262,10 +290,7 @@ export function buildGlobalCodexSpawnOptions(): CodexSessionOptions {
     cwd: './',
     approvalPolicy: 'on-request',
     sandbox: 'workspace-write',
-    configToml: buildCodexConfigToml({
-      model: 'gpt-5.1-codex-max',
-      modelProvider: 'openai',
-    }),
+    ...buildJanGatewayCodexConfig(selectedModel.id),
     mcpRefreshConfig: {
       mcp_servers: {},
       mcp_oauth_credentials_store_mode: 'auto',
@@ -300,6 +325,18 @@ async function* bridgeCodexApprovalRequests(
   threadId: string
 ): AsyncGenerator<CodexAppServerEvent> {
   for await (const event of events) {
+    if (event.type === 'error' && isMissingCodexProviderEnvError(event.error)) {
+      await shutdownGlobalCodexAppServer().catch(() => {})
+      clearGlobalCodexThreadBinding(threadId)
+      yield {
+        type: 'error',
+        error: new Error(
+          'Codex provider credentials were missing from the running app-server. The Codex session was reset; regenerate to start with the current provider credentials.'
+        ),
+      }
+      continue
+    }
+
     if (event.type === 'thread_started' && event.threadId) {
       persistCodexThreadId(threadId, event.threadId)
     }
@@ -322,6 +359,12 @@ async function* bridgeCodexApprovalRequests(
       }
     }
   }
+}
+
+function isMissingCodexProviderEnvError(error: Error) {
+  return /Missing environment variable:\s*`?JAN_CODEX_PROVIDER_API_KEY`?/i.test(
+    error.message
+  )
 }
 
 async function requestCodexApproval(
@@ -348,6 +391,10 @@ async function requestCodexApproval(
         : {}),
       requestId: request.id,
       method: request.method,
+      ...(Object.keys(params).length ? { requestParams: params } : {}),
+      ...(Array.isArray(params.availableDecisions)
+        ? { availableDecisions: params.availableDecisions }
+        : {}),
       ...details.parameters,
     },
   })
@@ -788,9 +835,9 @@ export async function terminateCodexCommand(
 
 export async function spawnCodexProcess(
   janThreadId: string,
-  params: Record<string, unknown>
+  params: CodexProcessSpawnParams
 ) {
-  return requireCodexSession(janThreadId).spawnProcess(params as any)
+  return requireCodexSession(janThreadId).spawnProcess(params)
 }
 
 export async function writeCodexProcessInput(
@@ -2100,9 +2147,84 @@ export async function warmupCodexSession(
   provider: ModelProvider,
   model: Model
 ): Promise<void> {
-  await prepareThreadCodexRuntime(threadId, provider, model).catch(() => {
+  if (!isCodexAppServerProvider(provider.provider)) return
+  const resolvedModel = resolveCodexStartupModel(provider, model)
+  await prepareThreadCodexRuntime(threadId, provider, resolvedModel).catch(() => {
     // Warmup failures are non-fatal; the real send will surface the error
   })
+}
+
+export async function prepareCodexCapabilitySession(
+  threadId: string,
+  options: { cwd?: string } = {}
+): Promise<void> {
+  const modelProviderState = useModelProvider.getState()
+  const provider =
+    modelProviderState.getProviderByName(CODEX_APP_SERVER_PROVIDER_ID) ?? {
+      active: true,
+      provider: CODEX_APP_SERVER_PROVIDER_ID,
+      settings: [],
+      models: [{ id: CODEX_FALLBACK_MODEL_ID }],
+      persist: true,
+    }
+  const model =
+    provider.models.find((candidate) => candidate.id === CODEX_FALLBACK_MODEL_ID) ??
+    provider.models.find((candidate) => candidate.active) ??
+    provider.models[0] ??
+    { id: CODEX_FALLBACK_MODEL_ID }
+
+  await prepareThreadCodexRuntime(threadId, provider, model, options)
+}
+
+function resolveCodexStartupModel(
+  provider: ModelProvider,
+  requestedModel: Model
+): Model {
+  const available = provider.models ?? []
+  if (available.some((candidate) => candidate.id === requestedModel.id)) {
+    return requestedModel
+  }
+
+  const fallback =
+    available.find((candidate) => candidate.id === CODEX_FALLBACK_MODEL_ID) ??
+    available.find((candidate) => candidate.active) ??
+    available[0]
+
+  if (!fallback) {
+    return requestedModel
+  }
+
+  if (requestedModel.id !== fallback.id) {
+    console.warn(
+      `[Codex] Selected model '${requestedModel.id}' is not available for provider '${provider.provider}'; falling back to '${fallback.id}'.`
+    )
+  }
+
+  return fallback
+}
+
+function resolveCodexStartupModelId(
+  provider: ModelProvider,
+  requestedModelId: string
+): string {
+  const available = provider.models ?? []
+  const requested = requestedModelId.trim()
+  if (available.some((candidate) => candidate.id === requested)) return requested
+
+  const fallback =
+    available.find((candidate) => candidate.id === CODEX_FALLBACK_MODEL_ID) ??
+    available.find((candidate) => candidate.active) ??
+    available[0]
+
+  if (!fallback) return requestedModelId
+
+  if (requested !== fallback.id) {
+    console.warn(
+      `[Codex] Requested model '${requested}' is not available for provider '${provider.provider}'; using '${fallback.id}'.`
+    )
+  }
+
+  return fallback.id
 }
 
 
@@ -2121,6 +2243,9 @@ export async function resolveCodexSessionOptions(
   const activeProfile = activeProfileId
     ? useCodexProviderProfiles.getState().profiles[activeProfileId]
     : undefined
+  if (provider.provider === CODEX_APP_SERVER_PROVIDER_ID && !activeProfile) {
+    return buildCodexSessionOptions(threadId, provider, model, overrides)
+  }
   const targetProvider = resolveCodexTargetProvider(provider, model, activeProfile)
   const authProvider = resolveCodexAuthProvider(
     targetProvider,
@@ -2148,7 +2273,7 @@ export function buildCodexSessionOptions(
       typeof useCodexProviderProfiles.getState
     >['profiles'][string]
   } = {}
-) {
+): CodexSessionOptions {
   const modelProviderState = useModelProvider.getState()
   const activeProfile =
     overrides.activeProfile ??
@@ -2168,6 +2293,27 @@ export function buildCodexSessionOptions(
   const targetProvider =
     overrides.targetProvider ??
     resolveCodexTargetProvider(provider, model, activeProfile)
+  if (provider.provider === CODEX_APP_SERVER_PROVIDER_ID && !activeProfile) {
+    return {
+      codexBinaryPath:
+        settingValue(codexSettingsProvider, 'codex-binary-path') ||
+        defaultCodexBinaryPath(),
+      codexHome: resolveAppCodexHome(),
+      transport: normalizeCodexTransport(
+        settingValue(codexSettingsProvider, 'codex-transport')
+      ),
+      cwd: resolveCodexWorkspaceDir(threadId),
+      approvalPolicy: 'on-request',
+      sandbox: 'workspace-write',
+      mcpRefreshConfig: {
+        mcp_servers: buildCodexMcpServersConfig(useMCPServers.getState().mcpServers, {
+          toolTimeoutSeconds: useMCPServers.getState().settings.toolCallTimeoutSeconds,
+        }),
+        mcp_oauth_credentials_store_mode: 'auto',
+      },
+      ...buildJanGatewayCodexConfig(resolveCodexStartupModelId(provider, model.id)),
+    }
+  }
   const codexConfigProvider = codexManagedProviderId(targetProvider)
 
   const baseUrl = activeProfile
@@ -2217,13 +2363,17 @@ export function buildCodexSessionOptions(
   const envKey =
     configuredApiKeyEnv || (apiKey ? 'JAN_CODEX_PROVIDER_API_KEY' : undefined)
   const { mcpServers, settings: mcpSettings } = useMCPServers.getState()
-  const rawTargetModel = (activeProfile && activeProfile.model.trim()) || model.id
+  const rawTargetModel =
+    (activeProfile && activeProfile.model.trim()) || model.id
+  const modelId = resolveCodexStartupModelId(provider, rawTargetModel)
   const targetModel =
     targetProvider === 'xai'
-      ? resolveXaiRuntimeModelId(rawTargetModel)
-      : rawTargetModel
-  const approvalPolicy = activeProfile?.approvalPolicy || 'on-request'
-  const sandbox = activeProfile?.sandbox || 'workspace-write'
+      ? resolveXaiRuntimeModelId(modelId)
+      : modelId
+  const approvalPolicy: CodexSessionOptions['approvalPolicy'] =
+    activeProfile?.approvalPolicy || 'on-request'
+  const sandbox: CodexSessionOptions['sandbox'] =
+    activeProfile?.sandbox || 'workspace-write'
   const agentsMd = activeProfile?.agentsMd
   const subagentMaxThreads = activeProfile?.subagentMaxThreads
   const subagentMaxDepth = activeProfile?.subagentMaxDepth
@@ -2254,7 +2404,7 @@ export function buildCodexSessionOptions(
       modelContextWindow: codexModelContextWindowForModel(targetModel),
       modelReasoningEffort:
         targetProvider === 'xai' &&
-        !xaiModelSupportsReasoningEffort(rawTargetModel)
+        !xaiModelSupportsReasoningEffort(modelId)
           ? 'none'
           : undefined,
       providers: [
@@ -2282,6 +2432,45 @@ export function buildCodexSessionOptions(
       mcp_oauth_credentials_store_mode: 'auto',
     },
     env: apiKey && envKey ? { [envKey]: apiKey } : {},
+  }
+}
+
+function buildJanGatewayCodexConfig(
+  modelId: string
+): {
+  model: string
+  modelProvider: string
+  configToml: string
+  env: Record<string, string | undefined>
+} {
+  const localApi = useLocalApiServer.getState()
+  const baseUrl = buildLocalApiBaseUrl({
+    host: localApi.serverHost,
+    port: localApi.serverPort,
+    prefix: localApi.apiPrefix,
+  })
+  const apiKey = localApi.apiKey.trim()
+
+  return {
+    model: modelId,
+    modelProvider: CODEX_JAN_GATEWAY_PROVIDER_ID,
+    configToml: buildCodexConfigToml({
+      model: modelId,
+      modelProvider: CODEX_JAN_GATEWAY_PROVIDER_ID,
+      modelContextWindow: codexModelContextWindowForModel(modelId),
+      providers: [
+        {
+          id: CODEX_JAN_GATEWAY_PROVIDER_ID,
+          name: 'Jan Gateway',
+          baseUrl,
+          apiKeyEnvVar: apiKey ? CODEX_JAN_GATEWAY_API_KEY_ENV : undefined,
+          wireApi: 'responses',
+        },
+      ],
+      mcpServers: useMCPServers.getState().mcpServers,
+      mcpToolTimeoutSeconds: useMCPServers.getState().settings.toolCallTimeoutSeconds,
+    }),
+    env: apiKey ? { [CODEX_JAN_GATEWAY_API_KEY_ENV]: apiKey } : {},
   }
 }
 

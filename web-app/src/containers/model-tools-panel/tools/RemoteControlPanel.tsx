@@ -7,7 +7,7 @@ import {
   stringifyCodexJson,
 } from '../shared/codex-helpers'
 
-type RemoteControlPanelProps = {
+type RemoteControlPanelState = {
   remoteBusy: boolean
   currentThreadIdForCaps: string | null | undefined
   remotePairingCode: string
@@ -15,6 +15,10 @@ type RemoteControlPanelProps = {
   remotePairingStartParamsJson: string
   remoteStatus: unknown
   remotePairing: unknown
+  isCodexProtoTransport?: boolean
+}
+
+type RemoteControlPanelActions = {
   onSetRemotePairingCode: (value: string) => void
   onSetRemoteClientId: (value: string) => void
   onSetRemotePairingStartParamsJson: (value: string) => void
@@ -32,32 +36,46 @@ type RemoteControlPanelProps = {
   ) => Promise<void> | void
   onEnableCodexRemoteControl: (janThreadId: string) => Promise<unknown>
   onDisableCodexRemoteControl: (janThreadId: string) => Promise<unknown>
-  onListCodexRemoteControlClients: (janThreadId: string, params?: Record<string, unknown>) => Promise<unknown>
+  onListCodexRemoteControlClients: (
+    janThreadId: string,
+    params?: Record<string, unknown>
+  ) => Promise<unknown>
   onRevokeCodexRemoteControlClient: (janThreadId: string, clientId: string) => Promise<unknown>
-  isCodexProtoTransport?: boolean
+}
+
+type RemoteControlPanelProps = {
+  state: RemoteControlPanelState
+  actions: RemoteControlPanelActions
 }
 
 export function RemoteControlPanel({
-  remoteBusy,
-  currentThreadIdForCaps,
-  remotePairingCode,
-  remoteClientId,
-  remotePairingStartParamsJson,
-  remoteStatus,
-  remotePairing,
-  onSetRemotePairingCode,
-  onSetRemoteClientId,
-  onSetRemotePairingStartParamsJson,
-  onRefreshRemoteControlStatus,
-  onRunRemoteControlAction,
-  onStartRemoteControlPairing,
-  onReadRemoteControlPairing,
-  onEnableCodexRemoteControl,
-  onDisableCodexRemoteControl,
-  onListCodexRemoteControlClients,
-  onRevokeCodexRemoteControlClient,
-  isCodexProtoTransport,
+  state,
+  actions,
 }: RemoteControlPanelProps) {
+  const {
+    remoteBusy,
+    currentThreadIdForCaps,
+    remotePairingCode,
+    remoteClientId,
+    remotePairingStartParamsJson,
+    remoteStatus,
+    remotePairing,
+    isCodexProtoTransport,
+  } = state
+  const {
+    onSetRemotePairingCode,
+    onSetRemoteClientId,
+    onSetRemotePairingStartParamsJson,
+    onRefreshRemoteControlStatus,
+    onStartRemoteControlPairing,
+    onReadRemoteControlPairing,
+    onRunRemoteControlAction,
+    onEnableCodexRemoteControl,
+    onDisableCodexRemoteControl,
+    onListCodexRemoteControlClients,
+    onRevokeCodexRemoteControlClient,
+  } = actions
+
   const [showAdvancedPairingParams, setShowAdvancedPairingParams] =
     useState(false)
   const [statusPairingCode, setStatusPairingCode] = useState('')

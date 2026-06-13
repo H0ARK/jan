@@ -310,7 +310,7 @@ describe('DropdownModelProvider - Display Name Integration', () => {
         provider: 'codex',
         active: true,
         models: [
-          { id: 'gpt-5.1-codex-max', capabilities: ['completion', 'tools'] },
+          { id: 'gpt-5.5', capabilities: ['completion', 'tools'] },
         ],
         settings: [],
       },
@@ -340,7 +340,7 @@ describe('DropdownModelProvider - Display Name Integration', () => {
     await waitFor(() => {
       expect(selectModelProvider).toHaveBeenCalledWith(
         'codex',
-        'gpt-5.1-codex-max'
+        'gpt-5.5'
       )
     })
   })

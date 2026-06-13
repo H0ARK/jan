@@ -25,6 +25,27 @@ vi.mock('@/components/ui/tooltip', async () => {
   }
 })
 
+vi.mock('@/components/ui/popover', async () => {
+  const React = await import('react')
+  return {
+    Popover: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    PopoverContent: ({ children }: { children: React.ReactNode }) => (
+      <div data-testid="popover-content">{children}</div>
+    ),
+    PopoverTrigger: React.forwardRef(
+      ({ children, asChild, ...props }: any, ref: any) => {
+        if (asChild && React.isValidElement(children)) {
+          return React.cloneElement(
+            children as React.ReactElement,
+            { ...props, ref }
+          )
+        }
+        return <span {...props} ref={ref}>{children}</span>
+      }
+    ),
+  }
+})
+
 const mockUseTokensCount = vi.mocked(useTokensCount)
 
 function mockTokens(overrides: Partial<ReturnType<typeof useTokensCount>> = {}) {
@@ -43,6 +64,13 @@ describe('TokenCounter', () => {
     vi.clearAllMocks()
     mockTokens()
   })
+
+  const openPopover = async () => {
+    const clickable = screen.getByTestId('token-counter-trigger') as HTMLElement | null
+    expect(clickable).not.toBeNull()
+    await userEvent.click(clickable!)
+    return screen.findByTestId('popover-content')
+  }
 
   it('renders 0.0% when no messages and zero tokens', () => {
     render(<TokenCounter />)
@@ -111,52 +139,53 @@ describe('TokenCounter', () => {
   })
 
   describe('formatNumber helper (via rendered output)', () => {
-    it('formats thousands as K', () => {
+    it('formats thousands as K', async () => {
       mockTokens({ tokenCount: 1000, maxTokens: 2000 })
       const { container } = render(<TokenCounter />)
+      await userEvent.click(screen.getByTestId('token-counter-trigger')!)
       expect(container.textContent).toContain('1.0K')
     })
 
-    it('formats millions as M', () => {
+    it('formats millions as M', async () => {
       mockTokens({ tokenCount: 1000000, maxTokens: 2000000 })
       const { container } = render(<TokenCounter />)
+      await userEvent.click(screen.getByTestId('token-counter-trigger')!)
       expect(container.textContent).toContain('1.0M')
     })
 
-    it('shows raw number below 1000', () => {
+    it('shows raw number below 1000', async () => {
       mockTokens({ tokenCount: 500, maxTokens: 1000 })
       const { container } = render(<TokenCounter />)
+      await userEvent.click(screen.getByTestId('token-counter-trigger')!)
       expect(container.textContent).toContain('500')
     })
   })
 
-  it('shows token breakdown with Used and Remaining labels', () => {
+  it('shows token breakdown with Used and Remaining labels', async () => {
     mockTokens({ tokenCount: 500, maxTokens: 1000 })
     render(<TokenCounter />)
-    const tooltipContent = screen.getByTestId('tooltip-content')
+    const tooltipContent = await openPopover()
     expect(tooltipContent.textContent).toContain('Used')
     expect(tooltipContent.textContent).toContain('Remaining')
   })
 
-  it('shows Context window header', () => {
+  it('shows Context window header', async () => {
     mockTokens({ tokenCount: 500, maxTokens: 1000 })
     render(<TokenCounter />)
-    expect(
-      screen.getByTestId('tooltip-content').textContent
-    ).toContain('Context window')
+    expect((await openPopover()).textContent).toContain('Context window')
   })
 
-  it('shows correct remaining tokens', () => {
+  it('shows correct remaining tokens', async () => {
     mockTokens({ tokenCount: 300, maxTokens: 1000 })
     const { container } = render(<TokenCounter />)
-    const tooltipContent = screen.getByTestId('tooltip-content')
+    const tooltipContent = await openPopover()
     expect(tooltipContent.textContent).toContain('700')
   })
 
-  it('shows 0 remaining when over limit', () => {
+  it('shows 0 remaining when over limit', async () => {
     mockTokens({ tokenCount: 1500, maxTokens: 1000 })
     const { container } = render(<TokenCounter />)
-    const tooltipContent = screen.getByTestId('tooltip-content')
+    const tooltipContent = await openPopover()
     expect(tooltipContent.textContent).toContain('Remaining')
     expect(tooltipContent.textContent).toMatch(/Remaining\s*0/)
   })
@@ -168,7 +197,7 @@ describe('TokenCounter', () => {
     expect(wrapper).toBeTruthy()
   })
 
-  it('truncates compact model label and shows percentage only', () => {
+  it('truncates compact model label and renders context popover', () => {
     mockTokens({
       tokenCount: 250,
       maxTokens: 1000,
@@ -178,6 +207,6 @@ describe('TokenCounter', () => {
     const label = container.querySelector('[title="very-long-model-name-that-should-truncate"]')
     expect(label?.textContent).toBe('very-long-mod…')
     expect(container.textContent).toContain('25%')
-    expect(container.textContent).not.toContain('Context')
+    expect(container.textContent).toContain('Context window')
   })
 })

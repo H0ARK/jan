@@ -208,9 +208,9 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           onChange={(event) => setCompletionShell(event.target.value)}
         />
       </div>
-      <textarea
-        className="mb-1 min-h-10 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='codex command args JSON array or command tokens (e.g. ["--uncommitted"] )'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder="codex command args (JSON array or command tokens)"
         value={commandArgs}
         onChange={(event) => setCommandArgs(event.target.value)}
       />
@@ -221,9 +221,9 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
           value={helpSubcommand}
           onChange={(event) => setHelpSubcommand(event.target.value)}
         />
-        <textarea
-          className="min-h-8 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-          placeholder='help args JSON array or command tokens (e.g. [])'
+        <Input
+          className="h-6 px-2 text-[10px] font-mono"
+          placeholder="help args (JSON array or command tokens)"
           value={helpArgs}
           onChange={(event) => setHelpArgs(event.target.value)}
         />
@@ -327,15 +327,15 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
         value={execPrompt}
         onChange={(event) => setExecPrompt(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-8 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='exec addDirs JSON array or command tokens (e.g. ["~/project"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='exec addDirs (JSON array or command tokens)'
         value={execAddDirs}
         onChange={(event) => setExecAddDirs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-8 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='exec extra args JSON array or command tokens (e.g. ["--no-gpu"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='exec extra args (JSON array or command tokens)'
         value={execExtraArgs}
         onChange={(event) => setExecExtraArgs(event.target.value)}
       />
@@ -377,8 +377,8 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
         value={loginApiKey}
         onChange={(event) => setLoginApiKey(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
         placeholder='raw Codex CLI args (JSON array or tokens)'
         value={rawArgs}
         onChange={(event) => setRawArgs(event.target.value)}
@@ -852,93 +852,93 @@ export function CodexCliPanel({ cwd }: CodexCliPanelProps) {
         value={reviewPrompt}
         onChange={(event) => setReviewPrompt(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='review args JSON array or command tokens (e.g. ["--uncommitted"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='review args (JSON array or command tokens)'
         value={reviewArgs}
         onChange={(event) => setReviewArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='doctor args JSON array or command tokens (e.g. [])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='doctor args (JSON array or command tokens)'
         value={doctorArgs}
         onChange={(event) => setDoctorArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='features args JSON array or command tokens (e.g. [])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='features args (JSON array or command tokens)'
         value={featuresArgs}
         onChange={(event) => setFeaturesArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='plugin args JSON array or command tokens (e.g. ["list"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='plugin args (JSON array or command tokens)'
         value={pluginArgs}
         onChange={(event) => setPluginArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='archive args JSON array or command tokens (e.g. [])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='archive args (JSON array or command tokens)'
         value={archiveArgs}
         onChange={(event) => setArchiveArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='unarchive args JSON array or command tokens (e.g. [])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='unarchive args (JSON array or command tokens)'
         value={unarchiveArgs}
         onChange={(event) => setUnarchiveArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='fork args JSON array or command tokens (e.g. ["<session-id>"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='fork args (JSON array or command tokens)'
         value={forkArgs}
         onChange={(event) => setForkArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='resume args JSON array or command tokens (e.g. ["--last"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='resume args (JSON array or command tokens)'
         value={resumeArgs}
         onChange={(event) => setResumeArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='sandbox args JSON array or command tokens (e.g. ["run","--help"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='sandbox args (JSON array or command tokens)'
         value={sandboxArgs}
         onChange={(event) => setSandboxArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='update args JSON array or command tokens (e.g. [])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='update args (JSON array or command tokens)'
         value={updateArgs}
         onChange={(event) => setUpdateArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='exec-server args JSON array or command tokens (e.g. ["--help"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='exec-server args (JSON array or command tokens)'
         value={execServerArgs}
         onChange={(event) => setExecServerArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='app args JSON array or command tokens (e.g. [])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='app args (JSON array or command tokens)'
         value={appArgs}
         onChange={(event) => setAppArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='mcp-server args JSON array or command tokens (e.g. ["--stdio"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='mcp-server args (JSON array or command tokens)'
         value={mcpServerArgs}
         onChange={(event) => setMcpServerArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='cloud args JSON array or command tokens (e.g. ["--help"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='cloud args (JSON array or command tokens)'
         value={cloudArgs}
         onChange={(event) => setCloudArgs(event.target.value)}
       />
-      <textarea
-        className="mb-1 min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-        placeholder='remote-control args JSON array or command tokens (e.g. ["status"])'
+      <Input
+        className="mb-1 h-6 px-2 text-[10px] font-mono"
+        placeholder='remote-control args (JSON array or command tokens)'
         value={remoteControlArgs}
         onChange={(event) => setRemoteControlArgs(event.target.value)}
       />

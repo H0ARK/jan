@@ -44,28 +44,10 @@ type RawRpcToolProps = {
   isCodexProtoTransport?: boolean
 }
 
-function parseTargets(value: string) {
-  const raw = value.trim()
-  if (!raw) return []
-
-  const parsed = parseCodexJson<unknown>(value || '[]', [])
-  if (!Array.isArray(parsed)) return []
-  const fromJson = parsed.filter((entry): entry is string => typeof entry === 'string')
-  if (fromJson.length) return fromJson
-
-  const byLines = raw
-    .split('\n')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-  if (byLines.length > 1) return byLines
-
-  const byCommas = raw
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-  if (byCommas.length > 1) return byCommas
-
-  return [raw]
+function normalizeTargets(value: string[]) {
+  return value
+    .map((target) => target.trim())
+    .filter((target) => target.length > 0)
 }
 
 export function RawRpcTool({
@@ -114,10 +96,11 @@ export function RawRpcTool({
 
   const [pluginShareRemotePluginId, setPluginShareRemotePluginId] = useState('')
   const [pluginSharePluginPath, setPluginSharePluginPath] = useState('')
-  const [pluginShareTargets, setPluginShareTargets] = useState('[]')
+  const [pluginShareTargets, setPluginShareTargets] = useState<string[]>([''])
   const [fuzzySessionId, setFuzzySessionId] = useState('')
   const [fuzzyQuery, setFuzzyQuery] = useState('')
   const [fuzzyLimit, setFuzzyLimit] = useState('50')
+  const [allowUnknownRawRpcMethod, setAllowUnknownRawRpcMethod] = useState(false)
   const [showAdvancedRawRpcJson, setShowAdvancedRawRpcJson] = useState(false)
   const [rawRpcParamFields, setRawRpcParamFields] = useState<RawRpcParamField[]>([
     { key: '', value: '' },
@@ -144,13 +127,15 @@ export function RawRpcTool({
     !rawRpcBusy &&
     Boolean(methodText) &&
     !hasRawRpcParamsError &&
-    !isProto
+    !isProto &&
+    (isKnownRawRpcMethod || allowUnknownRawRpcMethod)
 
   const setMethodWithPreset = (method: string) => {
     const trimmed = method.trim()
     setCodexRawRpcMethod(trimmed)
+    setAllowUnknownRawRpcMethod(false)
+    const resolved = resolveCodexRawRpcMethod(trimmed)
     if (!showAdvancedRawRpcJson) {
-      const resolved = resolveCodexRawRpcMethod(trimmed)
       const defaults =
         catalogMethodDefaults.get(trimmed) ?? catalogMethodDefaults.get(resolved)
       if (defaults) {
@@ -164,6 +149,23 @@ export function RawRpcTool({
     if (!showAdvancedRawRpcJson) {
       setCodexRawRpcParams(stringifyCodexJson(params, codexRawRpcParams))
     }
+  }
+
+  const onSetPluginShareTarget = (index: number, value: string) => {
+    const nextTargets = [...pluginShareTargets]
+    nextTargets[index] = value
+    setPluginShareTargets(nextTargets)
+  }
+
+  const addPluginShareTarget = () => {
+    setPluginShareTargets((previous) => [...previous, ''])
+  }
+
+  const removePluginShareTarget = (index: number) => {
+    setPluginShareTargets((previous) => {
+      const nextTargets = previous.filter((_, nextIndex) => nextIndex !== index)
+      return nextTargets.length > 0 ? nextTargets : ['']
+    })
   }
 
   const parseRawRpcValue = (value: string): unknown => {
@@ -342,7 +344,7 @@ export function RawRpcTool({
             onClick={() =>
             syncPresetMethod('plugin/share/updateTargets', {
               remotePluginId: pluginShareRemotePluginId.trim(),
-              targets: parseTargets(pluginShareTargets),
+              targets: normalizeTargets(pluginShareTargets),
             })
           }
         >
@@ -356,7 +358,7 @@ export function RawRpcTool({
             syncPresetMethod('plugin/share/save', {
               remotePluginId: pluginShareRemotePluginId.trim(),
               pluginPath: pluginSharePluginPath.trim(),
-              targets: parseTargets(pluginShareTargets),
+              targets: normalizeTargets(pluginShareTargets),
             })
           }
         >
@@ -387,12 +389,37 @@ export function RawRpcTool({
             value={pluginSharePluginPath}
             onChange={(event) => setPluginSharePluginPath(event.target.value)}
           />
-          <textarea
-            className="min-h-12 w-full resize-y rounded border bg-background px-2 py-1 font-mono text-[10px]"
-            placeholder='plugin share targets (JSON array or one per line)'
-            value={pluginShareTargets}
-            onChange={(event) => setPluginShareTargets(event.target.value)}
-          />
+          <div className="w-full space-y-1">
+            <div className="mb-1 text-[9px] text-muted-foreground">Plugin share targets</div>
+            {pluginShareTargets.map((target, index) => (
+              <div key={`plugin-target-${index}`} className="flex gap-1">
+                <Input
+                  className="h-6 min-w-0 px-2 text-[10px]"
+                  placeholder="plugin share target"
+                  value={target}
+                  onChange={(event) =>
+                    onSetPluginShareTarget(index, event.target.value)
+                  }
+                />
+                <button
+                  type="button"
+                  className="text-[9px] underline disabled:opacity-50"
+                  disabled={rawRpcBusy || pluginShareTargets.length <= 1}
+                  onClick={() => removePluginShareTarget(index)}
+                >
+                  remove
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="text-[9px] underline disabled:opacity-50"
+              disabled={rawRpcBusy}
+              onClick={addPluginShareTarget}
+            >
+              + add target
+            </button>
+          </div>
         </div>
         <div className="mb-1 flex w-full gap-2">
           <Input
@@ -464,6 +491,18 @@ export function RawRpcTool({
         <div className="mb-1 text-[9px] text-amber-700 dark:text-amber-500">
           Unknown method for catalog coverage. Raw RPC will send this method as-is.
         </div>
+      ) : null}
+      {codexRawRpcMethod.trim() && !isKnownRawRpcMethod ? (
+        <label className="mb-1 flex items-center gap-1.5 text-[9px] text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={allowUnknownRawRpcMethod}
+            onChange={(event) =>
+              setAllowUnknownRawRpcMethod(event.target.checked)
+            }
+          />
+          Confirm intentionally calling unknown method
+        </label>
       ) : null}
       <datalist id="codex-raw-rpc-methods">
         {catalogMethods.map((method) => (

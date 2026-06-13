@@ -45,9 +45,14 @@ fn parse_uuid(bytes: &[u8; 16]) -> String {
 }
 
 pub fn get_vulkan_gpus() -> Vec<GpuInfo> {
-    #[cfg(any(target_os = "android", target_os = "ios", target_os = "macos"))]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         log::info!("Vulkan GPU detection is not supported on mobile platforms");
+        vec![]
+    }
+
+    #[cfg(target_os = "macos")]
+    {
         vec![]
     }
 

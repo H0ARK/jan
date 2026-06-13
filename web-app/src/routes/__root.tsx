@@ -26,6 +26,7 @@ import OutOfContextPromiseModal from '@/containers/dialogs/OutOfContextDialog'
 import AttachmentIngestionDialog from '@/containers/dialogs/AttachmentIngestionDialog'
 import GlobalError from '@/containers/GlobalError'
 import { GlobalEventHandler } from '@/providers/GlobalEventHandler'
+import { JanDebugBridge } from '@/providers/JanDebugBridge'
 import { ServiceHubProvider } from '@/providers/ServiceHubProvider'
 import { CodexAppServerBootstrap } from '@/providers/CodexAppServerBootstrap'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
@@ -142,6 +143,7 @@ function RootLayout() {
           <ExtensionProvider>
             <DataProvider />
             <GlobalEventHandler />
+            <JanDebugBridge />
             {IS_LOGS_ROUTE ? <LogsLayout /> : <AppLayout />}
           </ExtensionProvider>
           {/* <TanStackRouterDevtools position="bottom-right" /> */}

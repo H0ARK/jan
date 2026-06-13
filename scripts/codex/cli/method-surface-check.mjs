@@ -44,11 +44,61 @@ function collectMethodsFromMethodAliases(sourceFile) {
   while ((match = aliasRegex.exec(rawText)) !== null) {
     const sourceMethod = match[1].trim()
     const fallbackMethod = match[2].trim()
-    if (sourceMethod.includes('/') || fallbackMethod.includes('/')) {
-      aliasEntries.set(sourceMethod, fallbackMethod)
+    if (!isCodexMethodCandidate(sourceMethod) || !isCodexMethodCandidate(fallbackMethod)) {
+      continue
     }
+    aliasEntries.set(sourceMethod, fallbackMethod)
   }
   return aliasEntries
+}
+
+function isCodexMethodCandidate(value) {
+  const normalized = value.trim()
+  if (!normalized || normalized.includes(' ')) return false
+  return (
+    normalized.includes('/') ||
+    /[A-Z]/.test(normalized) ||
+    normalized.includes('_')
+  )
+}
+
+function resolveAliasMethodChain(method, methodAliasMap, visited = new Set()) {
+  if (!methodAliasMap.has(method)) {
+    return {
+      status: 'resolved',
+      resolvedMethod: method,
+      chain: [method],
+    }
+  }
+
+  if (visited.has(method)) {
+    return {
+      status: 'cycle',
+      resolvedMethod: null,
+      chain: [...visited, method],
+    }
+  }
+
+  visited.add(method)
+  const fallback = methodAliasMap.get(method)
+  if (!fallback) {
+    return {
+      status: 'resolved',
+      resolvedMethod: method,
+      chain: [method],
+    }
+  }
+
+  const next = resolveAliasMethodChain(fallback, methodAliasMap, visited)
+  if (next.status !== 'resolved') {
+    return next
+  }
+
+  return {
+    status: 'resolved',
+    resolvedMethod: next.resolvedMethod,
+    chain: [method, ...next.chain],
+  }
 }
 
 function collectCalledMethodsFromSource(sourceFile, methodAliasMap) {
@@ -66,8 +116,16 @@ function collectCalledMethodsFromSource(sourceFile, methodAliasMap) {
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
       const method = match[1].trim()
-      const resolvedMethod = methodAliasMap.get(method) ?? method
-      if (method.includes('/')) methods.add(resolvedMethod)
+      const resolved = resolveAliasMethodChain(method, methodAliasMap)
+      if (resolved.status === 'cycle') {
+        logAliasCycle(resolved)
+        continue
+      }
+
+      const resolvedMethod = resolved.resolvedMethod ?? method
+      if (isCodexMethodCandidate(resolvedMethod)) {
+        methods.add(resolvedMethod)
+      }
     }
   }
 
@@ -81,7 +139,7 @@ function collectMethodsFromRawRpcCatalog(sourceFile) {
   let match
   while ((match = methodRegex.exec(rawText)) !== null) {
     const method = match[1].trim()
-    if (method.includes('/')) methods.add(method)
+    if (isCodexMethodCandidate(method)) methods.add(method)
   }
   return normalizeMethods(Array.from(methods))
 }
@@ -104,6 +162,12 @@ function collectJanMethodSurface() {
   }
 }
 
+function logAliasCycle(aliasIssue) {
+  console.error(
+    `[alias-cycle] ${aliasIssue.method} chain: ${aliasIssue.chain.join(' -> ')}`
+  )
+}
+
 function collectMethodStrings(value, candidates) {
   if (!value) return
   if (Array.isArray(value)) {
@@ -111,6 +175,12 @@ function collectMethodStrings(value, candidates) {
     return
   }
   if (typeof value === 'string') {
+    for (const match of value.matchAll(/`([^`]+)`/g)) {
+      const value = match[1].trim()
+      if (isCodexMethodCandidate(value)) {
+        candidates.push(value)
+      }
+    }
     for (const match of value.matchAll(/["'`]?([a-z][A-Za-z0-9_]*\/[A-Za-z0-9_\/]*)["'`]?/g)) {
       candidates.push(match[1])
     }
@@ -207,7 +277,7 @@ async function queryAppServerMethods(binary) {
     probeResponse = await request(FALLBACK_PROBE_METHOD)
   }
 
-  const upstreamMethods = parseMethodsFromResponsePayload(probeResponse).filter((method) => method.includes('/'))
+  const upstreamMethods = parseMethodsFromResponsePayload(probeResponse)
   child.stdin.end()
   child.kill()
   return { initialize, probe: probeResponse, upstreamMethods, rawOutput, stderr: stderr.join('') }
@@ -218,38 +288,67 @@ function compareMethodSurfaces(janMethods, upstreamMethods, methodAliasMap) {
   const reverseAliasMap = new Map(Array.from(methodAliasMap.entries()).map(([source, fallback]) => [fallback, source]))
   const missing = []
   const fallbackCovered = []
+  const aliasIssues = []
   for (const method of janMethods) {
     if (upstreamSet.has(method)) continue
-    const fallback = methodAliasMap.get(method)
-    if (fallback && upstreamSet.has(fallback)) {
-      fallbackCovered.push({ method, fallback })
+
+    const aliasResolution = resolveAliasMethodChain(method, methodAliasMap)
+    if (aliasResolution.status === 'cycle') {
+      aliasIssues.push({ method, chain: aliasResolution.chain })
       continue
     }
+
+    const fallback = aliasResolution.resolvedMethod
+    if (fallback && upstreamSet.has(fallback) && fallback !== method) {
+      fallbackCovered.push({ method, fallback, chain: aliasResolution.chain })
+      continue
+    }
+
     const reverseFallback = reverseAliasMap.get(method)
     if (reverseFallback && upstreamSet.has(reverseFallback)) {
-      fallbackCovered.push({ method, fallback: reverseFallback })
+      const reverseResolution = resolveAliasMethodChain(reverseFallback, methodAliasMap)
+      if (reverseResolution.status === 'cycle') {
+        aliasIssues.push({ method, chain: reverseResolution.chain })
+        continue
+      }
+
+      fallbackCovered.push({
+        method,
+        fallback: reverseFallback,
+        chain: [...reverseResolution.chain, method],
+      })
       continue
     }
+
     missing.push(method)
   }
   const janSet = new Set(janMethods)
-  return { missing, fallbackCovered, extras: upstreamMethods.filter((method) => !janSet.has(method)) }
+  return { missing, fallbackCovered, aliasIssues, extras: upstreamMethods.filter((method) => !janSet.has(method)) }
 }
 
 function compareRawRpcCatalogMethods(catalogMethods, upstreamMethods, methodAliasMap) {
   const upstreamSet = new Set(upstreamMethods.map((method) => method.trim()))
   const missing = []
   const fallbackCovered = []
+  const aliasIssues = []
   for (const method of catalogMethods) {
     if (upstreamSet.has(method)) continue
-    const fallback = methodAliasMap.get(method)
-    if (fallback && upstreamSet.has(fallback)) {
-      fallbackCovered.push({ method, fallback })
+
+    const aliasResolution = resolveAliasMethodChain(method, methodAliasMap)
+    if (aliasResolution.status === 'cycle') {
+      aliasIssues.push({ method, chain: aliasResolution.chain })
       continue
     }
+
+    const fallback = aliasResolution.resolvedMethod
+    if (fallback && upstreamSet.has(fallback) && fallback !== method) {
+      fallbackCovered.push({ method, fallback, chain: aliasResolution.chain })
+      continue
+    }
+
     missing.push(method)
   }
-  return { missing, fallbackCovered }
+  return { missing, fallbackCovered, aliasIssues }
 }
 
 const janSurface = collectJanMethodSurface()
@@ -257,7 +356,13 @@ const runtimeSurface = await queryAppServerMethods(CODEX_BINARY)
 const comparison = compareMethodSurfaces(janSurface.methods, runtimeSurface.upstreamMethods, janSurface.methodAliasMap)
 const rawRpcCatalogMethods = collectMethodsFromRawRpcCatalog(RAW_RPC_CATALOG_SOURCE)
 const rawRpcCatalogComparison = compareRawRpcCatalogMethods(rawRpcCatalogMethods, runtimeSurface.upstreamMethods, janSurface.methodAliasMap)
-const overall = comparison.missing.length || rawRpcCatalogComparison.missing.length ? 'failed' : 'passed'
+const overall =
+  comparison.missing.length ||
+  comparison.aliasIssues.length ||
+  rawRpcCatalogComparison.missing.length ||
+  rawRpcCatalogComparison.aliasIssues.length
+    ? 'failed'
+    : 'passed'
 const report = {
   timestamp: new Date().toISOString(),
   binary: CODEX_BINARY,
@@ -273,10 +378,21 @@ const report = {
 }
 
 console.log(JSON.stringify(report, null, 2))
-for (const { method, fallback } of comparison.fallbackCovered) {
-  console.error(`[alias] ${method} now falls back to ${fallback}`)
+for (const { method, fallback, chain } of comparison.fallbackCovered) {
+  const chainText = chain ? ` via ${chain.join(' -> ')}` : ''
+  console.error(`[alias] ${method} now falls back to ${fallback}${chainText}`)
 }
-for (const { method, fallback } of rawRpcCatalogComparison.fallbackCovered) {
-  console.error(`[raw-rpc-alias] ${method} now falls back to ${fallback}`)
+for (const { method, fallback, chain } of rawRpcCatalogComparison.fallbackCovered) {
+  const chainText = chain ? ` via ${chain.join(' -> ')}` : ''
+  console.error(`[raw-rpc-alias] ${method} now falls back to ${fallback}${chainText}`)
+}
+for (const aliasIssue of comparison.aliasIssues) {
+  logAliasCycle(aliasIssue)
+}
+for (const aliasIssue of rawRpcCatalogComparison.aliasIssues) {
+  logAliasCycle(aliasIssue)
+}
+if (comparison.aliasIssues.length || rawRpcCatalogComparison.aliasIssues.length) {
+  process.exitCode = 1
 }
 if (overall !== 'passed') process.exitCode = 1

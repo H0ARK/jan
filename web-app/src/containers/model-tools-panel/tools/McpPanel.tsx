@@ -10,7 +10,7 @@ import {
   type CodexMcpToolDescriptor,
 } from '../shared/codex-helpers'
 
-type McpPanelProps = {
+type McpPanelState = {
   codexMcpServerName: string
   codexMcpResourceUri: string
   codexMcpToolName: string
@@ -29,6 +29,10 @@ type McpPanelProps = {
   filteredCodexMcpToolDescriptors: CodexMcpToolDescriptor[]
   selectedCodexMcpToolDescriptor?: CodexMcpToolDescriptor
   codexMcpToolArgumentValidation: string[]
+  isCodexProtoTransport?: boolean
+}
+
+type McpPanelActions = {
   onSetCodexMcpServerName: (value: string) => void
   onSetCodexMcpResourceUri: (value: string) => void
   onSetCodexMcpToolName: (value: string) => void
@@ -41,7 +45,11 @@ type McpPanelProps = {
     success?: string
   ) => Promise<unknown | null>
   onMcpOauthLogin: () => Promise<void>
-  isCodexProtoTransport?: boolean
+}
+
+type McpPanelProps = {
+  state: McpPanelState
+  actions: McpPanelActions
 }
 
 type McpArgumentField = {
@@ -184,34 +192,41 @@ const setNestedArgumentValue = (
 }
 
 export function McpPanel({
-  codexMcpServerName,
-  codexMcpResourceUri,
-  codexMcpToolName,
-  codexMcpToolArguments,
-  codexMcpDescriptorFilter,
-  mcpBusy,
-  currentThreadIdForCaps,
-  mcpStatus,
-  codexMcpSnapshot,
-  selectableCodexMcpServerNames,
-  selectableCodexMcpResourceUris,
-  selectableCodexMcpToolNames,
-  codexMcpResourceDescriptors,
-  codexMcpToolDescriptors,
-  filteredCodexMcpResourceDescriptors,
-  filteredCodexMcpToolDescriptors,
-  selectedCodexMcpToolDescriptor,
-  codexMcpToolArgumentValidation,
-  onSetCodexMcpServerName,
-  onSetCodexMcpResourceUri,
-  onSetCodexMcpToolName,
-  onSetCodexMcpToolArguments,
-  onSetCodexMcpDescriptorFilter,
-  onSetCapError,
-  onRunCodexMcpAction,
-  onMcpOauthLogin,
-  isCodexProtoTransport,
+  state,
+  actions,
 }: McpPanelProps) {
+  const {
+    codexMcpServerName,
+    codexMcpResourceUri,
+    codexMcpToolName,
+    codexMcpToolArguments,
+    codexMcpDescriptorFilter,
+    mcpBusy,
+    currentThreadIdForCaps,
+    mcpStatus,
+    codexMcpSnapshot,
+    selectableCodexMcpServerNames,
+    selectableCodexMcpResourceUris,
+    selectableCodexMcpToolNames,
+    codexMcpResourceDescriptors,
+    codexMcpToolDescriptors,
+    filteredCodexMcpResourceDescriptors,
+    filteredCodexMcpToolDescriptors,
+    selectedCodexMcpToolDescriptor,
+    codexMcpToolArgumentValidation,
+    isCodexProtoTransport,
+  } = state
+  const {
+    onSetCodexMcpServerName,
+    onSetCodexMcpResourceUri,
+    onSetCodexMcpToolName,
+    onSetCodexMcpToolArguments,
+    onSetCodexMcpDescriptorFilter,
+    onSetCapError,
+    onRunCodexMcpAction,
+    onMcpOauthLogin,
+  } = actions
+
   const [showAdvancedToolArguments, setShowAdvancedToolArguments] =
     useState(false)
 

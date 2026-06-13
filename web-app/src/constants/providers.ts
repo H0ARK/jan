@@ -529,17 +529,31 @@ export const predefinedProviders = [
     ],
     models: [
       {
-        id: 'gpt-5.1-codex-max',
-        name: 'GPT-5.1 Codex Max',
+        id: 'gpt-5.5',
+        name: 'GPT-5.5',
         version: '1.0',
-        description: 'Codex agent model through app-server.',
+        description: 'Default Codex agent model through app-server.',
         capabilities: ['completion', 'tools'],
       },
       {
-        id: 'gpt-5.1',
-        name: 'GPT-5.1',
+        id: 'gpt-5.4',
+        name: 'GPT-5.4',
         version: '1.0',
-        description: 'General model through Codex app-server.',
+        description: 'Strong Codex coding model through app-server.',
+        capabilities: ['completion', 'tools'],
+      },
+      {
+        id: 'gpt-5.4-mini',
+        name: 'GPT-5.4 Mini',
+        version: '1.0',
+        description: 'Small, fast Codex coding model through app-server.',
+        capabilities: ['completion', 'tools'],
+      },
+      {
+        id: 'gpt-5.3-codex-spark',
+        name: 'GPT-5.3 Codex Spark',
+        version: '1.0',
+        description: 'Ultra-fast Codex coding model through app-server.',
         capabilities: ['completion', 'tools'],
       },
       {

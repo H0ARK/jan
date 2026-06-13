@@ -18,14 +18,44 @@ let ensureChain: Promise<CodexAppServerClient> = Promise.resolve(
 )
 
 export function buildCodexProcessSignature(options: CodexSessionOptions): string {
-  // API keys and other env values change after bootstrap; they must not restart the process.
+  // The Codex app-server reads provider env vars from its process environment.
+  // If the selected chat/provider changes from Jan Gateway to xAI/OpenAI/etc, or
+  // if an OAuth/API key is refreshed, reloading config.toml is not enough: the
+  // running process will still be missing the env value referenced by env_key.
+  // Keep the secret value redacted, but include a stable hash so changes restart
+  // the process with the correct environment.
   return JSON.stringify({
     codexBinaryPath: options.codexBinaryPath,
     codexHome: options.codexHome,
     transport: options.transport,
+    env: redactedEnvSignature(options.env),
     agentsMd: options.agentsMd,
     customAgents: options.customAgents,
   })
+}
+
+function redactedEnvSignature(env: CodexSessionOptions['env']) {
+  return Object.fromEntries(
+    Object.entries(env ?? {})
+      .filter((entry): entry is [string, string] => entry[1] !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => [
+        key,
+        {
+          length: value.length,
+          hash: hashEnvValue(value),
+        },
+      ])
+  )
+}
+
+function hashEnvValue(value: string) {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16)
 }
 
 export function buildCodexRuntimeSignature(options: CodexSessionOptions): string {
@@ -55,8 +85,19 @@ async function ensureGlobalCodexAppServerInternal(
   const processSignature = buildCodexProcessSignature(spawnOptions)
 
   if (globalRuntime?.processSignature === processSignature) {
-    await globalRuntime.initPromise
-    return globalRuntime.client
+    try {
+      await globalRuntime.initPromise
+    } catch (error) {
+      globalRuntime = null
+      threadRuntimeSignatures.clear()
+      throw error
+    }
+    if (globalRuntime.client.isRunning()) {
+      return globalRuntime.client
+    }
+    await globalRuntime.client.shutdownCodex().catch(() => {})
+    globalRuntime = null
+    threadRuntimeSignatures.clear()
   }
 
   if (globalRuntime) {

@@ -124,7 +124,7 @@ describe('CustomChatTransport', () => {
   it('routes codex provider requests through Codex app-server backend', async () => {
     const stream = new ReadableStream()
     mockState.selectedProvider = 'codex'
-    mockState.selectedModel = { id: 'gpt-5.1-codex-max' }
+    mockState.selectedModel = { id: 'gpt-5.5' }
     mockState.provider = {
       active: true,
       provider: 'codex',

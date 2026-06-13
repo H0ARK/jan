@@ -360,7 +360,7 @@ const provider: ModelProvider = {
   models: [],
 }
 
-const model: Model = { id: 'gpt-5.1-codex-max' }
+const model: Model = { id: 'gpt-5.5' }
 
 const messages: UIMessage[] = [
   {
@@ -841,6 +841,47 @@ describe('Codex chat backend approval bridge', () => {
     )
   })
 
+  it('can answer pending MCP elicitations through the public backend API', async () => {
+    await sendCodexAppServerChatMessage({
+      threadId: 'thread-1',
+      messages,
+      provider,
+      model,
+    })
+
+    approveCodexAppServerAction('thread-1', 'mcp-elicitation-2', {
+      approved: false,
+      method: 'mcpServer/elicitation/request',
+      params: { serverName: 'exa' },
+    })
+
+    expect(mockSessionState.instances[0].approveAction).toHaveBeenCalledWith(
+      'mcp-elicitation-2',
+      { action: 'decline' }
+    )
+  })
+
+  it('can answer modern pending approvals with available decisions through the public backend API', async () => {
+    await sendCodexAppServerChatMessage({
+      threadId: 'thread-1',
+      messages,
+      provider,
+      model,
+    })
+
+    approveCodexAppServerAction('thread-1', 'approval-modern-1', {
+      approved: true,
+      rememberForSession: true,
+      method: 'item/custom/requestApproval',
+      availableDecisions: ['accept', 'acceptForSession', 'decline'],
+    })
+
+    expect(mockSessionState.instances[0].approveAction).toHaveBeenCalledWith(
+      'approval-modern-1',
+      { decision: 'acceptForSession' }
+    )
+  })
+
   it('builds isolated Codex options from project-bound workspace and provider settings', () => {
     mockThreadsState.threads = {
       'thread-1': {
@@ -876,26 +917,72 @@ describe('Codex chat backend approval bridge', () => {
         codexHome: './.jan/codex-home',
         cwd: '/Users/conrad/project-one',
         model: 'gpt-oss:20b',
-        modelProvider: 'jan-openrouter',
+        modelProvider: 'jan-gateway',
         approvalPolicy: 'on-request',
         sandbox: 'workspace-write',
-        env: { JAN_CODEX_PROVIDER_API_KEY: 'settings-key' },
+        env: { JAN_LOCAL_API_SERVER_API_KEY: 'jan-local-api-key' },
       })
     )
     expect(options.configToml).toContain('model = "gpt-oss:20b"')
-    expect(options.configToml).toContain('model_provider = "jan-openrouter"')
-    expect(options.configToml).toContain('[model_providers.jan-openrouter]')
+    expect(options.configToml).toContain('model_provider = "jan-gateway"')
+    expect(options.configToml).toContain('[model_providers.jan-gateway]')
     expect(options.configToml).not.toContain('[model_providers.openrouter]')
     expect(options.configToml).toContain(
-      'base_url = "http://127.0.0.1:8000/v1"'
+      'base_url = "http://127.0.0.1:1337/v1"'
     )
     expect(options.configToml).toContain(
-      'env_key = "JAN_CODEX_PROVIDER_API_KEY"'
+      'env_key = "JAN_LOCAL_API_SERVER_API_KEY"'
     )
     expect(options.configToml).toContain('wire_api = "responses"')
     expect(mockWorkspaceState.calls).toEqual([
       { type: 'project', id: 'project-1', label: 'Project One' },
     ])
+  })
+
+  it('falls back to supported Codex model when selected model is not available', () => {
+    const providerWithModels = {
+      ...providerWithSettings({ codexProvider: 'openai' }),
+      models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.4' }, { id: 'gpt-5.3-codex-spark' }],
+    }
+
+    const options = buildCodexSessionOptions(
+      'thread-1',
+      providerWithModels,
+      { id: 'gpt-5.1-codex-max' }
+    )
+
+    expect(options.model).toBe('gpt-5.5')
+    expect(options.configToml).toContain('model = "gpt-5.5"')
+    expect(options.configToml).toContain('model_provider = "jan-gateway"')
+  })
+
+  it('falls back to profile-selected supported model when active profile model is stale', () => {
+    mockProfilesState.profiles = {
+      'profile-1': {
+        id: 'profile-1',
+        name: 'OpenAI Profile',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5.1-codex-max',
+        providerType: 'openai',
+      },
+    }
+    mockProfilesState.activeProfileId = 'profile-1'
+
+    const options = buildCodexSessionOptions(
+      'thread-1',
+      {
+        ...provider,
+        models: [
+          { id: 'gpt-5.5' },
+          { id: 'gpt-5.4' },
+          { id: 'gpt-5.3-codex-spark' },
+        ],
+      },
+      { id: 'gpt-5.1-codex-max' }
+    )
+
+    expect(options.model).toBe('gpt-5.5')
+    expect(options.configToml).toContain('model = "gpt-5.5"')
   })
 
   it('projects a directly selected Ollama provider into Codex config', () => {
@@ -996,12 +1083,12 @@ describe('Codex chat backend approval bridge', () => {
     expect(options).toEqual(
       expect.objectContaining({
         model: 'grok-4.3',
-        modelProvider: 'xai',
+        modelProvider: 'jan-gateway',
       })
     )
-    expect(options.configToml).toContain('model_provider = "xai"')
+    expect(options.configToml).toContain('model_provider = "jan-gateway"')
     expect(options.configToml).not.toContain('model_provider = "jan-openai"')
-    expect(options.configToml).toContain('base_url = "https://api.x.ai/v1"')
+    expect(options.configToml).toContain('base_url = "http://127.0.0.1:1337/v1"')
     expect(options.configToml).toContain('wire_api = "responses"')
   })
 
@@ -1246,7 +1333,7 @@ describe('Codex chat backend approval bridge', () => {
     expect(mockGlobalRuntime.applyCodexRuntimeOptions).toHaveBeenCalledTimes(2)
   })
 
-  it('reuses the global Codex process when only provider API key env changes', async () => {
+  it('keeps the global Codex process warm when stale Codex API key settings change', async () => {
     await sendCodexAppServerChatMessage({
       threadId: 'thread-1',
       messages,

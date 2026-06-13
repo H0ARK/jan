@@ -148,11 +148,10 @@ export function CodexReviewPanel({
   const runConfiguredReview = async () => {
     if (!currentThreadIdForCaps) return
 
-    const target = resolveReviewTarget()
-    const normalizedHint = userFacingHint.trim()
-
     setReviewStarting(true)
     try {
+      const target = resolveReviewTarget()
+      const normalizedHint = userFacingHint.trim()
       await onStartReview(
         currentThreadIdForCaps,
         target,
@@ -308,6 +307,7 @@ export function CodexReviewPanel({
         placeholder='review/start params JSON (legacy/advanced only, must include a valid target)'
         value={codexAdvancedReviewJson}
         onChange={(event) => onSetCodexAdvancedReviewJson(event.target.value)}
+        disabled={reviewStarting}
       />
     </div>
   )

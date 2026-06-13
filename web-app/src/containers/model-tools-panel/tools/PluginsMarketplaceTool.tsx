@@ -14,7 +14,7 @@ import {
 } from '../shared/codex-helpers'
 import { MarketplaceSelectionDetails } from './MarketplaceSelectionDetails'
 
-type PluginsMarketplaceToolProps = {
+type PluginsMarketplaceToolState = {
   codexMarketplaceDescriptors: CodexMarketplaceDescriptor[]
   codexMarketplaceFilter: string
   codexMarketplaceInstalledOnly: boolean
@@ -30,6 +30,14 @@ type PluginsMarketplaceToolProps = {
   filteredCodexPluginDescriptors: CodexPluginDescriptor[]
   filteredCodexSkillDescriptors: CodexSkillDescriptor[]
   marketplaceBusy: boolean
+  selectableCodexPluginIds: string[]
+  selectableCodexSkillIds: string[]
+  selectedCodexPluginDescriptor: CodexPluginDescriptor | null | undefined
+  selectedCodexPluginMetadataKeys: string[]
+  selectedCodexSkillDescriptor: CodexSkillDescriptor | null | undefined
+}
+
+type PluginsMarketplaceToolActions = {
   onAddMarketplace: () => void
   onCopyPluginMetadata: () => Promise<void>
   onInstallPlugin: () => void
@@ -52,11 +60,11 @@ type PluginsMarketplaceToolProps = {
   onUpgradeMarketplace: () => void
   onWriteSelectedSkillConfig: () => void
   onWriteSkillConfig: () => void
-  selectableCodexPluginIds: string[]
-  selectableCodexSkillIds: string[]
-  selectedCodexPluginDescriptor: CodexPluginDescriptor | null | undefined
-  selectedCodexPluginMetadataKeys: string[]
-  selectedCodexSkillDescriptor: CodexSkillDescriptor | null | undefined
+}
+
+type PluginsMarketplaceToolProps = {
+  state: PluginsMarketplaceToolState
+  actions: PluginsMarketplaceToolActions
 }
 
 type SkillConfigField = {
@@ -65,49 +73,55 @@ type SkillConfigField = {
 }
 
 export function PluginsMarketplaceTool({
-  codexMarketplaceDescriptors,
-  codexMarketplaceFilter,
-  codexMarketplaceInstalledOnly,
-  codexMarketplaceName,
-  codexMarketplaceSnapshot,
-  codexMarketplaceSource,
-  codexPluginDescriptors,
-  codexPluginId,
-  codexPluginSkillId,
-  codexSkillConfigJson,
-  codexSkillDescriptors,
-  currentThreadIdForCaps,
-  filteredCodexPluginDescriptors,
-  filteredCodexSkillDescriptors,
-  marketplaceBusy,
-  onAddMarketplace,
-  onCopyPluginMetadata,
-  onInstallPlugin,
-  onInstallSelectedPlugin,
-  onReadPlugin,
-  onReadPluginSkill,
-  onReadSelectedPlugin,
-  onReadSelectedSkill,
-  onRefresh,
-  onRemoveMarketplace,
-  onSelectInstalledOnly,
-  onSelectMarketplaceFilter,
-  onSelectMarketplaceName,
-  onSelectMarketplaceSource,
-  onSelectPluginId,
-  onSelectPluginSkillId,
-  onSetSkillConfigJson,
-  onUninstallPlugin,
-  onUninstallSelectedPlugin,
-  onUpgradeMarketplace,
-  onWriteSelectedSkillConfig,
-  onWriteSkillConfig,
-  selectableCodexPluginIds,
-  selectableCodexSkillIds,
-  selectedCodexPluginDescriptor,
-  selectedCodexPluginMetadataKeys,
-  selectedCodexSkillDescriptor,
+  state,
+  actions,
 }: PluginsMarketplaceToolProps) {
+  const {
+    codexMarketplaceDescriptors,
+    codexMarketplaceFilter,
+    codexMarketplaceInstalledOnly,
+    codexMarketplaceName,
+    codexMarketplaceSnapshot,
+    codexMarketplaceSource,
+    codexPluginDescriptors,
+    codexPluginId,
+    codexPluginSkillId,
+    codexSkillConfigJson,
+    codexSkillDescriptors,
+    currentThreadIdForCaps,
+    filteredCodexPluginDescriptors,
+    filteredCodexSkillDescriptors,
+    marketplaceBusy,
+    selectableCodexPluginIds,
+    selectableCodexSkillIds,
+    selectedCodexPluginDescriptor,
+    selectedCodexPluginMetadataKeys,
+    selectedCodexSkillDescriptor,
+  } = state
+  const {
+    onAddMarketplace,
+    onCopyPluginMetadata,
+    onInstallPlugin,
+    onInstallSelectedPlugin,
+    onReadPlugin,
+    onReadSelectedPlugin,
+    onReadPluginSkill,
+    onReadSelectedSkill,
+    onRefresh,
+    onRemoveMarketplace,
+    onSelectInstalledOnly,
+    onSelectMarketplaceFilter,
+    onSelectMarketplaceName,
+    onSelectMarketplaceSource,
+    onSelectPluginId,
+    onSelectPluginSkillId,
+    onSetSkillConfigJson,
+    onUninstallPlugin,
+    onUninstallSelectedPlugin,
+    onUpgradeMarketplace,
+    onWriteSelectedSkillConfig,
+    onWriteSkillConfig,
+  } = actions
   const [showAdvancedSkillConfigJson, setShowAdvancedSkillConfigJson] =
     useState(false)
   const [skillConfigFields, setSkillConfigFields] = useState<SkillConfigField[]>([

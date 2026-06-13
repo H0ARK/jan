@@ -8,11 +8,9 @@ import {
   stringifyCodexJson,
 } from '../shared/codex-helpers'
 
-type AccountPanelProps = {
+type AccountPanelState = {
   accountBusy: boolean
   currentThreadIdForCaps: string | null | undefined
-  accountLoginParamsJson: string
-  accountUsageParamsJson: string
   accountCreditsNudgeType: string
   accountInfo: unknown
   accountRateLimits: unknown
@@ -22,13 +20,17 @@ type AccountPanelProps = {
   accountType: unknown
   accountEmail: unknown
   accountPlan: unknown
-  onSetAccountLoginParamsJson: (value: string) => void
-  onSetAccountUsageParamsJson: (value: string) => void
+  isCodexProtoTransport?: boolean
+}
+
+type AccountPanelActions = {
   onSetAccountCreditsNudgeType: (value: string) => void
   onSetCapError: (message: string | null) => void
   onSetAccountBusy: (busy: boolean) => void
   onRefreshCodexAccount: (refreshToken?: boolean) => Promise<void> | void
-  onStartDeviceCodeLogin: () => Promise<void> | void
+  onStartDeviceCodeLogin: (
+    params?: Record<string, unknown>
+  ) => Promise<void> | void
   onCancelDeviceCodeLogin: () => Promise<void> | void
   onLogoutCodex: () => Promise<void> | void
   onReadCodexAccountRateLimits: (janThreadId: string) => Promise<unknown>
@@ -36,7 +38,11 @@ type AccountPanelProps = {
   onSendCodexAddCreditsNudgeEmail: (janThreadId: string, creditType: 'credits' | 'usage_limit') => Promise<unknown>
   onSetAccountRateLimits: (value: unknown) => void
   onSetAccountUsage: (value: unknown) => void
-  isCodexProtoTransport?: boolean
+}
+
+type AccountPanelProps = {
+  state: AccountPanelState
+  actions: AccountPanelActions
 }
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -48,34 +54,41 @@ const getString = (value: unknown): string | undefined =>
   typeof value === 'string' ? value : undefined
 
 export function AccountPanel({
-  accountBusy,
-  currentThreadIdForCaps,
-  accountLoginParamsJson,
-  accountUsageParamsJson,
-  accountCreditsNudgeType,
-  accountInfo,
-  accountRateLimits,
-  accountUsage,
-  accountLogin,
-  accountRequiresAuth,
-  onSetAccountLoginParamsJson,
-  onSetAccountUsageParamsJson,
-  onSetAccountCreditsNudgeType,
-  onSetCapError,
-  onSetAccountBusy,
-  onRefreshCodexAccount,
-  onStartDeviceCodeLogin,
-  onCancelDeviceCodeLogin,
-  onLogoutCodex,
-  onReadCodexAccountRateLimits,
-  onReadCodexAccountUsage,
-  onSendCodexAddCreditsNudgeEmail,
-  onSetAccountRateLimits,
-  onSetAccountUsage,
-  isCodexProtoTransport,
+  state,
+  actions,
 }: AccountPanelProps) {
+  const {
+    accountBusy,
+    currentThreadIdForCaps,
+    accountCreditsNudgeType,
+    accountInfo,
+    accountRateLimits,
+    accountUsage,
+    accountLogin,
+    accountRequiresAuth,
+    isCodexProtoTransport,
+  } = state
+  const {
+    onSetAccountCreditsNudgeType,
+    onSetCapError,
+    onSetAccountBusy,
+    onRefreshCodexAccount,
+    onStartDeviceCodeLogin,
+    onCancelDeviceCodeLogin,
+    onLogoutCodex,
+    onReadCodexAccountRateLimits,
+    onReadCodexAccountUsage,
+    onSendCodexAddCreditsNudgeEmail,
+    onSetAccountRateLimits,
+    onSetAccountUsage,
+  } = actions
+
   const [showAdvancedLoginParams, setShowAdvancedLoginParams] = useState(false)
   const [showAdvancedUsageParams, setShowAdvancedUsageParams] = useState(false)
+  const [accountLoginParamsJson, setAccountLoginParamsJson] =
+    useState('{"type":"chatgptDeviceCode"}')
+  const [accountUsageParamsJson, setAccountUsageParamsJson] =
+    useState('{}')
 
   const isPlainObject = (value: unknown): value is Record<string, unknown> => {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -105,7 +118,9 @@ export function AccountPanel({
       ...parsedLoginParams,
       type: nextType || 'chatgptDeviceCode',
     }
-    onSetAccountLoginParamsJson(stringifyCodexJson(nextParams, accountLoginParamsJson))
+    setAccountLoginParamsJson(
+      stringifyCodexJson(nextParams, accountLoginParamsJson)
+    )
   }
 
   const onSetUsageRangeDays = (rawRangeDays: string) => {
@@ -120,7 +135,9 @@ export function AccountPanel({
     } else {
       delete nextParams.rangeDays
     }
-    onSetAccountUsageParamsJson(stringifyCodexJson(nextParams, accountUsageParamsJson))
+    setAccountUsageParamsJson(
+      stringifyCodexJson(nextParams, accountUsageParamsJson)
+    )
   }
 
   const accountInfoRecord = asRecord(accountInfo)
@@ -159,7 +176,7 @@ export function AccountPanel({
             type="button"
             className="text-[9px] underline disabled:opacity-50"
             disabled={!currentThreadIdForCaps || accountBusy || !!isCodexProtoTransport}
-            onClick={() => void onStartDeviceCodeLogin()}
+            onClick={() => void onStartDeviceCodeLogin(parsedLoginParams)}
           >
             Login
           </button>
@@ -188,7 +205,7 @@ export function AccountPanel({
             placeholder="Account login params JSON"
             value={accountLoginParamsJson}
             onChange={(event) =>
-              onSetAccountLoginParamsJson(event.target.value)
+              setAccountLoginParamsJson(event.target.value)
             }
           />
         ) : (
@@ -205,7 +222,7 @@ export function AccountPanel({
             placeholder="Account usage params JSON"
             value={accountUsageParamsJson}
             onChange={(event) =>
-              onSetAccountUsageParamsJson(event.target.value)
+              setAccountUsageParamsJson(event.target.value)
             }
           />
         ) : (

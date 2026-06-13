@@ -72,10 +72,14 @@ import { useServiceHub } from '@/hooks/useServiceHub'
 import { useThreads } from '@/hooks/useThreads'
 import { mergeButtonRefs } from '@/lib/merge-button-refs'
 import type {
+  CodexCommandExecParams,
+  CodexFileSystemCopyParams,
+  CodexFileSystemRemoveParams,
   CodexMcpToolCallParams,
+  CodexProcessSpawnParams,
   CodexReviewTarget,
 } from '@/lib/codex-app-server/api'
-import { rafThrottle, throttle } from '@/lib/throttle'
+import { throttle } from '@/lib/throttle'
 import { cn } from '@/lib/utils'
 import {
   createBrowserSelectionAttachment,
@@ -345,6 +349,8 @@ const DEFAULT_PANEL_SCOPE: ModelToolsPanelScope = {
 }
 
 const BROWSER_PANEL_TARGET_ID = 'workspace-browser-panel'
+const FILE_TREE_ROW_HEIGHT = 28
+const FILE_TREE_OVERSCAN = 6
 
 const IGNORED_DIRECTORY_NAMES = new Set([
   '.git',
@@ -406,6 +412,7 @@ const DirectoryTreeNode = memo(function DirectoryTreeNode({
   loading = false,
   onToggleExpand,
   onFileClick,
+  onRevealFile,
 }: {
   entry: DirectoryTreeEntry
   depth?: number
@@ -413,9 +420,8 @@ const DirectoryTreeNode = memo(function DirectoryTreeNode({
   loading?: boolean
   onToggleExpand: (path: string) => void
   onFileClick?: (path: string) => void
+  onRevealFile: (path: string) => void
 }) {
-  const serviceHub = useServiceHub()
-
   const handleItemClick = async () => {
     if (entry.isDirectory) {
       onToggleExpand(entry.path)
@@ -441,11 +447,7 @@ const DirectoryTreeNode = memo(function DirectoryTreeNode({
 
   const handleReveal = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    try {
-      await serviceHub.opener().revealItemInDir(entry.path)
-    } catch (err) {
-      toast.error('Failed to reveal file: ' + String(err))
-    }
+    onRevealFile(entry.path)
   }
 
   const Icon = entry.isDirectory ? (expanded ? FolderOpen : Folder) : File
@@ -624,6 +626,7 @@ const FilesSection = memo(function FilesSection({
 }: {
   scope: ModelToolsPanelScope
 }) {
+  const serviceHub = useServiceHub()
   const path = useWorkspaceDirectories((state) => state.getDirectory(scope))
   const canBrowseDirectories = isPlatformTauri()
   const effectivePath =
@@ -792,6 +795,14 @@ const FilesSection = memo(function FilesSection({
     handleFileClickRef.current(filePath)
   }, [])
 
+  const handleRevealFile = useCallback(async (filePath: string) => {
+    try {
+      await serviceHub.opener().revealItemInDir(filePath)
+    } catch (err) {
+      toast.error('Failed to reveal file: ' + String(err))
+    }
+  }, [serviceHub])
+
   const handleClosePreview = useCallback(() => {
     setSelectedFilePath(null)
     setFileContent('')
@@ -838,9 +849,12 @@ const FilesSection = memo(function FilesSection({
   const rowVirtualizer = useVirtualizer({
     count: flatList.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 28, // Height of each row (h-7 is 28px)
-    overscan: 10,
+    estimateSize: () => FILE_TREE_ROW_HEIGHT,
+    getItemKey: (index) => flatList[index]?.entry.path ?? index,
+    overscan: FILE_TREE_OVERSCAN,
   })
+
+  const virtualRows = rowVirtualizer.getVirtualItems()
 
   const fileTreeColumn = (
     <div className={cn("flex h-full min-h-0 flex-col gap-3", selectedFilePath ? "w-[240px] shrink-0" : "flex-1")}>
@@ -887,7 +901,7 @@ const FilesSection = memo(function FilesSection({
               position: 'relative',
             }}
           >
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            {virtualRows.map((virtualRow) => {
               const item = flatList[virtualRow.index]
               if (!item) return null
               const entry = item.entry
@@ -896,7 +910,6 @@ const FilesSection = memo(function FilesSection({
                 return (
                   <div
                     key={entry.path}
-                    ref={rowVirtualizer.measureElement}
                     data-index={virtualRow.index}
                     className="px-1.5 py-1 text-xs text-muted-foreground absolute top-0 left-0 w-full"
                     style={{
@@ -914,7 +927,6 @@ const FilesSection = memo(function FilesSection({
                 return (
                   <div
                     key={entry.path}
-                    ref={rowVirtualizer.measureElement}
                     data-index={virtualRow.index}
                     className="flex h-7 items-center gap-2 px-1.5 text-xs text-muted-foreground absolute top-0 left-0 w-full"
                     style={{
@@ -933,7 +945,6 @@ const FilesSection = memo(function FilesSection({
                 return (
                   <div
                     key={entry.path}
-                    ref={rowVirtualizer.measureElement}
                     data-index={virtualRow.index}
                     className="truncate px-1.5 py-1 text-xs text-destructive absolute top-0 left-0 w-full"
                     style={{
@@ -951,7 +962,6 @@ const FilesSection = memo(function FilesSection({
               return (
                 <div
                   key={entry.path}
-                  ref={rowVirtualizer.measureElement}
                   data-index={virtualRow.index}
                   className="absolute top-0 left-0 w-full"
                   style={{
@@ -966,6 +976,7 @@ const FilesSection = memo(function FilesSection({
                     loading={loadingPaths.has(entry.path)}
                     onToggleExpand={handleToggleExpand}
                     onFileClick={stableHandleFileClick}
+                    onRevealFile={handleRevealFile}
                   />
                 </div>
               )
@@ -1139,6 +1150,241 @@ const readStringField = (value: unknown, key: string): string | undefined => {
   return typeof field === 'string' ? field : undefined
 }
 
+const readBooleanField = (
+  params: Record<string, unknown>,
+  key: string
+): boolean | undefined => {
+  return typeof params[key] === 'boolean' ? params[key] : undefined
+}
+
+const readNumberField = (
+  params: Record<string, unknown>,
+  key: string
+): number | undefined => {
+  return typeof params[key] === 'number' && Number.isFinite(params[key])
+    ? params[key]
+    : undefined
+}
+
+const readStringArrayField = (
+  params: Record<string, unknown>,
+  key: string
+): string[] | undefined => {
+  const value = params[key]
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+    ? value
+    : undefined
+}
+
+const readStringRecordField = (
+  params: Record<string, unknown>,
+  key: string
+): Record<string, string | null> | undefined => {
+  const value = readRecord(params[key])
+  if (!value) return undefined
+  const entries = Object.entries(value).filter(
+    (entry): entry is [string, string | null] =>
+      typeof entry[1] === 'string' || entry[1] === null
+  )
+  return Object.fromEntries(entries)
+}
+
+const OPENAI_PLUGINS_MARKETPLACE_SOURCE = 'openai/plugins'
+const OPENAI_PLUGINS_MARKETPLACE_SPARSE_PATHS = [
+  '.agents',
+  '.claude-plugin',
+  'plugins',
+]
+
+const isOpenAiPluginsMarketplaceSource = (source: string): boolean => {
+  const normalized = source
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^git@github\.com:/, 'github.com/')
+    .replace(/^api\.github\.com\/repos\//, 'github.com/')
+    .replace(/^www\./, '')
+    .replace(/^github\.com\//, '')
+    .replace(/\.git$/, '')
+    .replace(/\/+$/u, '')
+  return (
+    normalized === OPENAI_PLUGINS_MARKETPLACE_SOURCE ||
+    normalized.endsWith(`/${OPENAI_PLUGINS_MARKETPLACE_SOURCE}`)
+  )
+}
+
+const getOpenAiPluginsSparsePaths = (source: string) =>
+  isOpenAiPluginsMarketplaceSource(source)
+    ? OPENAI_PLUGINS_MARKETPLACE_SPARSE_PATHS
+    : undefined
+
+const isMissingMarketplaceManifestError = (error: unknown): boolean => {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : ''
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('marketplace root does not contain a supported manifest') ||
+    normalized.includes('marketplace root does not contain')
+  )
+}
+
+const readPtySizeField = (
+  params: Record<string, unknown>
+): { rows: number; cols: number } | undefined => {
+  const size = readRecord(params.size)
+  const rows = size?.rows
+  const cols = size?.cols
+  return typeof rows === 'number' &&
+    Number.isFinite(rows) &&
+    typeof cols === 'number' &&
+    Number.isFinite(cols)
+    ? { rows, cols }
+    : undefined
+}
+
+const readRequiredStringParam = (
+  params: Record<string, unknown>,
+  key: string,
+  method: string
+): string => {
+  const value = readStringField(params, key)
+  if (!value) throw new Error(`${key} is required for ${method}.`)
+  return value
+}
+
+const toCodexStdinParams = (
+  params: Record<string, unknown>,
+  method: string
+): { deltaBase64?: string; closeStdin?: boolean } => {
+  const deltaBase64 = readStringField(params, 'deltaBase64')
+  const closeStdin = readBooleanField(params, 'closeStdin')
+  if (deltaBase64 == null && closeStdin == null) {
+    throw new Error(`deltaBase64 or closeStdin is required for ${method}.`)
+  }
+  return {
+    ...(deltaBase64 != null ? { deltaBase64 } : {}),
+    ...(closeStdin != null ? { closeStdin } : {}),
+  }
+}
+
+const toRequiredCodexPtySize = (
+  params: Record<string, unknown>,
+  method: string
+): { rows: number; cols: number } => {
+  const size = readPtySizeField(params)
+  if (!size) throw new Error(`size with rows and cols is required for ${method}.`)
+  return size
+}
+
+const toCodexFileSystemRemoveParams = (
+  params: Record<string, unknown>
+): CodexFileSystemRemoveParams => {
+  const path = typeof params.path === 'string' ? params.path : ''
+  if (!path) throw new Error('path is required for fs/remove.')
+  return {
+    path,
+    ...(typeof params.recursive === 'boolean' ? { recursive: params.recursive } : {}),
+    ...(typeof params.force === 'boolean' ? { force: params.force } : {}),
+  }
+}
+
+const toCodexFileSystemCopyParams = (
+  params: Record<string, unknown>
+): CodexFileSystemCopyParams => {
+  const sourcePath =
+    typeof params.sourcePath === 'string'
+      ? params.sourcePath
+      : typeof params.from === 'string'
+        ? params.from
+        : ''
+  const destinationPath =
+    typeof params.destinationPath === 'string'
+      ? params.destinationPath
+      : typeof params.to === 'string'
+        ? params.to
+        : ''
+  if (!sourcePath) throw new Error('sourcePath is required for fs/copy.')
+  if (!destinationPath) throw new Error('destinationPath is required for fs/copy.')
+  return {
+    sourcePath,
+    destinationPath,
+    ...(typeof params.recursive === 'boolean' ? { recursive: params.recursive } : {}),
+  }
+}
+
+const toCodexCommandExecParams = (
+  params: Record<string, unknown>
+): CodexCommandExecParams => {
+  const command = readStringArrayField(params, 'command')
+  if (!command?.length) {
+    throw new Error('command must be a non-empty string array for command/exec.')
+  }
+  return {
+    command,
+    ...(typeof params.processId === 'string' ? { processId: params.processId } : {}),
+    ...(typeof params.cwd === 'string' ? { cwd: params.cwd } : {}),
+    ...(readStringRecordField(params, 'env') ? { env: readStringRecordField(params, 'env') } : {}),
+    ...(readPtySizeField(params) ? { size: readPtySizeField(params) } : {}),
+    ...(typeof params.permissionProfile === 'string'
+      ? { permissionProfile: params.permissionProfile }
+      : {}),
+    ...(readNumberField(params, 'outputBytesCap') != null
+      ? { outputBytesCap: readNumberField(params, 'outputBytesCap') }
+      : {}),
+    ...(readNumberField(params, 'timeoutMs') != null
+      ? { timeoutMs: readNumberField(params, 'timeoutMs') }
+      : {}),
+    ...(readBooleanField(params, 'disableOutputCap') != null
+      ? { disableOutputCap: readBooleanField(params, 'disableOutputCap') }
+      : {}),
+    ...(readBooleanField(params, 'disableTimeout') != null
+      ? { disableTimeout: readBooleanField(params, 'disableTimeout') }
+      : {}),
+    ...(readBooleanField(params, 'tty') != null ? { tty: readBooleanField(params, 'tty') } : {}),
+    ...(readBooleanField(params, 'streamStdin') != null
+      ? { streamStdin: readBooleanField(params, 'streamStdin') }
+      : {}),
+    ...(readBooleanField(params, 'streamStdoutStderr') != null
+      ? { streamStdoutStderr: readBooleanField(params, 'streamStdoutStderr') }
+      : {}),
+  }
+}
+
+const toCodexProcessSpawnParams = (
+  params: Record<string, unknown>
+): CodexProcessSpawnParams => {
+  const command = readStringArrayField(params, 'command')
+  if (!command?.length) {
+    throw new Error('command must be a non-empty string array for process/spawn.')
+  }
+  const env = readStringRecordField(params, 'env')
+  const size = readPtySizeField(params)
+  const outputBytesCap = readNumberField(params, 'outputBytesCap')
+  const timeoutMs = readNumberField(params, 'timeoutMs')
+  return {
+    command,
+    ...(typeof params.processHandle === 'string'
+      ? { processHandle: params.processHandle }
+      : {}),
+    ...(typeof params.cwd === 'string' ? { cwd: params.cwd } : {}),
+    ...(env ? { env } : {}),
+    ...(size ? { size } : {}),
+    ...(outputBytesCap != null ? { outputBytesCap } : {}),
+    ...(timeoutMs != null ? { timeoutMs } : {}),
+    ...(readBooleanField(params, 'tty') != null ? { tty: readBooleanField(params, 'tty') } : {}),
+    ...(readBooleanField(params, 'streamStdin') != null
+      ? { streamStdin: readBooleanField(params, 'streamStdin') }
+      : {}),
+    ...(readBooleanField(params, 'streamStdoutStderr') != null
+      ? { streamStdoutStderr: readBooleanField(params, 'streamStdoutStderr') }
+      : {}),
+  }
+}
+
 const toCodexMcpToolCallParams = (
   params: Record<string, unknown>
 ): CodexMcpToolCallParams => {
@@ -1212,10 +1458,6 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const [accountRateLimits, setAccountRateLimits] = useState<any>(null)
   const [accountUsage, setAccountUsage] = useState<any>(null)
   const [accountLogin, setAccountLogin] = useState<any>(null)
-  const [accountLoginParamsJson, setAccountLoginParamsJson] = useState(
-    '{"type":"chatgptDeviceCode"}'
-  )
-  const [accountUsageParamsJson, setAccountUsageParamsJson] = useState('{}')
   const [accountCreditsNudgeType, setAccountCreditsNudgeType] =
     useState('credits')
   const [remoteStatus, setRemoteStatus] = useState<any>(null)
@@ -1244,12 +1486,6 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
   const [codexSkillConfigJson, setCodexSkillConfigJson] =
     useState('{"enabled":true}')
   const [codexConfigKeyPath, setCodexConfigKeyPath] = useState('model')
-  const [codexConfigValueJson, setCodexConfigValueJson] = useState('"gpt-5"')
-  const [codexConfigBatchJson, setCodexConfigBatchJson] =
-    useState('{"values":[]}')
-  const [codexWindowsSandboxJson, setCodexWindowsSandboxJson] = useState('{}')
-  const [codexExternalAgentImportJson, setCodexExternalAgentImportJson] =
-    useState('{"cwd":""}')
   const [codexFeatureEnablementJson, setCodexFeatureEnablementJson] =
     useState('{"remoteControl":true}')
   const [codexEnvironmentId, setCodexEnvironmentId] = useState('')
@@ -1819,19 +2055,19 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     }
   }
 
-  const startDeviceCodeLogin = async () => {
+  const startDeviceCodeLogin = async (params?: Record<string, unknown>) => {
     if (!currentThreadIdForCaps) return
     setAccountBusy(true)
     setCapError(null)
     try {
-      const params = parseCodexJson<Record<string, unknown> | null>(
-        accountLoginParamsJson,
-        null
+      const normalizedParams =
+        typeof params === 'object' && params !== null && !Array.isArray(params)
+          ? params
+          : {}
+      const result = await startCodexAccountLogin(
+        currentThreadIdForCaps,
+        normalizedParams
       )
-      if (!params || Array.isArray(params)) {
-        throw new Error('Account login params must be a JSON object.')
-      }
-      const result = await startCodexAccountLogin(currentThreadIdForCaps, params)
       setAccountLogin(result)
       toast.success('Codex login started')
     } catch (e) {
@@ -1919,11 +2155,9 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       )
       setRemotePairing(result)
       const pairingCode =
-        typeof (result as any)?.pairingCode === 'string'
-          ? (result as any).pairingCode
-          : typeof (result as any)?.manualPairingCode === 'string'
-            ? (result as any).manualPairingCode
-            : ''
+        readStringField(result, 'pairingCode') ??
+        readStringField(result, 'manualPairingCode') ??
+        ''
       if (pairingCode) setRemotePairingCode(pairingCode)
       toast.success('Remote control pairing started')
     } catch (e) {
@@ -2043,6 +2277,29 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     }
   }
 
+  const addCodexMarketplaceWithRetry = async (
+    params: Record<string, unknown>
+  ): Promise<unknown> => {
+    if (!currentThreadIdForCaps) {
+      throw new Error('A current Codex-capable thread is required.')
+    }
+    try {
+      return await addCodexMarketplace(currentThreadIdForCaps, params)
+    } catch (error) {
+      const source = typeof params.source === 'string' ? params.source : ''
+      const supportsSparsePaths =
+        Boolean(source) &&
+        getOpenAiPluginsSparsePaths(source) &&
+        getOpenAiPluginsSparsePaths(source)?.length > 0
+      const hasSparsePaths = Boolean(params.sparsePaths)
+      if (!isMissingMarketplaceManifestError(error) || !supportsSparsePaths || !hasSparsePaths) {
+        throw error
+      }
+      const { sparsePaths: _unusedSparsePaths, ...fullCloneParams } = params
+      return await addCodexMarketplace(currentThreadIdForCaps, fullCloneParams)
+    }
+  }
+
   const runCodexMarketplaceAction = async (
     method: string,
     params: Record<string, unknown>,
@@ -2062,7 +2319,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       } else if (method === 'plugin/skill/read') {
         result = await readCodexPluginSkill(currentThreadIdForCaps, params)
       } else if (method === 'marketplace/add') {
-        result = await addCodexMarketplace(currentThreadIdForCaps, params)
+        result = await addCodexMarketplaceWithRetry(params)
       } else if (method === 'marketplace/remove') {
         const marketplaceName = typeof params.marketplaceName === 'string'
           ? params.marketplaceName
@@ -2085,10 +2342,37 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           params
         )
       }
-      setCodexMarketplaceSnapshot((previous: any) => ({
-        ...(previous ?? {}),
+      if (method === 'marketplace/add') {
+        const record = readRecord(result)
+        const marketplaceName =
+          (record &&
+          typeof record.marketplaceName === 'string' &&
+          record.marketplaceName.trim()) ||
+          (typeof params.marketplaceName === 'string'
+            ? params.marketplaceName.trim()
+            : '')
+        if (record?.alreadyAdded && marketplaceName) {
+          await upgradeCodexMarketplace(
+            currentThreadIdForCaps,
+            { marketplaceName }
+          ).catch((error) => {
+            console.warn('Marketplace refresh upgrade step failed:', error)
+          })
+        }
+      }
+      setCodexMarketplaceSnapshot((previous: unknown) => ({
+        ...(readRecord(previous) ?? {}),
         lastAction: { method, params, result },
       }))
+      if (
+        method === 'marketplace/add' ||
+        method === 'marketplace/remove' ||
+        method === 'marketplace/upgrade'
+      ) {
+        await refreshCodexMarketplaceSnapshot().catch((error) => {
+          setCapError(`Marketplace refresh failed: ${String(error)}`)
+        })
+      }
       toast.success(success)
     } catch (e) {
       setCapError(`${method} failed: ${String(e)}`)
@@ -2122,9 +2406,15 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           typeof params.recursive === 'boolean' ? params.recursive : undefined
         result = await createCodexDirectory(currentThreadIdForCaps, path, recursive)
       } else if (method === 'fs/remove') {
-        result = await removeCodexFileSystemPath(currentThreadIdForCaps, params as any)
+        result = await removeCodexFileSystemPath(
+          currentThreadIdForCaps,
+          toCodexFileSystemRemoveParams(params)
+        )
       } else if (method === 'fs/copy') {
-        result = await copyCodexFileSystemPath(currentThreadIdForCaps, params as any)
+        result = await copyCodexFileSystemPath(
+          currentThreadIdForCaps,
+          toCodexFileSystemCopyParams(params)
+        )
       } else if (method === 'fs/readFile') {
         const path = typeof params.path === 'string' ? params.path : ''
         if (!path) throw new Error('path is required.')
@@ -2146,69 +2436,62 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
         if (!watchId) throw new Error('watchId is required.')
         result = await unwatchCodexFileSystem(currentThreadIdForCaps, watchId)
       } else if (method === 'command/exec') {
-        result = await execCodexCommand(currentThreadIdForCaps, params as any)
+        result = await execCodexCommand(
+          currentThreadIdForCaps,
+          toCodexCommandExecParams(params)
+        )
       } else if (method === 'process/spawn') {
-        result = await spawnCodexProcess(currentThreadIdForCaps, params)
+        result = await spawnCodexProcess(
+          currentThreadIdForCaps,
+          toCodexProcessSpawnParams(params)
+        )
       } else if (method === 'process/writeStdin') {
-        const processHandle =
-          typeof params.processHandle === 'string' ? params.processHandle : ''
-        if (!processHandle) throw new Error('processHandle is required.')
-        result = await writeCodexProcessInput(currentThreadIdForCaps, processHandle, {
-          deltaBase64:
-            typeof params.deltaBase64 === 'string'
-              ? params.deltaBase64
-              : undefined,
-          closeStdin:
-            typeof params.closeStdin === 'boolean'
-              ? params.closeStdin
-              : undefined,
-        })
+        const processHandle = readRequiredStringParam(
+          params,
+          'processHandle',
+          method
+        )
+        result = await writeCodexProcessInput(
+          currentThreadIdForCaps,
+          processHandle,
+          toCodexStdinParams(params, method)
+        )
       } else if (method === 'command/stdin') {
-        const processId = typeof params.processId === 'string' ? params.processId : ''
-        if (!processId) throw new Error('processId is required.')
-        result = await writeCodexCommandInput(currentThreadIdForCaps, processId, {
-          deltaBase64:
-            typeof params.deltaBase64 === 'string'
-              ? params.deltaBase64
-              : undefined,
-          closeStdin:
-            typeof params.closeStdin === 'boolean'
-              ? params.closeStdin
-              : undefined,
-        })
+        const processId = readRequiredStringParam(params, 'processId', method)
+        result = await writeCodexCommandInput(
+          currentThreadIdForCaps,
+          processId,
+          toCodexStdinParams(params, method)
+        )
       } else if (method === 'process/resizePty') {
-        const processHandle =
-          typeof params.processHandle === 'string' ? params.processHandle : ''
-        const size = params.size as { rows: number; cols: number } | undefined
-        if (!processHandle) throw new Error('processHandle is required.')
-        if (!size || typeof size.rows !== 'number' || typeof size.cols !== 'number') {
-          throw new Error('size with rows and cols is required.')
-        }
+        const processHandle = readRequiredStringParam(
+          params,
+          'processHandle',
+          method
+        )
+        const size = toRequiredCodexPtySize(params, method)
         result = await resizeCodexProcessTerminal(
           currentThreadIdForCaps,
           processHandle,
           size
         )
       } else if (method === 'command/resize') {
-        const processId = typeof params.processId === 'string' ? params.processId : ''
-        const size = params.size as { rows: number; cols: number } | undefined
-        if (!processId) throw new Error('processId is required.')
-        if (!size || typeof size.rows !== 'number' || typeof size.cols !== 'number') {
-          throw new Error('size with rows and cols is required.')
-        }
+        const processId = readRequiredStringParam(params, 'processId', method)
+        const size = toRequiredCodexPtySize(params, method)
         result = await resizeCodexCommandTerminal(
           currentThreadIdForCaps,
           processId,
           size
         )
       } else if (method === 'process/kill') {
-        const processHandle =
-          typeof params.processHandle === 'string' ? params.processHandle : ''
-        if (!processHandle) throw new Error('processHandle is required.')
+        const processHandle = readRequiredStringParam(
+          params,
+          'processHandle',
+          method
+        )
         result = await killCodexProcess(currentThreadIdForCaps, processHandle)
       } else if (method === 'command/terminate') {
-        const processId = typeof params.processId === 'string' ? params.processId : ''
-        if (!processId) throw new Error('processId is required.')
+        const processId = readRequiredStringParam(params, 'processId', method)
         result = await terminateCodexCommand(currentThreadIdForCaps, processId)
       } else {
         result = await callCodexAppServer(
@@ -2976,7 +3259,7 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       } else if (method === 'plugin/uninstall') {
         result = await uninstallCodexPlugin(currentThreadIdForCaps, params)
       } else if (method === 'marketplace/add') {
-        result = await addCodexMarketplace(currentThreadIdForCaps, params)
+        result = await addCodexMarketplaceWithRetry(params)
       } else if (method === 'marketplace/remove') {
         const marketplaceName =
           typeof params.marketplaceName === 'string'
@@ -3031,9 +3314,11 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           creditType
         )
       } else if (method === 'process/kill') {
-        const processHandle =
-          typeof params.processHandle === 'string' ? params.processHandle : ''
-        if (!processHandle) throw new Error('processHandle is required.')
+        const processHandle = readRequiredStringParam(
+          params,
+          'processHandle',
+          method
+        )
         result = await killCodexProcess(currentThreadIdForCaps, processHandle)
       } else if (method === 'remoteControl/enable') {
         result = await enableCodexRemoteControl(currentThreadIdForCaps)
@@ -3114,10 +3399,11 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
       setCodexLoadedThreads(loaded)
       setCodexStoredThreads(stored)
 
-      const loadedIds = Array.isArray((loaded as any)?.data)
-        ? (loaded as any).data
-        : Array.isArray((loaded as any)?.threadIds)
-          ? (loaded as any).threadIds
+      const loadedRecord = readRecord(loaded)
+      const loadedIds = Array.isArray(loadedRecord?.data)
+        ? loadedRecord.data
+        : Array.isArray(loadedRecord?.threadIds)
+          ? loadedRecord.threadIds
           : []
       const firstLoadedId = loadedIds.find(
         (value: unknown) => typeof value === 'string'
@@ -3136,6 +3422,10 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
     action: (threadId: string) => Promise<unknown>,
     success: string
   ) => {
+    if (!currentThreadIdForCaps) {
+      setCapError('Set an active Jan thread first.')
+      return
+    }
     if (!targetCodexThreadId) {
       setCapError('Set a Codex thread id first.')
       return
@@ -3806,74 +4096,70 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           isCodexProtoTransport={isCodexProtoTransport}
         />
         <AccountPanel
-          accountBusy={accountBusy}
-          currentThreadIdForCaps={currentThreadIdForCaps}
-          accountLoginParamsJson={accountLoginParamsJson}
-          accountUsageParamsJson={accountUsageParamsJson}
-          accountCreditsNudgeType={accountCreditsNudgeType}
-          accountInfo={accountInfo}
-          accountRateLimits={accountRateLimits}
-          accountUsage={accountUsage}
-          accountLogin={accountLogin}
-          accountRequiresAuth={accountRequiresAuth}
-          accountType={accountType}
-          accountEmail={accountEmail}
-          accountPlan={accountPlan}
-          onSetAccountLoginParamsJson={setAccountLoginParamsJson}
-          onSetAccountUsageParamsJson={setAccountUsageParamsJson}
-          onSetAccountCreditsNudgeType={setAccountCreditsNudgeType}
-          onSetCapError={setCapError}
-          onSetAccountBusy={setAccountBusy}
-          onRefreshCodexAccount={refreshCodexAccount}
-          onStartDeviceCodeLogin={startDeviceCodeLogin}
-          onCancelDeviceCodeLogin={cancelDeviceCodeLogin}
-          onLogoutCodex={logoutCodex}
-          onReadCodexAccountRateLimits={readCodexAccountRateLimits}
-          onReadCodexAccountUsage={readCodexAccountUsage}
-          onSendCodexAddCreditsNudgeEmail={sendCodexAddCreditsNudgeEmail}
-          onSetAccountRateLimits={setAccountRateLimits}
-          onSetAccountUsage={setAccountUsage}
-          isCodexProtoTransport={isCodexProtoTransport}
+          state={{
+            accountBusy,
+            currentThreadIdForCaps,
+            accountCreditsNudgeType,
+            accountInfo,
+            accountRateLimits,
+            accountUsage,
+            accountLogin,
+            accountRequiresAuth,
+            accountType,
+            accountEmail,
+            accountPlan,
+            isCodexProtoTransport,
+          }}
+          actions={{
+            onSetAccountCreditsNudgeType: setAccountCreditsNudgeType,
+            onSetCapError: setCapError,
+            onSetAccountBusy: setAccountBusy,
+            onRefreshCodexAccount: refreshCodexAccount,
+            onStartDeviceCodeLogin: startDeviceCodeLogin,
+            onCancelDeviceCodeLogin: cancelDeviceCodeLogin,
+            onLogoutCodex: logoutCodex,
+            onReadCodexAccountRateLimits: readCodexAccountRateLimits,
+            onReadCodexAccountUsage: readCodexAccountUsage,
+            onSendCodexAddCreditsNudgeEmail: sendCodexAddCreditsNudgeEmail,
+            onSetAccountRateLimits: setAccountRateLimits,
+            onSetAccountUsage: setAccountUsage,
+          }}
         />
         <RemoteControlPanel
-          remoteBusy={remoteBusy}
-          currentThreadIdForCaps={currentThreadIdForCaps}
-          remotePairingCode={remotePairingCode}
-          remoteClientId={remoteClientId}
-          remotePairingStartParamsJson={remotePairingStartParamsJson}
-          remoteStatus={remoteStatus}
-          remotePairing={remotePairing}
-          onSetRemotePairingCode={setRemotePairingCode}
-          onSetRemoteClientId={setRemoteClientId}
-          onSetRemotePairingStartParamsJson={setRemotePairingStartParamsJson}
-          onRefreshRemoteControlStatus={refreshRemoteControlStatus}
-          onRunRemoteControlAction={runRemoteControlAction}
-          onStartRemoteControlPairing={startRemoteControlPairing}
-          onReadRemoteControlPairing={readRemoteControlPairing}
-          onEnableCodexRemoteControl={enableCodexRemoteControl}
-          onDisableCodexRemoteControl={disableCodexRemoteControl}
-          onListCodexRemoteControlClients={listCodexRemoteControlClients}
-          onRevokeCodexRemoteControlClient={revokeCodexRemoteControlClient}
-          isCodexProtoTransport={isCodexProtoTransport}
+          state={{
+            remoteBusy,
+            currentThreadIdForCaps,
+            remotePairingCode,
+            remoteClientId,
+            remotePairingStartParamsJson,
+            remoteStatus,
+            remotePairing,
+            isCodexProtoTransport,
+          }}
+          actions={{
+            onSetRemotePairingCode: setRemotePairingCode,
+            onSetRemoteClientId: setRemoteClientId,
+            onSetRemotePairingStartParamsJson: setRemotePairingStartParamsJson,
+            onRefreshRemoteControlStatus: refreshRemoteControlStatus,
+            onRunRemoteControlAction: runRemoteControlAction,
+            onStartRemoteControlPairing: startRemoteControlPairing,
+            onReadRemoteControlPairing: readRemoteControlPairing,
+            onEnableCodexRemoteControl: enableCodexRemoteControl,
+            onDisableCodexRemoteControl: disableCodexRemoteControl,
+            onListCodexRemoteControlClients: listCodexRemoteControlClients,
+            onRevokeCodexRemoteControlClient: revokeCodexRemoteControlClient,
+          }}
         />
         <ConfigAdminPanel
           state={{
             adminBusy,
             currentThreadIdForCaps,
             codexConfigKeyPath,
-            codexConfigValueJson,
-            codexConfigBatchJson,
-            codexWindowsSandboxJson,
-            codexExternalAgentImportJson,
             codexAdminSnapshot,
             cwd,
           }}
           actions={{
             onSetCodexConfigKeyPath: setCodexConfigKeyPath,
-            onSetCodexConfigValueJson: setCodexConfigValueJson,
-            onSetCodexConfigBatchJson: setCodexConfigBatchJson,
-            onSetCodexWindowsSandboxJson: setCodexWindowsSandboxJson,
-            onSetCodexExternalAgentImportJson: setCodexExternalAgentImportJson,
             onSetCapError: setCapError,
             onSetAdminBusy: setAdminBusy,
             onRefreshCodexAdminSnapshot: refreshCodexAdminSnapshot,
@@ -3887,19 +4173,23 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
           isCodexProtoTransport={isCodexProtoTransport}
         />
         <ModelsProvidersFeaturesPanel
-          modelAdminBusy={modelAdminBusy}
-          currentThreadIdForCaps={currentThreadIdForCaps}
-          codexFeatureEnablementJson={codexFeatureEnablementJson}
-          codexEnvironmentId={codexEnvironmentId}
-          codexEnvironmentExecUrl={codexEnvironmentExecUrl}
-          codexModelSnapshot={codexModelSnapshot}
-          onSetCodexFeatureEnablementJson={setCodexFeatureEnablementJson}
-          onSetCodexEnvironmentId={setCodexEnvironmentId}
-          onSetCodexEnvironmentExecUrl={setCodexEnvironmentExecUrl}
-          onSetCapError={setCapError}
-          onRefreshCodexModelSnapshot={refreshCodexModelSnapshot}
-          onRunCodexModelAction={runCodexModelAction}
-          isCodexProtoTransport={isCodexProtoTransport}
+          state={{
+            modelAdminBusy,
+            currentThreadIdForCaps,
+            codexFeatureEnablementJson,
+            codexEnvironmentId,
+            codexEnvironmentExecUrl,
+            codexModelSnapshot,
+            isCodexProtoTransport,
+          }}
+          actions={{
+            onSetCodexFeatureEnablementJson: setCodexFeatureEnablementJson,
+            onSetCodexEnvironmentId: setCodexEnvironmentId,
+            onSetCodexEnvironmentExecUrl: setCodexEnvironmentExecUrl,
+            onSetCapError: setCapError,
+            onRefreshCodexModelSnapshot: refreshCodexModelSnapshot,
+            onRunCodexModelAction: runCodexModelAction,
+          }}
         />
         <RawRpcTool
           state={{
@@ -3924,277 +4214,291 @@ function ReviewSection({ scope }: { scope?: ModelToolsPanelScope } = {}) {
         />
         <CodexCliPanel cwd={cwd} isCodexProtoTransport={isCodexProtoTransport} />
         <PluginsMarketplaceTool
-          codexMarketplaceDescriptors={codexMarketplaceDescriptors}
-          codexMarketplaceFilter={codexMarketplaceFilter}
-          codexMarketplaceInstalledOnly={codexMarketplaceInstalledOnly}
-          codexMarketplaceName={codexMarketplaceName}
-          codexMarketplaceSnapshot={codexMarketplaceSnapshot}
-          codexMarketplaceSource={codexMarketplaceSource}
-          codexPluginDescriptors={codexPluginDescriptors}
-          codexPluginId={codexPluginId}
-          codexPluginSkillId={codexPluginSkillId}
-          codexSkillConfigJson={codexSkillConfigJson}
-          codexSkillDescriptors={codexSkillDescriptors}
-          currentThreadIdForCaps={currentThreadIdForCaps}
-          filteredCodexPluginDescriptors={filteredCodexPluginDescriptors}
-          filteredCodexSkillDescriptors={filteredCodexSkillDescriptors}
-          marketplaceBusy={marketplaceBusy}
-          onAddMarketplace={() => {
+      state={{
+        codexMarketplaceDescriptors,
+        codexMarketplaceFilter,
+        codexMarketplaceInstalledOnly,
+        codexMarketplaceName,
+        codexMarketplaceSnapshot,
+        codexMarketplaceSource,
+        codexPluginDescriptors,
+        codexPluginId,
+        codexPluginSkillId,
+        codexSkillConfigJson,
+        codexSkillDescriptors,
+        currentThreadIdForCaps,
+        filteredCodexPluginDescriptors,
+        filteredCodexSkillDescriptors,
+        marketplaceBusy,
+        selectableCodexPluginIds,
+        selectableCodexSkillIds,
+        selectedCodexPluginDescriptor,
+        selectedCodexPluginMetadataKeys,
+        selectedCodexSkillDescriptor,
+      }}
+      actions={{
+        onAddMarketplace: () => {
+          const marketplaceSource = codexMarketplaceSource.trim()
+          const sparsePaths =
+            getOpenAiPluginsSparsePaths(marketplaceSource)
+          void runCodexMarketplaceAction(
+            'marketplace/add',
+            {
+              marketplaceName: codexMarketplaceName.trim(),
+              source: marketplaceSource,
+              ...(sparsePaths ? { sparsePaths } : {}),
+            },
+            'Codex marketplace added'
+          )
+        },
+        onCopyPluginMetadata: async () => {
+          if (!selectedCodexPluginDescriptor?.raw) return
+          await navigator.clipboard.writeText(
+            JSON.stringify(selectedCodexPluginDescriptor.raw, null, 2)
+          )
+          toast.success('Codex plugin metadata copied')
+        },
+        onInstallPlugin: () => {
+          void runCodexMarketplaceAction(
+            'plugin/install',
+            {
+              plugin: codexPluginId.trim(),
+              pluginId: codexPluginId.trim(),
+            },
+            'Codex plugin install requested'
+          )
+        },
+        onInstallSelectedPlugin: () => {
+          if (!selectedCodexPluginDescriptor) return
+          void runCodexMarketplaceAction(
+            'plugin/install',
+            {
+              plugin: selectedCodexPluginDescriptor.id,
+              pluginId: selectedCodexPluginDescriptor.id,
+            },
+            'Codex plugin install requested'
+          )
+        },
+        onReadPlugin: () => {
+          void runCodexMarketplaceAction(
+            'plugin/read',
+            {
+              plugin: codexPluginId.trim(),
+              pluginId: codexPluginId.trim(),
+            },
+            'Codex plugin metadata loaded'
+          )
+        },
+        onReadPluginSkill: () => {
+          void runCodexMarketplaceAction(
+            'plugin/skill/read',
+            {
+              plugin: codexPluginId.trim(),
+              pluginId: codexPluginId.trim(),
+              skill: codexPluginSkillId.trim(),
+              skillId: codexPluginSkillId.trim(),
+            },
+            'Codex plugin skill loaded'
+          )
+        },
+        onReadSelectedPlugin: () => {
+          if (!selectedCodexPluginDescriptor) return
+          void runCodexMarketplaceAction(
+            'plugin/read',
+            {
+              plugin: selectedCodexPluginDescriptor.id,
+              pluginId: selectedCodexPluginDescriptor.id,
+            },
+            'Codex plugin metadata loaded'
+          )
+        },
+        onReadSelectedSkill: () => {
+          const skillId = selectedCodexSkillDescriptor?.id
+          const pluginId =
+            selectedCodexSkillDescriptor?.pluginId ||
+            selectedCodexPluginDescriptor?.id
+          if (!pluginId || !skillId) return
+          void runCodexMarketplaceAction(
+            'plugin/skill/read',
+            {
+              plugin: pluginId,
+              pluginId,
+              skill: skillId,
+              skillId,
+            },
+            'Codex plugin skill loaded'
+          )
+        },
+        onRefresh: () => {
+          void refreshCodexMarketplaceSnapshot()
+        },
+        onRemoveMarketplace: () => {
+          void runCodexMarketplaceAction(
+            'marketplace/remove',
+            { marketplaceName: codexMarketplaceName.trim() },
+            'Codex marketplace removed'
+          )
+        },
+        onSelectInstalledOnly: setCodexMarketplaceInstalledOnly,
+        onSelectMarketplaceFilter: setCodexMarketplaceFilter,
+        onSelectMarketplaceName: setCodexMarketplaceName,
+        onSelectMarketplaceSource: setCodexMarketplaceSource,
+        onSelectPluginId: setCodexPluginId,
+        onSelectPluginSkillId: setCodexPluginSkillId,
+        onSetSkillConfigJson: setCodexSkillConfigJson,
+        onUninstallPlugin: () => {
+          void runCodexMarketplaceAction(
+            'plugin/uninstall',
+            {
+              plugin: codexPluginId.trim(),
+              pluginId: codexPluginId.trim(),
+            },
+            'Codex plugin uninstall requested'
+          )
+        },
+        onUninstallSelectedPlugin: () => {
+          if (!selectedCodexPluginDescriptor) return
+          void runCodexMarketplaceAction(
+            'plugin/uninstall',
+            {
+              plugin: selectedCodexPluginDescriptor.id,
+              pluginId: selectedCodexPluginDescriptor.id,
+            },
+            'Codex plugin uninstall requested'
+          )
+        },
+        onUpgradeMarketplace: () => {
+          void runCodexMarketplaceAction(
+            'marketplace/upgrade',
+            { marketplaceName: codexMarketplaceName.trim() },
+            'Codex marketplace upgrade requested'
+          )
+        },
+        onWriteSelectedSkillConfig: () => {
+          const skillId = selectedCodexSkillDescriptor?.id
+          if (!skillId) return
+          try {
             void runCodexMarketplaceAction(
-              'marketplace/add',
+              'skills/config/write',
               {
-                marketplaceName: codexMarketplaceName.trim(),
-                source: codexMarketplaceSource.trim(),
-              },
-              'Codex marketplace added'
-            )
-          }}
-          onCopyPluginMetadata={async () => {
-            if (!selectedCodexPluginDescriptor?.raw) return
-            await navigator.clipboard.writeText(
-              JSON.stringify(selectedCodexPluginDescriptor.raw, null, 2)
-            )
-            toast.success('Codex plugin metadata copied')
-          }}
-          onInstallPlugin={() => {
-            void runCodexMarketplaceAction(
-              'plugin/install',
-              {
-                plugin: codexPluginId.trim(),
-                pluginId: codexPluginId.trim(),
-              },
-              'Codex plugin install requested'
-            )
-          }}
-          onInstallSelectedPlugin={() => {
-            if (!selectedCodexPluginDescriptor) return
-            void runCodexMarketplaceAction(
-              'plugin/install',
-              {
-                plugin: selectedCodexPluginDescriptor.id,
-                pluginId: selectedCodexPluginDescriptor.id,
-              },
-              'Codex plugin install requested'
-            )
-          }}
-          onReadPlugin={() => {
-            void runCodexMarketplaceAction(
-              'plugin/read',
-              {
-                plugin: codexPluginId.trim(),
-                pluginId: codexPluginId.trim(),
-              },
-              'Codex plugin metadata loaded'
-            )
-          }}
-          onReadPluginSkill={() => {
-            void runCodexMarketplaceAction(
-              'plugin/skill/read',
-              {
-                plugin: codexPluginId.trim(),
-                pluginId: codexPluginId.trim(),
-                skill: codexPluginSkillId.trim(),
-                skillId: codexPluginSkillId.trim(),
-              },
-              'Codex plugin skill loaded'
-            )
-          }}
-          onReadSelectedPlugin={() => {
-            if (!selectedCodexPluginDescriptor) return
-            void runCodexMarketplaceAction(
-              'plugin/read',
-              {
-                plugin: selectedCodexPluginDescriptor.id,
-                pluginId: selectedCodexPluginDescriptor.id,
-              },
-              'Codex plugin metadata loaded'
-            )
-          }}
-          onReadSelectedSkill={() => {
-            const skillId = selectedCodexSkillDescriptor?.id
-            const pluginId =
-              selectedCodexSkillDescriptor?.pluginId ||
-              selectedCodexPluginDescriptor?.id
-            if (!pluginId || !skillId) return
-            void runCodexMarketplaceAction(
-              'plugin/skill/read',
-              {
-                plugin: pluginId,
-                pluginId,
                 skill: skillId,
                 skillId,
+                config: parseCodexJson<Record<string, unknown>>(
+                  codexSkillConfigJson || '{}',
+                  {}
+                ),
               },
-              'Codex plugin skill loaded'
+              'Codex skill config written'
             )
-          }}
-          onRefresh={() => {
-            void refreshCodexMarketplaceSnapshot()
-          }}
-          onRemoveMarketplace={() => {
+          } catch (e) {
+            setCapError('Skill config JSON parse failed: ' + String(e))
+          }
+        },
+        onWriteSkillConfig: () => {
+          try {
             void runCodexMarketplaceAction(
-              'marketplace/remove',
-              { marketplaceName: codexMarketplaceName.trim() },
-              'Codex marketplace removed'
-            )
-          }}
-          onSelectInstalledOnly={setCodexMarketplaceInstalledOnly}
-          onSelectMarketplaceFilter={setCodexMarketplaceFilter}
-          onSelectMarketplaceName={setCodexMarketplaceName}
-          onSelectMarketplaceSource={setCodexMarketplaceSource}
-          onSelectPluginId={setCodexPluginId}
-          onSelectPluginSkillId={setCodexPluginSkillId}
-          onSetSkillConfigJson={setCodexSkillConfigJson}
-          onUninstallPlugin={() => {
-            void runCodexMarketplaceAction(
-              'plugin/uninstall',
+              'skills/config/write',
               {
-                plugin: codexPluginId.trim(),
-                pluginId: codexPluginId.trim(),
+                skill: codexPluginSkillId.trim(),
+                skillId: codexPluginSkillId.trim(),
+                config: parseCodexJson<Record<string, unknown>>(
+                  codexSkillConfigJson || '{}',
+                  {}
+                ),
               },
-              'Codex plugin uninstall requested'
+              'Codex skill config written'
             )
-          }}
-          onUninstallSelectedPlugin={() => {
-            if (!selectedCodexPluginDescriptor) return
-            void runCodexMarketplaceAction(
-              'plugin/uninstall',
-              {
-                plugin: selectedCodexPluginDescriptor.id,
-                pluginId: selectedCodexPluginDescriptor.id,
-              },
-              'Codex plugin uninstall requested'
-            )
-          }}
-          onUpgradeMarketplace={() => {
-            void runCodexMarketplaceAction(
-              'marketplace/upgrade',
-              { marketplaceName: codexMarketplaceName.trim() },
-              'Codex marketplace upgrade requested'
-            )
-          }}
-          onWriteSelectedSkillConfig={() => {
-            const skillId = selectedCodexSkillDescriptor?.id
-            if (!skillId) return
-            try {
-              void runCodexMarketplaceAction(
-                'skills/config/write',
-                {
-                  skill: skillId,
-                  skillId,
-                  config: parseCodexJson<Record<string, unknown>>(
-                    codexSkillConfigJson || '{}',
-                    {}
-                  ),
-                },
-                'Codex skill config written'
-              )
-            } catch (e) {
-              setCapError('Skill config JSON parse failed: ' + String(e))
-            }
-          }}
-          onWriteSkillConfig={() => {
-            try {
-              void runCodexMarketplaceAction(
-                'skills/config/write',
-                {
-                  skill: codexPluginSkillId.trim(),
-                  skillId: codexPluginSkillId.trim(),
-                  config: parseCodexJson<Record<string, unknown>>(
-                    codexSkillConfigJson || '{}',
-                    {}
-                  ),
-                },
-                'Codex skill config written'
-              )
-            } catch (e) {
-              setCapError('Skill config JSON parse failed: ' + String(e))
-            }
-          }}
-          selectableCodexPluginIds={selectableCodexPluginIds}
-          selectableCodexSkillIds={selectableCodexSkillIds}
-          selectedCodexPluginDescriptor={selectedCodexPluginDescriptor}
-          selectedCodexPluginMetadataKeys={selectedCodexPluginMetadataKeys}
-          selectedCodexSkillDescriptor={selectedCodexSkillDescriptor}
-        />
+          } catch (e) {
+            setCapError('Skill config JSON parse failed: ' + String(e))
+          }
+        },
+      }}
+    />
         <RuntimeFsProcessPanel
-          codexCommandExecParams={codexCommandExecParams}
-          codexProcessHandle={codexProcessHandle}
-          codexProcessTerminalCols={codexProcessTerminalCols}
-          codexProcessTerminalExpanded={codexProcessTerminalExpanded}
-          codexProcessTerminalFilter={codexProcessTerminalFilter}
-          codexProcessTerminalRows={codexProcessTerminalRows}
-          codexProcessTerminals={codexProcessTerminals}
-          codexRuntimeCopyDestination={codexRuntimeCopyDestination}
-          codexRuntimeFileText={codexRuntimeFileText}
-          codexRuntimePath={codexRuntimePath}
-          codexRuntimePtySize={codexRuntimePtySize}
-          codexRuntimeSnapshot={codexRuntimeSnapshot}
-          codexRuntimeSpawnCommand={codexRuntimeSpawnCommand}
-          codexRuntimeStdin={codexRuntimeStdin}
-          codexRuntimeWatchId={codexRuntimeWatchId}
-          currentThreadIdForCaps={currentThreadIdForCaps}
-          cwd={cwd}
-          filteredCodexProcessTerminalLines={filteredCodexProcessTerminalLines}
-          onAppendCodexTerminalLines={appendCodexTerminalLines}
-          onClearCodexProcessEvents={() => {
-            clearCodexProcessEvents()
-            lastCodexProcessEventTimestampRef.current = Date.now()
+          state={{
+            codexCommandExecParams,
+            codexProcessHandle,
+            codexProcessTerminalCols,
+            codexProcessTerminalExpanded,
+            codexProcessTerminalFilter,
+            codexProcessTerminalRows,
+            codexProcessTerminals,
+            codexRuntimeCopyDestination,
+            codexRuntimeFileText,
+            codexRuntimePath,
+            codexRuntimePtySize,
+            codexRuntimeSnapshot,
+            codexRuntimeSpawnCommand,
+            codexRuntimeStdin,
+            codexRuntimeWatchId,
+            currentThreadIdForCaps,
+            cwd,
+            filteredCodexProcessTerminalLines,
+            isCodexProtoTransport,
+            runtimeBusy,
+            selectableCodexProcessHandles,
+            selectedCodexProcessTerminal,
           }}
-          onClearCodexProcessTerminals={() => setCodexProcessTerminals([])}
-          onReadCodexRuntimeFile={readCodexRuntimeFile}
-          onRunCodexRuntimeAction={runCodexRuntimeAction}
-          onSetCapError={setCapError}
-          onSetCodexCommandExecParams={setCodexCommandExecParams}
-          onSetCodexProcessHandle={setCodexProcessHandle}
-          onSetCodexProcessTerminalCols={setCodexProcessTerminalCols}
-          onSetCodexProcessTerminalExpanded={setCodexProcessTerminalExpanded}
-          onSetCodexProcessTerminalFilter={setCodexProcessTerminalFilter}
-          onSetCodexProcessTerminalRows={setCodexProcessTerminalRows}
-          onSetCodexRuntimeCopyDestination={setCodexRuntimeCopyDestination}
-          onSetCodexRuntimeFileText={setCodexRuntimeFileText}
-          onSetCodexRuntimePath={setCodexRuntimePath}
-          onSetCodexRuntimePtySize={setCodexRuntimePtySize}
-          onSetCodexRuntimeSnapshot={setCodexRuntimeSnapshot}
-          onSetCodexRuntimeSpawnCommand={setCodexRuntimeSpawnCommand}
-          onSetCodexRuntimeStdin={setCodexRuntimeStdin}
-          onSetCodexRuntimeWatchId={setCodexRuntimeWatchId}
-          onSpawnCodexRuntimeProcess={spawnCodexRuntimeProcess}
-          isCodexProtoTransport={isCodexProtoTransport}
-          onWriteCodexRuntimeFile={writeCodexRuntimeFile}
-          runtimeBusy={runtimeBusy}
-          selectableCodexProcessHandles={selectableCodexProcessHandles}
-          selectedCodexProcessTerminal={selectedCodexProcessTerminal}
+          actions={{
+            onAppendCodexTerminalLines: appendCodexTerminalLines,
+            onClearCodexProcessEvents: () => {
+              clearCodexProcessEvents()
+              lastCodexProcessEventTimestampRef.current = Date.now()
+            },
+            onClearCodexProcessTerminals: () => setCodexProcessTerminals([]),
+            onReadCodexRuntimeFile: readCodexRuntimeFile,
+            onRunCodexRuntimeAction: runCodexRuntimeAction,
+            onSetCapError: setCapError,
+            onSetCodexCommandExecParams: setCodexCommandExecParams,
+            onSetCodexProcessHandle: setCodexProcessHandle,
+            onSetCodexProcessTerminalCols: setCodexProcessTerminalCols,
+            onSetCodexProcessTerminalExpanded: setCodexProcessTerminalExpanded,
+            onSetCodexProcessTerminalFilter: setCodexProcessTerminalFilter,
+            onSetCodexProcessTerminalRows: setCodexProcessTerminalRows,
+            onSetCodexRuntimeCopyDestination: setCodexRuntimeCopyDestination,
+            onSetCodexRuntimeFileText: setCodexRuntimeFileText,
+            onSetCodexRuntimePath: setCodexRuntimePath,
+            onSetCodexRuntimePtySize: setCodexRuntimePtySize,
+            onSetCodexRuntimeSnapshot: setCodexRuntimeSnapshot,
+            onSetCodexRuntimeSpawnCommand: setCodexRuntimeSpawnCommand,
+            onSetCodexRuntimeStdin: setCodexRuntimeStdin,
+            onSetCodexRuntimeWatchId: setCodexRuntimeWatchId,
+            onSpawnCodexRuntimeProcess: spawnCodexRuntimeProcess,
+            onWriteCodexRuntimeFile: writeCodexRuntimeFile,
+          }}
         />
         <McpPanel
-          codexMcpServerName={codexMcpServerName}
-          codexMcpResourceUri={codexMcpResourceUri}
-          codexMcpToolName={codexMcpToolName}
-          codexMcpToolArguments={codexMcpToolArguments}
-          codexMcpDescriptorFilter={codexMcpDescriptorFilter}
-          mcpBusy={mcpBusy}
-          currentThreadIdForCaps={currentThreadIdForCaps}
-          mcpStatus={mcpStatus}
-          codexMcpSnapshot={codexMcpSnapshot}
-          selectableCodexMcpServerNames={selectableCodexMcpServerNames}
-          selectableCodexMcpResourceUris={selectableCodexMcpResourceUris}
-          selectableCodexMcpToolNames={selectableCodexMcpToolNames}
-          codexMcpResourceDescriptors={codexMcpResourceDescriptors}
-          codexMcpToolDescriptors={codexMcpToolDescriptors}
-          filteredCodexMcpResourceDescriptors={
-            filteredCodexMcpResourceDescriptors
-          }
-          filteredCodexMcpToolDescriptors={filteredCodexMcpToolDescriptors}
-          selectedCodexMcpToolDescriptor={selectedCodexMcpToolDescriptor}
-          codexMcpToolArgumentValidation={codexMcpToolArgumentValidation}
-          onSetCodexMcpServerName={setCodexMcpServerName}
-          onSetCodexMcpResourceUri={setCodexMcpResourceUri}
-          onSetCodexMcpToolName={setCodexMcpToolName}
-          onSetCodexMcpToolArguments={setCodexMcpToolArguments}
-          onSetCodexMcpDescriptorFilter={setCodexMcpDescriptorFilter}
-          onSetCapError={setCapError}
-          onRunCodexMcpAction={runCodexMcpAction}
-          onMcpOauthLogin={runCodexMcpOauthLogin}
-          isCodexProtoTransport={isCodexProtoTransport}
+          state={{
+            codexMcpServerName,
+            codexMcpResourceUri,
+            codexMcpToolName,
+            codexMcpToolArguments,
+            codexMcpDescriptorFilter,
+            mcpBusy,
+            currentThreadIdForCaps,
+            mcpStatus,
+            codexMcpSnapshot,
+            selectableCodexMcpServerNames,
+            selectableCodexMcpResourceUris,
+            selectableCodexMcpToolNames,
+            codexMcpResourceDescriptors,
+            codexMcpToolDescriptors,
+            filteredCodexMcpResourceDescriptors,
+            filteredCodexMcpToolDescriptors,
+            selectedCodexMcpToolDescriptor,
+            codexMcpToolArgumentValidation,
+            isCodexProtoTransport,
+          }}
+          actions={{
+            onSetCodexMcpServerName: setCodexMcpServerName,
+            onSetCodexMcpResourceUri: setCodexMcpResourceUri,
+            onSetCodexMcpToolName: setCodexMcpToolName,
+            onSetCodexMcpToolArguments: setCodexMcpToolArguments,
+            onSetCodexMcpDescriptorFilter: setCodexMcpDescriptorFilter,
+            onSetCapError: setCapError,
+            onRunCodexMcpAction: runCodexMcpAction,
+            onMcpOauthLogin: runCodexMcpOauthLogin,
+          }}
         />
         <CodexSummaryCards
           skills={skills}
@@ -5490,6 +5794,7 @@ function WorkspacePanelsLayoutInner({
     null
   )
   const sidePanelWidth = dragSidePanelWidth ?? persistedSidePanelWidth
+  const isResizingSidePanel = dragSidePanelWidth !== null
   const bottomPanelOpen = useChatSessionUiSelector(
     (session) => session.bottomPanelOpen
   )
@@ -5497,10 +5802,9 @@ function WorkspacePanelsLayoutInner({
     (session) => session.bottomPanelHeight
   )
 
-  const onResizeLive = useMemo(
-    () => rafThrottle((width: string) => setDragSidePanelWidth(width)),
-    []
-  )
+  const onResizeLive = useCallback((width: string) => {
+    setDragSidePanelWidth(width)
+  }, [])
 
   const onResizeEnd = useCallback(
     (width: string) => {
@@ -5524,7 +5828,9 @@ function WorkspacePanelsLayoutInner({
       <div
         className={cn(
           'grid h-full min-h-0 min-w-0 overflow-hidden',
-          'transition-[grid-template-columns,grid-template-rows] duration-200 ease-out',
+          isResizingSidePanel
+            ? 'transition-[grid-template-rows] duration-200 ease-out'
+            : 'transition-[grid-template-columns,grid-template-rows] duration-200 ease-out',
           className
         )}
         style={{

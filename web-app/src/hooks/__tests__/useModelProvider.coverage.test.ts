@@ -74,6 +74,30 @@ describe('useModelProvider - coverage', () => {
       act(() => { model = result.current.selectModelProvider('unknown', 'model') })
       expect(model).toBeUndefined()
     })
+
+    it('maps removed Codex model selections to the supported default', () => {
+      const { result } = renderHook(() => useModelProvider())
+
+      act(() => {
+        useModelProvider.setState({
+          providers: [
+            makeProvider('codex', [
+              { id: 'gpt-5.5', capabilities: [] },
+              { id: 'gpt-5.4', capabilities: [] },
+            ]),
+          ],
+        })
+      })
+
+      let model: any
+      act(() => {
+        model = result.current.selectModelProvider('codex', 'gpt-5.1-codex-max')
+      })
+
+      expect(model?.id).toBe('gpt-5.5')
+      expect(result.current.selectedProvider).toBe('codex')
+      expect(result.current.selectedModel?.id).toBe('gpt-5.5')
+    })
   })
 
   describe('updateProvider', () => {
@@ -129,6 +153,29 @@ describe('useModelProvider - coverage', () => {
       expect(
         result.current.selectedModel?.settings?.ctx_len?.controller_props?.value
       ).toBe(32768)
+    })
+
+    it('restores codex default model when selected model disappears during update', () => {
+      const { result } = renderHook(() => useModelProvider())
+
+      act(() => {
+        useModelProvider.setState({
+          providers: [makeProvider('codex', [{ id: 'gpt-5.1-codex-max', capabilities: [] }])],
+          selectedProvider: 'codex',
+          selectedModel: { id: 'gpt-5.1-codex-max', capabilities: [] } as any,
+        })
+      })
+
+      act(() => {
+        result.current.updateProvider('codex', {
+          models: [
+            { id: 'gpt-5.5', capabilities: [] },
+            { id: 'gpt-5.4', capabilities: [] },
+          ],
+        } as any)
+      })
+
+      expect(result.current.selectedModel?.id).toBe('gpt-5.5')
     })
   })
 
@@ -225,6 +272,32 @@ describe('useModelProvider - coverage', () => {
 
       const provider = result.current.getProviderByName('llamacpp')
       expect(provider?.models[0].id).toBe('model-1')
+      expect(
+        provider?.settings.find((setting: any) => setting.key === 'base-url')
+          ?.controller_props.value
+      ).toBe('http://localhost')
+    })
+
+    it('does not fall back to Codex when a non-Codex provider is available', () => {
+      const { result } = renderHook(() => useModelProvider())
+
+      act(() => {
+        useModelProvider.setState({
+          providers: [],
+          selectedProvider: 'missing-provider',
+          selectedModel: null,
+        })
+      })
+
+      act(() => {
+        result.current.setProviders([
+          makeProvider('codex', [{ id: 'gpt-5.5', capabilities: [] }]),
+          makeProvider('openai', [{ id: 'gpt-4', capabilities: [] }]),
+        ])
+      })
+
+      expect(result.current.selectedProvider).toBe('openai')
+      expect(result.current.selectedModel?.id).toBe('gpt-4')
     })
 
     it('merges non-persist provider preserving existing api_key/base_url', () => {
@@ -270,6 +343,33 @@ describe('useModelProvider - coverage', () => {
       })
 
       expect(localStorage.getItem('cortex_model_settings_migrated')).toBe('true')
+    })
+
+    it('restores codex default model when selected model disappears during refresh', () => {
+      const { result } = renderHook(() => useModelProvider())
+
+      act(() => {
+        useModelProvider.setState({
+          providers: [
+            makeProvider('codex', [{ id: 'gpt-5.1-codex-max', capabilities: [] }]),
+          ],
+          selectedProvider: 'codex',
+          selectedModel: { id: 'gpt-5.1-codex-max', capabilities: [] } as any,
+        })
+      })
+
+      act(() => {
+        result.current.setProviders([
+          makeProvider('codex', [{ id: 'gpt-5.5', capabilities: [] }]),
+        ])
+      })
+
+      expect(result.current.selectedProvider).toBe('codex')
+      expect(result.current.selectedModel?.id).toBe('gpt-5.5')
+      const provider = result.current.getProviderByName('codex')
+      expect(
+        provider?.models.find((model: any) => model.id === 'gpt-5.1-codex-max')
+      ).toBeUndefined()
     })
   })
 
@@ -333,6 +433,102 @@ describe('useModelProvider - coverage', () => {
         expect(
           migrated.providers[0].models[0].settings.ctx_len.controller_props.value
         ).toBe(8192)
+      }],
+      [22, 'codex default migration restores active model and removes stale defaults', {
+        providers: [{
+          provider: 'codex',
+          models: [
+            {
+              id: 'gpt-5.1-codex-max',
+              capabilities: [],
+            },
+          ],
+          settings: [],
+        }],
+        selectedProvider: 'codex',
+        selectedModel: {
+          id: 'gpt-5.1-codex-max',
+          capabilities: [],
+        },
+        deletedModels: [],
+      }, (migrated: any) => {
+        expect(
+          migrated.providers[0].models.find((model: any) => model.id === 'gpt-5.1-codex-max')
+        ).toBeUndefined()
+        expect(
+          migrated.providers[0].models.find((model: any) => model.id === 'gpt-5.5')
+        ).toBeDefined()
+        expect(migrated.selectedModel?.id).toBe('gpt-5.5')
+      }],
+      [22, 'non-codex selection is preserved during codex migration', {
+        providers: [
+          {
+            provider: 'openai',
+            models: [{ id: 'gpt-4', capabilities: [] }],
+            settings: [],
+          },
+          {
+            provider: 'codex',
+            models: [{ id: 'gpt-5.1', capabilities: [] }],
+            settings: [],
+          },
+        ],
+        selectedProvider: 'openai',
+        selectedModel: {
+          id: 'gpt-4',
+          capabilities: [],
+        },
+        deletedModels: [],
+      }, (migrated: any) => {
+        expect(migrated.providers[0].models.find((model: any) => model.id === 'gpt-4')).toBeDefined()
+        expect(
+          migrated.providers[1].models.find((model: any) => model.id === 'gpt-5.1')
+        ).toBeUndefined()
+        expect(migrated.selectedModel?.id).toBe('gpt-4')
+      }],
+      [25, 'stale static Codex default moves to available non-Codex provider', {
+        providers: [
+          {
+            provider: 'openai',
+            active: true,
+            models: [{ id: 'gpt-4', capabilities: [] }],
+            settings: [],
+          },
+          {
+            provider: 'codex',
+            active: true,
+            models: [{ id: 'gpt-5.5', capabilities: [] }],
+            settings: [],
+          },
+        ],
+        selectedProvider: 'codex',
+        selectedModel: {
+          id: 'gpt-5.5',
+          capabilities: [],
+        },
+        deletedModels: [],
+      }, (migrated: any) => {
+        expect(migrated.selectedProvider).toBe('openai')
+        expect(migrated.selectedModel?.id).toBe('gpt-4')
+      }],
+      [25, 'Codex remains selected when it is the only provider during stale-default migration', {
+        providers: [
+          {
+            provider: 'codex',
+            active: true,
+            models: [{ id: 'gpt-5.5', capabilities: [] }],
+            settings: [],
+          },
+        ],
+        selectedProvider: 'codex',
+        selectedModel: {
+          id: 'gpt-5.5',
+          capabilities: [],
+        },
+        deletedModels: [],
+      }, (migrated: any) => {
+        expect(migrated.selectedProvider).toBe('codex')
+        expect(migrated.selectedModel?.id).toBe('gpt-5.5')
       }],
       [14, 'v14 → v15 strips orphan auto_increase_ctx_len', {
         providers: [{

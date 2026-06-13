@@ -117,6 +117,10 @@ export class CodexAppServerSession {
     return this.manager.initialize()
   }
 
+  isRunning() {
+    return this.manager.isRunning
+  }
+
   async *sendMessage(
     params: SendMessageParams
   ): AsyncGenerator<CodexAppServerEvent> {

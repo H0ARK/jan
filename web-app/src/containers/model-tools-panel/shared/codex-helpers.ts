@@ -738,7 +738,14 @@ export function collectCodexPluginIds(value: unknown): string[] {
     }
     if (typeof item === 'object') {
       const record = item as Record<string, unknown>
-      for (const key of ['id', 'name', 'plugin', 'pluginId']) {
+      for (const key of [
+        'id',
+        'name',
+        'plugin',
+        'pluginId',
+        'remotePluginId',
+        'pluginName',
+      ]) {
         if (typeof record[key] === 'string') ids.add(record[key])
       }
       for (const key of [
@@ -747,6 +754,7 @@ export function collectCodexPluginIds(value: unknown): string[] {
         'data',
         'installed',
         'items',
+        'marketplaces',
         'pluginList',
         'plugins',
       ]) {
@@ -781,6 +789,10 @@ export function collectCodexPluginDescriptors(value: unknown): CodexPluginDescri
               ? record.plugin
               : typeof record.pluginId === 'string'
                 ? record.pluginId
+                : typeof record.remotePluginId === 'string'
+                  ? record.remotePluginId
+                  : typeof record.pluginName === 'string'
+                    ? record.pluginName
                 : ''
       if (id) {
         const existing = descriptors.get(id)
@@ -811,6 +823,7 @@ export function collectCodexPluginDescriptors(value: unknown): CodexPluginDescri
         'items',
         'pluginList',
         'plugins',
+        'marketplaces',
       ]) {
         if (Array.isArray(record[key])) visit(record[key], installedHint)
       }
@@ -869,6 +882,8 @@ export function collectCodexMarketplaceDescriptors(
         })
       }
       for (const key of [
+        'pluginList',
+        'installedPlugins',
         'data',
         'items',
         'marketplace',
@@ -897,14 +912,23 @@ export function collectCodexSkillIds(value: unknown): string[] {
     }
     if (typeof item === 'object') {
       const record = item as Record<string, unknown>
-      for (const key of ['id', 'name', 'skill', 'skillId']) {
+      for (const key of [
+        'id',
+        'name',
+        'skill',
+        'skillId',
+        'remoteSkillId',
+        'skillName',
+      ]) {
         if (typeof record[key] === 'string') ids.add(record[key])
       }
       for (const key of [
         'available',
         'data',
+        'pluginList',
         'enabled',
         'items',
+        'marketplaces',
         'skills',
       ]) {
         if (Array.isArray(record[key])) visit(record[key])
@@ -944,6 +968,10 @@ export function collectCodexSkillDescriptors(value: unknown): CodexSkillDescript
               ? record.skill
               : typeof record.skillId === 'string'
                 ? record.skillId
+                : typeof record.remoteSkillId === 'string'
+                  ? record.remoteSkillId
+                  : typeof record.skillName === 'string'
+                    ? record.skillName
                 : ''
       if (id) {
         descriptors.set(id, {
@@ -960,9 +988,11 @@ export function collectCodexSkillDescriptors(value: unknown): CodexSkillDescript
       for (const key of [
         'available',
         'data',
+        'pluginList',
         'enabled',
         'items',
         'skills',
+        'marketplaces',
       ]) {
         if (Array.isArray(record[key])) visit(record[key], parentPlugin)
       }

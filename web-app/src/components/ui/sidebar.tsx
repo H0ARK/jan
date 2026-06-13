@@ -650,19 +650,39 @@ const SidebarMenuButton = React.forwardRef<
 		},
 		ref,
 	) => {
-		const Comp = asChild ? Slot : "button";
 		const { isMobile, state } = useSidebar();
-
-		const button = (
-			<Comp
-				ref={ref}
-				data-sidebar="menu-button"
-				data-size={size}
-				data-active={isActive}
-				className={cn(sidebarMenuButtonVariants({ variant, size }), className)}
-				{...props}
-			/>
+		const { children, ...buttonProps } = props;
+		const buttonClassName = cn(
+			sidebarMenuButtonVariants({ variant, size }),
+			className,
 		);
+
+		const button =
+			asChild && React.isValidElement(children) ? (
+				React.cloneElement(
+					children as React.ReactElement<Record<string, unknown>>,
+					{
+						...buttonProps,
+						className: cn(
+							buttonClassName,
+							(children as React.ReactElement<{ className?: string }>)
+								.props.className,
+						),
+						"data-sidebar": "menu-button",
+						"data-size": size,
+						"data-active": isActive,
+					} as Record<string, unknown>,
+				)
+			) : (
+				<button
+					ref={ref}
+					data-sidebar="menu-button"
+					data-size={size}
+					data-active={isActive}
+					className={buttonClassName}
+					{...props}
+				/>
+			);
 
 		if (!tooltip) {
 			return button;

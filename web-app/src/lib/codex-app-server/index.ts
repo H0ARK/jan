@@ -185,6 +185,7 @@ export {
   runCodexMockExperimentalMethod,
   callCodexAppServer,
   warmupCodexSession,
+  prepareCodexCapabilitySession,
 } from './chat-backend'
 export type { CodexCliRunResult } from './chat-backend'
 export type {

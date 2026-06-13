@@ -134,6 +134,13 @@ export class CodexAppServerClient {
     return this.session.initialize()
   }
 
+  isRunning(): boolean {
+    if ('isRunning' in this.session) {
+      return this.session.isRunning()
+    }
+    return true
+  }
+
   setThreadOptions(threadId: string, options: CodexSessionOptions) {
     if ('setThreadOptions' in this.session) {
       this.session.setThreadOptions(threadId, options)
